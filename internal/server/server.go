@@ -13,7 +13,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +68,6 @@ const (
 type registerRequest struct {
 	Mode           string `json:"mode"`
 	Subdomain      string `json:"subdomain,omitempty"`
-	LocalScheme    string `json:"local_scheme,omitempty"`
 	ClientHostname string `json:"client_hostname,omitempty"`
 	LocalPort      string `json:"local_port,omitempty"`
 }
@@ -113,32 +111,6 @@ func (s *Server) Run(ctx context.Context) error {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/", s.handlePublic)
-
-	if s.cfg.AllowInsecureHTTP {
-		server := &http.Server{
-			Addr:              s.cfg.ListenHTTP,
-			Handler:           mux,
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-		errCh := make(chan error, 1)
-		go func() {
-			s.log.Info("starting HTTP server", "addr", s.cfg.ListenHTTP)
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- err
-			}
-			close(errCh)
-		}()
-
-		select {
-		case <-ctx.Done():
-			return shutdownServer(server, 5*time.Second)
-		case err, ok := <-errCh:
-			if ok {
-				return err
-			}
-			return nil
-		}
-	}
 
 	var manager *autocert.Manager
 	useDynamicACME := s.cfg.TLSMode != tlsModeWildcard
@@ -209,7 +181,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 	} else {
-		s.log.Info("TLS mode wildcard: dynamic ACME disabled", "hint", "set --tls-mode auto to allow dynamic per-host fallback")
+		s.log.Info("TLS mode wildcard: dynamic ACME disabled", "hint", "set EXPOSE_TLS_MODE=auto to allow dynamic per-host fallback")
 	}
 
 	go func() {
@@ -302,27 +274,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	publicURL := "https://" + domainRec.Hostname
-	if s.cfg.AllowInsecureHTTP {
-		publicURL = "http://" + domainRec.Hostname
-	}
-	base, err := url.Parse(s.cfg.PublicURL)
-	if err != nil {
-		http.Error(w, "server misconfigured public URL", http.StatusInternalServerError)
-		return
-	}
-	base.Scheme = "wss"
-	if s.cfg.AllowInsecureHTTP {
-		base.Scheme = "ws"
-	}
-	base.Path = "/v1/tunnels/connect"
-	q := base.Query()
-	q.Set("token", token)
-	base.RawQuery = q.Encode()
+	wsURL := fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", normalizeHost(s.cfg.BaseDomain), token)
 
 	resp := registerResponse{
 		TunnelID:      tunnelRec.ID,
 		PublicURL:     publicURL,
-		WSURL:         base.String(),
+		WSURL:         wsURL,
 		ServerTLSMode: s.serverTLSMode(),
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -715,9 +672,9 @@ Step-by-step (Certbot + DNS provider API):
        %s
        %s
      (or set EXPOSE_TLS_CERT_FILE / EXPOSE_TLS_KEY_FILE directly)
-  6) Restart server with: expose server --tls-mode wildcard
+  6) Restart server with EXPOSE_TLS_MODE=wildcard.
 
-Tip: use --tls-mode auto to keep service running with dynamic per-host ACME while preparing wildcard certs.`,
+Tip: use EXPOSE_TLS_MODE=auto to keep service running with dynamic per-host ACME while preparing wildcard certs.`,
 		base, base, defaultCertFile, defaultKeyFile, base, base, base, base, base, defaultCertFile, defaultKeyFile)
 }
 

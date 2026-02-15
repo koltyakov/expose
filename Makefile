@@ -6,7 +6,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy fmt test build run-server run-client apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy fmt test build run-server run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -14,8 +14,9 @@ help:
 	@echo "  make fmt            - Format Go code"
 	@echo "  make test           - Run tests"
 	@echo "  make build          - Build binary to ./bin/$(APP)"
-	@echo "  make run-server     - Run server (configure env/flags)"
-	@echo "  make run-client     - Run client (configure env/flags)"
+	@echo "  make run-server     - Run server (env-driven)"
+	@echo "  make run-client     - Run tunnel client (env-driven)"
+	@echo "  make client-login   - Save client server URL + API key"
 	@echo "  make apikey-create  - Create API key"
 	@echo "  make apikey-list    - List API keys"
 	@echo "  make apikey-revoke  - Revoke API key (requires KEY_ID=...)"
@@ -25,7 +26,7 @@ tidy:
 	go mod tidy
 
 fmt:
-	gofmt -w cmd internal
+	gofmt -w -s .
 
 test:
 	go test ./...
@@ -34,33 +35,30 @@ build:
 	go build -o bin/$(APP) ./cmd/expose
 
 run-server:
-	go run ./cmd/expose server \
-		--base-domain $${EXPOSE_BASE_DOMAIN:-example.com} \
-		--db $${EXPOSE_DB_PATH:-./expose.db} \
-		--api-key-pepper $${EXPOSE_API_KEY_PEPPER:-change-me} \
-		--tls-mode $${EXPOSE_TLS_MODE:-auto}
+	go run ./cmd/expose server
+
+client-login:
+	go run ./cmd/expose login \
+		--server $${EXPOSE_DOMAIN:-example.com} \
+		--api-key $${EXPOSE_API_KEY:-}
 
 run-client:
-	go run ./cmd/expose client \
-		--server $${EXPOSE_SERVER_URL:-https://tunnel.example.com} \
-		--api-key $${EXPOSE_API_KEY:-} \
-		--local $${EXPOSE_LOCAL_URL:-http://127.0.0.1:3000}
+	@if [ -z "$$EXPOSE_PORT" ]; then echo "EXPOSE_PORT is required"; exit 1; fi
+	@if [ -n "$$EXPOSE_SUBDOMAIN" ]; then \
+		go run ./cmd/expose http --domain "$$EXPOSE_SUBDOMAIN" $${EXPOSE_PORT}; \
+	else \
+		go run ./cmd/expose http $${EXPOSE_PORT}; \
+	fi
 
 apikey-create:
-	go run ./cmd/expose server apikey create \
-		--db $${EXPOSE_DB_PATH:-./expose.db} \
-		--api-key-pepper $${EXPOSE_API_KEY_PEPPER:-change-me} \
-		--name $${KEY_NAME:-default}
+	go run ./cmd/expose server apikey create --name "default"
 
 apikey-list:
-	go run ./cmd/expose server apikey list \
-		--db $${EXPOSE_DB_PATH:-./expose.db}
+	go run ./cmd/expose server apikey list
 
 apikey-revoke:
 	@if [ -z "$$KEY_ID" ]; then echo "KEY_ID is required"; exit 1; fi
-	go run ./cmd/expose server apikey revoke \
-		--db $${EXPOSE_DB_PATH:-./expose.db} \
-		--id $$KEY_ID
+	go run ./cmd/expose server apikey revoke --id $$KEY_ID
 
 clean:
 	rm -rf bin

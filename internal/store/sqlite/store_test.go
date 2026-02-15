@@ -409,6 +409,55 @@ func TestTemporarySubdomainCannotBeReusedAcrossAPIKeys(t *testing.T) {
 	}
 }
 
+func TestResolveServerPepperAllowsEmptyInitialization(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	current, exists, err := store.GetServerPepper(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists || current != "" {
+		t.Fatalf("expected no persisted pepper yet, got exists=%v value=%q", exists, current)
+	}
+
+	resolved, err := store.ResolveServerPepper(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != "" {
+		t.Fatalf("expected empty pepper to be persisted, got %q", resolved)
+	}
+
+	current, exists, err = store.GetServerPepper(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || current != "" {
+		t.Fatalf("expected persisted empty pepper, got exists=%v value=%q", exists, current)
+	}
+}
+
+func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if _, err := store.ResolveServerPepper(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResolveServerPepper(ctx, "non-empty"); err == nil {
+		t.Fatal("expected explicit pepper mismatch error")
+	}
+}
+
 func openTestStore(t *testing.T) (*Store, error) {
 	t.Helper()
 	return Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", newID("test")))

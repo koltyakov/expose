@@ -28,7 +28,8 @@ go.work.sum
 .env
 
 # Data files
-data/
+cert/
+expose.db
 
 # Editor/IDE
 # .idea/

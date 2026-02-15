@@ -1,77 +1,135 @@
 # expose
 
-`expose` is a simple BYOI (bring your own infrastructure) tunneling tool, similar to ngrok.
+`expose` is a BYOI tunnel: run your own server, then expose local HTTP ports from clients.
 
-It has two modes:
-- `client` mode (default): expose a local HTTP service.
-- `server` mode: authenticate clients, terminate TLS, route public traffic, and manage tunnel state in SQLite.
+## What Changed
 
-## Features
+- Server and client are env-first. `make run-server` / `make run-client` no longer bind many CLI flags.
+- Client exposes a local `port` (not a local URL).
+- Client supports `login` and stores credentials in temp settings:
+  - `<temp>/.expose/settings.json`
+  - Windows: `%TEMP%\.expose\settings.json`
+  - Linux/macOS: usually `/tmp/.expose/settings.json`
+- External public traffic is HTTPS-only.
+- Single domain parameter: `EXPOSE_DOMAIN` (for example `example.com`).
 
-- API key auth
-- Temporary tunnels with auto-generated subdomains
-- Permanent tunnels with reserved hostnames
-- Automatic SSL via Let's Encrypt (ACME HTTP-01)
-- Optional static wildcard TLS certs (DNS-01) with dynamic ACME fallback
-- Single binary CLI
+## Defaults
 
-## Install
+- HTTPS listen: `:10443`
+- ACME HTTP-01 challenge listen: `:10080`
+- SQLite DB: `./expose.db`
+- Cert cache: `./cert`
 
-```bash
-go build -o bin/expose ./cmd/expose
-```
+If you run behind Docker, NAT, or a router, forward:
+- `443 -> 10443` (TCP)
+- `80 -> 10080` (TCP)
 
-Or run without building:
+## DNS Setup (`@` and `*` A records)
 
-```bash
-go run ./cmd/expose --help
-```
+Create DNS records for your `EXPOSE_DOMAIN` zone before starting clients:
+
+- `A` record `@` -> your server public IPv4
+- `A` record `*` -> your server public IPv4
+
+Optional for IPv6:
+
+- `AAAA` record `@` -> your server public IPv6
+- `AAAA` record `*` -> your server public IPv6
+
+Notes:
+
+- `@` covers the apex domain (`example.com`).
+- `*` covers dynamic subdomains (`<anything>.example.com`).
+- Dynamic ACME (`EXPOSE_TLS_MODE=auto|dynamic`) needs public reachability on ports `80` and `443`.
 
 ## Quick Start
 
-### 1. Start server
-
-Set required env vars:
+### 1. Configure server env
 
 ```bash
-export EXPOSE_BASE_DOMAIN=example.com
-export EXPOSE_API_KEY_PEPPER=change-me
+export EXPOSE_DOMAIN=example.com
+export EXPOSE_TLS_MODE=auto
+```
+
+Optional:
+
+```bash
 export EXPOSE_DB_PATH=./expose.db
+export EXPOSE_CERT_CACHE_DIR=./cert
+export EXPOSE_API_KEY_PEPPER=...
 ```
 
-Run server:
+If `EXPOSE_API_KEY_PEPPER` is unset and no machine-id is available, server initializes with an empty pepper.
+
+### 2. Start server
 
 ```bash
-go run ./cmd/expose server --base-domain "$EXPOSE_BASE_DOMAIN" --api-key-pepper "$EXPOSE_API_KEY_PEPPER" --db "$EXPOSE_DB_PATH"
+go run ./cmd/expose server
 ```
 
-For local/dev without TLS:
+Or:
 
 ```bash
-go run ./cmd/expose server --base-domain "$EXPOSE_BASE_DOMAIN" --api-key-pepper "$EXPOSE_API_KEY_PEPPER" --db "$EXPOSE_DB_PATH" --insecure-http --http-challenge-listen :8080
+make run-server
 ```
 
-### 2. Create API key
+### 3. Create API key
 
 ```bash
-go run ./cmd/expose server apikey create --db "$EXPOSE_DB_PATH" --api-key-pepper "$EXPOSE_API_KEY_PEPPER" --name default
+go run ./cmd/expose server apikey create --name default
 ```
 
-Save the printed `api_key`.
+Copy `api_key` from output.
 
-### 3. Expose local service (client mode)
+### 4. Login client once
 
 ```bash
-go run ./cmd/expose --server https://tunnel.example.com --api-key <api_key> --local http://127.0.0.1:3000
+go run ./cmd/expose login --server https://example.com --api-key <api_key>
 ```
 
-Because client is default mode, `expose client ...` is optional.
+If `--server` or `--api-key` is omitted in an interactive shell, `expose login` prompts for missing values.
+In CI/non-interactive runs, pass both flags to avoid prompts.
+
+Or:
+
+```bash
+make client-login
+```
+
+### 5. Expose local app port
+
+```bash
+go run ./cmd/expose http 3000
+```
+
+Or:
+
+```bash
+export EXPOSE_PORT=3000
+make run-client
+```
+
+`--server` and `--api-key` are optional after login (stored settings are used). You can still pass them to override.
+
+Named tunnel example:
+
+```bash
+go run ./cmd/expose http --domain=my-app 8080
+```
+
+This requests `https://my-app.<EXPOSE_DOMAIN>`.
 
 ## CLI
 
 ```text
-expose [client-flags]
+expose [tunnel-flags]
+expose login [flags]
+expose http [flags] <port>
+expose tunnel [flags]
 expose client [flags]
+expose client login [flags]
+expose client http [flags] <port>
+expose client tunnel [flags]
 expose server [flags]
 expose server apikey create [flags]
 expose server apikey list [flags]
@@ -80,68 +138,63 @@ expose server apikey revoke [flags]
 
 ### Client flags
 
-- `--server` server URL, for example `https://tunnel.example.com` (required)
-- `--api-key` API key (required)
-- `--local` local upstream URL, default `http://127.0.0.1:3000`
-- `--subdomain` requested subdomain
-- `--permanent` reserve hostname across reconnects
-- If `--subdomain` is empty and server runs without wildcard TLS, server attempts a stable short hash subdomain from client machine name + local port.
+- `http` command:
+  - `expose http 3000` -> temporary/random subdomain
+  - `expose http --domain=myapp 3000` -> `https://myapp.<EXPOSE_DOMAIN>`
+  - optional overrides: `--server`, `--api-key`
+- `--port` local HTTP port on `127.0.0.1` (required outside `expose http <port>` form)
+- `--server` server URL (HTTPS)
+- `--api-key` API key
+- `--name` requested tunnel name (subdomain)
+- `--permanent` reserve tunnel/domain permanently (legacy; `--name` already enables this)
+
+Default mode is temporary. If `--name` is not set, host allocation is automatic:
+
+- Wildcard TLS active: randomized temporary host (6-char slug) is allocated.
+- Wildcard TLS not active: server first tries a deterministic host from `client_hostname + ":" + local_port`:
+  - `sha1(client_hostname:local_port)` -> base32 lowercase -> first 6 chars
+  - example shape: `k3xnz3.example.com`
+  - on collision, server falls back to randomized 6-char host
+
+Why randomization exists:
+
+- avoids users accidentally claiming memorable names in temporary mode
+- reduces hostname collisions across clients
+- keeps temporary endpoints disposable
 
 ### Server flags
 
-- `--base-domain` base domain, for example `example.com` (required)
-- `--db` SQLite path, default `./expose.db`
-- `--api-key-pepper` key hashing pepper (required)
-- `--listen` HTTPS listen address, default `:443`
-- `--http-challenge-listen` HTTP challenge listen address, default `:80`
-- `--public-url` public server URL used for WS connect URLs
-- `--tls-mode` TLS strategy: `auto|dynamic|wildcard` (default `auto`)
-- `--cert-cache-dir` cert cache dir, default `./cert-cache`
-- `--tls-cert-file` static TLS certificate PEM file (optional)
-- `--tls-key-file` static TLS key PEM file (optional)
-- `--log-level` `debug|info|warn|error`
-- `--insecure-http` disable ACME/TLS and run plain HTTP
+- `--domain` public base domain (required if `EXPOSE_DOMAIN` is not set)
+- `--listen` HTTPS listen address (default `:10443`)
+- `--http-challenge-listen` ACME challenge listen (default `:10080`)
+- `--db` SQLite DB path (default `./expose.db`)
+- `--tls-mode` `auto|dynamic|wildcard` (default `auto`)
+- `--cert-cache-dir` cert cache dir (default `./cert`)
+- `--tls-cert-file` static cert file (wildcard mode)
+- `--tls-key-file` static key file (wildcard mode)
+- `--api-key-pepper` explicit pepper override (optional)
 
-### Wildcard TLS (Let's Encrypt DNS-01)
+## Wildcard TLS Mode
 
-Use this when you want one cert for `example.com` + `*.example.com` instead of per-host cert issuance.
+Use `EXPOSE_TLS_MODE=wildcard` to serve `example.com` and `*.example.com` from one static wildcard cert.
 
-1. Set `EXPOSE_TLS_MODE=wildcard`.
-2. Create a DNS API token in your DNS provider with permission to edit TXT records for your zone.
-3. Use Certbot with your DNS provider plugin to issue:
-   - `example.com`
-   - `*.example.com`
-4. Point `EXPOSE_TLS_CERT_FILE` to `fullchain.pem` and `EXPOSE_TLS_KEY_FILE` to `privkey.pem` (or copy them to `EXPOSE_CERT_CACHE_DIR/wildcard.crt` and `EXPOSE_CERT_CACHE_DIR/wildcard.key`).
-5. Restart server.
+When to use wildcard mode:
 
-Example Certbot shape (replace `<provider>` with your plugin):
+- you expect many short-lived temporary subdomains
+- you want to avoid frequent per-host certificate issuance
+- you want predictable TLS behavior across many rotating hosts
 
-```bash
-certbot certonly --agree-tos --email you@example.com --non-interactive \
-  --dns-<provider> --dns-<provider>-credentials <credentials-file> \
-  -d example.com -d '*.example.com'
-```
+If wildcard cert files are missing, server prints a concrete Let's Encrypt DNS-01 walkthrough and exits:
+- required SANs
+- expected file locations
+- certbot command shape
 
-## Make targets
+Dynamic per-host ACME is available in `auto` / `dynamic` and is best for simpler setups with low tunnel churn.
 
-```bash
-make help
-make tidy
-make fmt
-make test
-make build
-```
+## Internal Reliability Behavior
 
-## Notes
-
-- v1 supports HTTP/HTTPS tunneling only.
-- Server is single-node and stores state in SQLite.
-- Permanent tunnels return `503` while offline.
-- Temporary tunnels are released when client disconnects.
-- Client heartbeat timeout is based on last inbound tunnel message (ping or response), reducing false disconnects.
-- Inactive temporary domains and their certificate cache entries are removed by retention-based cleanup.
-- Client receives the effective server TLS mode in register response (`dynamic` or `wildcard`) and logs it.
-- TLS modes:
-  - `auto`: use wildcard cert if available, else dynamic per-host ACME fallback.
-  - `dynamic`: force dynamic per-host ACME only.
-  - `wildcard`: force wildcard mode; if certs are missing, startup prints DNS-01/API walkthrough and exits.
+- Client sends keepalive pings automatically.
+- Client reconnects with backoff if server/session drops.
+- Server expires stale sessions and closes stale temporary tunnels.
+- Stale temporary domains and old temporary cert cache files are purged automatically.
+- Server persists a single effective API-key pepper in DB (`server_settings`) so restarts/container moves do not break existing keys.

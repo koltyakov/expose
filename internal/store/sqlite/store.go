@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS connect_tokens (
 	expires_at DATETIME NOT NULL,
 	used_at DATETIME NULL
 );
+CREATE TABLE IF NOT EXISTS server_settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_domains_hostname ON domains(hostname);
 CREATE INDEX IF NOT EXISTS idx_tunnels_state ON tunnels(state);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
@@ -144,6 +148,38 @@ func (s *Store) ResolveAPIKeyID(ctx context.Context, keyHash string) (string, er
 	var id string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL`, keyHash).Scan(&id)
 	return id, err
+}
+
+func (s *Store) GetServerPepper(ctx context.Context) (string, bool, error) {
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = 'api_key_pepper'`).Scan(&current)
+	if err == nil {
+		return current, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+func (s *Store) ResolveServerPepper(ctx context.Context, suggested string) (string, error) {
+	suggested = strings.TrimSpace(suggested)
+
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = 'api_key_pepper'`).Scan(&current)
+	if err == nil {
+		if suggested != "" && suggested != current {
+			return "", errors.New("provided api key pepper does not match database")
+		}
+		return current, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO server_settings(key, value) VALUES('api_key_pepper', ?)`, suggested); err != nil {
+		return "", err
+	}
+	return suggested, nil
 }
 
 func (s *Store) ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error) {

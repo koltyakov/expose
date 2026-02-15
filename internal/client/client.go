@@ -24,7 +24,6 @@ import (
 type registerRequest struct {
 	Mode           string `json:"mode"`
 	Subdomain      string `json:"subdomain,omitempty"`
-	LocalScheme    string `json:"local_scheme,omitempty"`
 	ClientHostname string `json:"client_hostname,omitempty"`
 	LocalPort      string `json:"local_port,omitempty"`
 }
@@ -58,7 +57,7 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	localBase, err := url.Parse(c.cfg.LocalURL)
+	localBase, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", c.cfg.LocalPort))
 	if err != nil {
 		return fmt.Errorf("invalid local URL: %w", err)
 	}
@@ -192,10 +191,9 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	hostname, _ := os.Hostname()
 	body, _ := json.Marshal(registerRequest{
 		Mode:           mode,
-		Subdomain:      strings.TrimSpace(c.cfg.Subdomain),
-		LocalScheme:    "http",
+		Subdomain:      strings.TrimSpace(c.cfg.Name),
 		ClientHostname: strings.TrimSpace(hostname),
-		LocalPort:      localPort(c.cfg.LocalURL),
+		LocalPort:      fmt.Sprintf("%d", c.cfg.LocalPort),
 	})
 	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
@@ -272,24 +270,6 @@ func cloneHeaders(h http.Header) map[string][]string {
 		out[k] = c
 	}
 	return out
-}
-
-func localPort(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	if p := strings.TrimSpace(u.Port()); p != "" {
-		return p
-	}
-	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
-	default:
-		return ""
-	}
 }
 
 func nextBackoff(current time.Duration) time.Duration {

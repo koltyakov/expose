@@ -10,7 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -19,16 +22,18 @@ import (
 )
 
 type registerRequest struct {
-	Mode         string `json:"mode"`
-	Subdomain    string `json:"subdomain,omitempty"`
-	CustomDomain string `json:"custom_domain,omitempty"`
-	LocalScheme  string `json:"local_scheme,omitempty"`
+	Mode           string `json:"mode"`
+	Subdomain      string `json:"subdomain,omitempty"`
+	LocalScheme    string `json:"local_scheme,omitempty"`
+	ClientHostname string `json:"client_hostname,omitempty"`
+	LocalPort      string `json:"local_port,omitempty"`
 }
 
 type registerResponse struct {
-	TunnelID  string `json:"tunnel_id"`
-	PublicURL string `json:"public_url"`
-	WSURL     string `json:"ws_url"`
+	TunnelID      string `json:"tunnel_id"`
+	PublicURL     string `json:"public_url"`
+	WSURL         string `json:"ws_url"`
+	ServerTLSMode string `json:"server_tls_mode"`
 }
 
 type Client struct {
@@ -36,6 +41,11 @@ type Client struct {
 	log    *slog.Logger
 	client *http.Client
 }
+
+const (
+	reconnectInitialDelay = 2 * time.Second
+	reconnectMaxDelay     = 1 * time.Minute
+)
 
 func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 	return &Client{
@@ -48,12 +58,44 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	reg, err := c.register(ctx)
+	localBase, err := url.Parse(c.cfg.LocalURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid local URL: %w", err)
 	}
-	c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
 
+	backoff := reconnectInitialDelay
+	for {
+		reg, err := c.register(ctx)
+		if err != nil {
+			c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.String())
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(backoff):
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+		backoff = reconnectInitialDelay
+		c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
+		if reg.ServerTLSMode != "" {
+			c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
+		}
+
+		err = c.runSession(ctx, localBase, reg)
+		if ctx.Err() != nil {
+			return nil
+		}
+		c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", reconnectInitialDelay.String())
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(reconnectInitialDelay):
+		}
+	}
+}
+
+func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, reg.WSURL, nil)
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
@@ -68,23 +110,50 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}()
 	defer close(stopClose)
-
-	localBase, err := url.Parse(c.cfg.LocalURL)
-	if err != nil {
-		return fmt.Errorf("invalid local URL: %w", err)
+	var writeMu sync.Mutex
+	writeJSON := func(msg tunnelproto.Message) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteJSON(msg)
+	}
+	keepaliveErr := make(chan error, 1)
+	if c.cfg.PingInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(c.cfg.PingInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
+						select {
+						case keepaliveErr <- err:
+						default:
+						}
+						return
+					}
+				}
+			}
+		}()
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return ctx.Err()
+		case err := <-keepaliveErr:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
 		default:
 		}
 
 		var msg tunnelproto.Message
 		if err := conn.ReadJSON(&msg); err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return ctx.Err()
 			}
 			return err
 		}
@@ -94,23 +163,23 @@ func (c *Client) Run(ctx context.Context) error {
 				continue
 			}
 			resp := c.forwardLocal(ctx, localBase, msg.Request)
-			if err := conn.WriteJSON(tunnelproto.Message{
+			if err := writeJSON(tunnelproto.Message{
 				Kind:     tunnelproto.KindResponse,
 				Response: resp,
 			}); err != nil {
 				if ctx.Err() != nil {
-					return nil
+					return ctx.Err()
 				}
 				return err
 			}
 		case tunnelproto.KindPong, tunnelproto.KindPing:
 			if msg.Kind == tunnelproto.KindPing {
-				if err := conn.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && ctx.Err() == nil {
+				if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && ctx.Err() == nil {
 					return err
 				}
 			}
 		case tunnelproto.KindClose:
-			return nil
+			return errors.New("server closed tunnel")
 		}
 	}
 }
@@ -120,11 +189,13 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	if c.cfg.Permanent {
 		mode = "permanent"
 	}
+	hostname, _ := os.Hostname()
 	body, _ := json.Marshal(registerRequest{
-		Mode:         mode,
-		Subdomain:    strings.TrimSpace(c.cfg.Subdomain),
-		CustomDomain: strings.TrimSpace(c.cfg.Domain),
-		LocalScheme:  "http",
+		Mode:           mode,
+		Subdomain:      strings.TrimSpace(c.cfg.Subdomain),
+		LocalScheme:    "http",
+		ClientHostname: strings.TrimSpace(hostname),
+		LocalPort:      localPort(c.cfg.LocalURL),
 	})
 	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
@@ -201,4 +272,33 @@ func cloneHeaders(h http.Header) map[string][]string {
 		out[k] = c
 	}
 	return out
+}
+
+func localPort(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if p := strings.TrimSpace(u.Port()); p != "" {
+		return p
+	}
+	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func nextBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return reconnectInitialDelay
+	}
+	next := current * 2
+	if next > reconnectMaxDelay {
+		return reconnectMaxDelay
+	}
+	return next
 }

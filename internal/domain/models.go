@@ -5,7 +5,6 @@ import "time"
 const (
 	DomainTypeTemporarySubdomain = "temporary_subdomain"
 	DomainTypePermanentSubdomain = "permanent_subdomain"
-	DomainTypeCustom             = "custom_domain"
 )
 
 const (

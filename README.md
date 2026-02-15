@@ -11,8 +11,8 @@ It has two modes:
 - API key auth
 - Temporary tunnels with auto-generated subdomains
 - Permanent tunnels with reserved hostnames
-- Bring your own custom domain
 - Automatic SSL via Let's Encrypt (ACME HTTP-01)
+- Optional static wildcard TLS certs (DNS-01) with dynamic ACME fallback
 - Single binary CLI
 
 ## Install
@@ -84,8 +84,8 @@ expose server apikey revoke [flags]
 - `--api-key` API key (required)
 - `--local` local upstream URL, default `http://127.0.0.1:3000`
 - `--subdomain` requested subdomain
-- `--domain` custom domain
 - `--permanent` reserve hostname across reconnects
+- If `--subdomain` is empty and server runs without wildcard TLS, server attempts a stable short hash subdomain from client machine name + local port.
 
 ### Server flags
 
@@ -95,9 +95,32 @@ expose server apikey revoke [flags]
 - `--listen` HTTPS listen address, default `:443`
 - `--http-challenge-listen` HTTP challenge listen address, default `:80`
 - `--public-url` public server URL used for WS connect URLs
+- `--tls-mode` TLS strategy: `auto|dynamic|wildcard` (default `auto`)
 - `--cert-cache-dir` cert cache dir, default `./cert-cache`
+- `--tls-cert-file` static TLS certificate PEM file (optional)
+- `--tls-key-file` static TLS key PEM file (optional)
 - `--log-level` `debug|info|warn|error`
 - `--insecure-http` disable ACME/TLS and run plain HTTP
+
+### Wildcard TLS (Let's Encrypt DNS-01)
+
+Use this when you want one cert for `example.com` + `*.example.com` instead of per-host cert issuance.
+
+1. Set `EXPOSE_TLS_MODE=wildcard`.
+2. Create a DNS API token in your DNS provider with permission to edit TXT records for your zone.
+3. Use Certbot with your DNS provider plugin to issue:
+   - `example.com`
+   - `*.example.com`
+4. Point `EXPOSE_TLS_CERT_FILE` to `fullchain.pem` and `EXPOSE_TLS_KEY_FILE` to `privkey.pem` (or copy them to `EXPOSE_CERT_CACHE_DIR/wildcard.crt` and `EXPOSE_CERT_CACHE_DIR/wildcard.key`).
+5. Restart server.
+
+Example Certbot shape (replace `<provider>` with your plugin):
+
+```bash
+certbot certonly --agree-tos --email you@example.com --non-interactive \
+  --dns-<provider> --dns-<provider>-credentials <credentials-file> \
+  -d example.com -d '*.example.com'
+```
 
 ## Make targets
 
@@ -115,3 +138,10 @@ make build
 - Server is single-node and stores state in SQLite.
 - Permanent tunnels return `503` while offline.
 - Temporary tunnels are released when client disconnects.
+- Client heartbeat timeout is based on last inbound tunnel message (ping or response), reducing false disconnects.
+- Inactive temporary domains and their certificate cache entries are removed by retention-based cleanup.
+- Client receives the effective server TLS mode in register response (`dynamic` or `wildcard`) and logs it.
+- TLS modes:
+  - `auto`: use wildcard cert if available, else dynamic per-host ACME fallback.
+  - `dynamic`: force dynamic per-host ACME only.
+  - `wildcard`: force wildcard mode; if certs are missing, startup prints DNS-01/API walkthrough and exits.

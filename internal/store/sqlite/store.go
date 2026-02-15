@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS connect_tokens (
 CREATE INDEX IF NOT EXISTS idx_domains_hostname ON domains(hostname);
 CREATE INDEX IF NOT EXISTS idx_tunnels_state ON tunnels(state);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_domains_type_status ON domains(type, status);
+CREATE INDEX IF NOT EXISTS idx_tunnels_domain_id ON tunnels(domain_id);
 `
 	_, err := s.db.ExecContext(ctx, ddl)
 	return err
@@ -150,18 +152,67 @@ func (s *Store) ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, 
 	return count, err
 }
 
-func (s *Store) AllocateDomainAndTunnel(ctx context.Context, keyID, mode, subdomain, customDomain, baseDomain string) (domain.Domain, domain.Tunnel, error) {
+func (s *Store) IsHostnameActive(ctx context.Context, host string) (bool, error) {
+	host = normalizeHostname(host)
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM domains WHERE hostname = ? AND status = ? LIMIT 1`, host, domain.DomainStatusActive).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) ResetConnectedTunnels(ctx context.Context) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.ExecContext(ctx, `
+UPDATE domains
+SET status = ?
+WHERE id IN (
+	SELECT domain_id
+	FROM tunnels
+	WHERE state = ? AND is_temporary = 1
+)`, domain.DomainStatusInactive, domain.TunnelStateConnected); err != nil {
+		return 0, err
+	}
+
+	res, err := tx.ExecContext(ctx, `
+UPDATE tunnels
+SET state = ?, disconnected_at = ?
+WHERE state = ?`, domain.TunnelStateDisconnected, time.Now().UTC(), domain.TunnelStateConnected)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
+func (s *Store) AllocateDomainAndTunnel(ctx context.Context, keyID, mode, subdomain, baseDomain string) (domain.Domain, domain.Tunnel, error) {
 	baseDomain = strings.ToLower(strings.TrimSpace(baseDomain))
 	subdomain = normalizeHostLabel(subdomain)
-	customDomain = normalizeHostname(customDomain)
 
 	isTemporary := mode == "temporary"
 	var dType string
 	var hostname string
-	if customDomain != "" {
-		dType = domain.DomainTypeCustom
-		hostname = customDomain
-	} else if isTemporary {
+	if isTemporary {
 		dType = domain.DomainTypeTemporarySubdomain
 		if subdomain == "" {
 			gen, err := s.generateSubdomain(ctx, baseDomain)
@@ -174,7 +225,7 @@ func (s *Store) AllocateDomainAndTunnel(ctx context.Context, keyID, mode, subdom
 	} else {
 		dType = domain.DomainTypePermanentSubdomain
 		if subdomain == "" {
-			return domain.Domain{}, domain.Tunnel{}, errors.New("permanent mode requires subdomain or custom domain")
+			return domain.Domain{}, domain.Tunnel{}, errors.New("permanent mode requires subdomain")
 		}
 		hostname = fmt.Sprintf("%s.%s", subdomain, baseDomain)
 	}
@@ -203,8 +254,8 @@ func (s *Store) AllocateDomainAndTunnel(ctx context.Context, keyID, mode, subdom
 		var existingID string
 		err = tx.QueryRowContext(ctx, `
 SELECT id FROM domains
-WHERE hostname = ? AND api_key_id = ? AND type IN (?, ?)`,
-			hostname, keyID, domain.DomainTypePermanentSubdomain, domain.DomainTypeCustom).Scan(&existingID)
+WHERE hostname = ? AND api_key_id = ? AND type = ?`,
+			hostname, keyID, domain.DomainTypePermanentSubdomain).Scan(&existingID)
 		if err == nil {
 			d.ID = existingID
 			_, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID)
@@ -224,13 +275,30 @@ VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status,
 			}
 		}
 	} else {
-		if _, err = tx.ExecContext(ctx, `
-INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+		var existingID, existingAPIKeyID, existingType string
+		err = tx.QueryRowContext(ctx, `
+SELECT id, api_key_id, type
+FROM domains
+WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingType)
+		if err == nil {
+			if existingAPIKeyID != keyID || existingType != domain.DomainTypeTemporarySubdomain {
 				return domain.Domain{}, domain.Tunnel{}, errors.New("hostname already in use")
 			}
+			d.ID = existingID
+			if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID); err != nil {
+				return domain.Domain{}, domain.Tunnel{}, err
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return domain.Domain{}, domain.Tunnel{}, err
+		} else {
+			if _, err = tx.ExecContext(ctx, `
+INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "unique") {
+					return domain.Domain{}, domain.Tunnel{}, errors.New("hostname already in use")
+				}
+				return domain.Domain{}, domain.Tunnel{}, err
+			}
 		}
 	}
 
@@ -319,10 +387,17 @@ func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) erro
 		}
 	}()
 
+	var state string
 	var isTemp bool
 	var domainID string
-	if err = tx.QueryRowContext(ctx, `SELECT is_temporary, domain_id FROM tunnels WHERE id = ?`, tunnelID).Scan(&isTemp, &domainID); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT state, is_temporary, domain_id FROM tunnels WHERE id = ?`, tunnelID).Scan(&state, &isTemp, &domainID); err != nil {
 		return err
+	}
+	if state == domain.TunnelStateClosed {
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	if _, err = tx.ExecContext(ctx, `UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id = ?`, domain.TunnelStateDisconnected, time.Now().UTC(), tunnelID); err != nil {
@@ -338,6 +413,125 @@ func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) erro
 		return err
 	}
 	return nil
+}
+
+func (s *Store) CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var state string
+	var isTemp bool
+	var domainID string
+	var domainType string
+	var hostname string
+	if err = tx.QueryRowContext(ctx, `
+SELECT t.state, t.is_temporary, t.domain_id, d.type, d.hostname
+FROM tunnels t
+JOIN domains d ON d.id = t.domain_id
+WHERE t.id = ?`, tunnelID).Scan(&state, &isTemp, &domainID, &domainType, &hostname); err != nil {
+		return "", false, err
+	}
+
+	if !isTemp || domainType != domain.DomainTypeTemporarySubdomain {
+		if err = tx.Commit(); err != nil {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	if state == domain.TunnelStateClosed {
+		if err = tx.Commit(); err != nil {
+			return "", false, err
+		}
+		return hostname, false, nil
+	}
+
+	now := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id = ?`, domain.TunnelStateClosed, now, tunnelID); err != nil {
+		return "", false, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusInactive, domainID); err != nil {
+		return "", false, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return "", false, err
+	}
+	return hostname, true, nil
+}
+
+func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT
+	d.id,
+	d.hostname
+FROM domains d
+LEFT JOIN tunnels t ON t.domain_id = d.id
+WHERE d.type = ? AND d.status = ?
+GROUP BY d.id, d.hostname, d.created_at, d.last_seen_at
+HAVING COALESCE(MAX(t.disconnected_at), MAX(t.connected_at), d.last_seen_at, d.created_at) < ?
+ORDER BY COALESCE(MAX(t.disconnected_at), MAX(t.connected_at), d.last_seen_at, d.created_at) ASC
+LIMIT ?`,
+		domain.DomainTypeTemporarySubdomain, domain.DomainStatusInactive, olderThan.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		id       string
+		hostname string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err = rows.Scan(&c.id, &c.hostname); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, c)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	hosts := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM connect_tokens WHERE tunnel_id IN (SELECT id FROM tunnels WHERE domain_id = ?)`, c.id); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tunnels WHERE domain_id = ?`, c.id); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id = ?`, c.id); err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, c.hostname)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return hosts, nil
 }
 
 func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error) {

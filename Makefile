@@ -37,7 +37,8 @@ run-server:
 	go run ./cmd/expose server \
 		--base-domain $${EXPOSE_BASE_DOMAIN:-example.com} \
 		--db $${EXPOSE_DB_PATH:-./expose.db} \
-		--api-key-pepper $${EXPOSE_API_KEY_PEPPER:-change-me}
+		--api-key-pepper $${EXPOSE_API_KEY_PEPPER:-change-me} \
+		--tls-mode $${EXPOSE_TLS_MODE:-auto}
 
 run-client:
 	go run ./cmd/expose client \

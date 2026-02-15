@@ -66,10 +66,11 @@ const (
 )
 
 type registerRequest struct {
-	Mode           string `json:"mode"`
-	Subdomain      string `json:"subdomain,omitempty"`
-	ClientHostname string `json:"client_hostname,omitempty"`
-	LocalPort      string `json:"local_port,omitempty"`
+	Mode            string `json:"mode"`
+	Subdomain       string `json:"subdomain,omitempty"`
+	ClientHostname  string `json:"client_hostname,omitempty"`
+	ClientMachineID string `json:"client_machine_id,omitempty"`
+	LocalPort       string `json:"local_port,omitempty"`
 }
 
 type registerResponse struct {
@@ -258,10 +259,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			autoStableSubdomain = true
 		}
 	}
+	clientMachineID := normalizedClientMachineID(req.ClientMachineID, req.ClientHostname)
 
-	domainRec, tunnelRec, err := s.store.AllocateDomainAndTunnel(r.Context(), keyID, req.Mode, req.Subdomain, s.cfg.BaseDomain)
-	if autoStableSubdomain && err != nil && strings.Contains(strings.ToLower(err.Error()), "hostname already in use") {
-		domainRec, tunnelRec, err = s.store.AllocateDomainAndTunnel(r.Context(), keyID, req.Mode, "", s.cfg.BaseDomain)
+	domainRec, tunnelRec, err := s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, req.Subdomain, s.cfg.BaseDomain, clientMachineID)
+	if isHostnameInUseError(err) {
+		if swappedDomain, swappedTunnel, swapped, swapErr := s.trySwapInactiveClientSession(r.Context(), keyID, req.Subdomain, clientMachineID); swapErr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			s.log.Error("failed to swap inactive tunnel session", "subdomain", req.Subdomain, "err", swapErr)
+			return
+		} else if swapped {
+			domainRec = swappedDomain
+			tunnelRec = swappedTunnel
+			err = nil
+		}
+	}
+	if autoStableSubdomain && isHostnameInUseError(err) {
+		domainRec, tunnelRec, err = s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, "", s.cfg.BaseDomain, clientMachineID)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -804,4 +817,75 @@ func removeTunnelCertCache(cacheDir, hostname string) (int, error) {
 		removed++
 	}
 	return removed, nil
+}
+
+func isHostnameInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "hostname already in use")
+}
+
+func normalizedClientMachineID(machineID, hostname string) string {
+	if v := strings.TrimSpace(machineID); v != "" {
+		return v
+	}
+	return strings.ToLower(strings.TrimSpace(hostname))
+}
+
+func (s *Server) trySwapInactiveClientSession(ctx context.Context, keyID, subdomain, clientMachineID string) (domain.Domain, domain.Tunnel, bool, error) {
+	subdomain = normalizeHost(subdomain)
+	clientMachineID = strings.TrimSpace(clientMachineID)
+	if subdomain == "" || clientMachineID == "" {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+
+	host := subdomain + "." + normalizeHost(s.cfg.BaseDomain)
+	route, err := s.store.FindRouteByHost(ctx, host)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+	if err != nil {
+		return domain.Domain{}, domain.Tunnel{}, false, err
+	}
+	if route.Domain.APIKeyID != keyID {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+
+	existingMachineID := strings.TrimSpace(route.Tunnel.ClientMeta)
+	if existingMachineID != "" && existingMachineID != clientMachineID {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+	if s.isSessionCurrentlyActive(route.Tunnel.ID) {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+
+	tunnelRec, err := s.store.SwapTunnelSession(ctx, route.Domain.ID, keyID, clientMachineID)
+	if err != nil {
+		return domain.Domain{}, domain.Tunnel{}, false, err
+	}
+	s.log.Info("inactive tunnel session swapped",
+		"hostname", route.Domain.Hostname,
+		"old_tunnel_id", route.Tunnel.ID,
+		"new_tunnel_id", tunnelRec.ID)
+	return route.Domain, tunnelRec, true, nil
+}
+
+func (s *Server) isSessionCurrentlyActive(tunnelID string) bool {
+	s.hub.mu.RLock()
+	sess := s.hub.sessions[tunnelID]
+	s.hub.mu.RUnlock()
+	if sess == nil {
+		return false
+	}
+	if sess.closing.Load() {
+		return false
+	}
+	if time.Since(sess.lastSeen()) <= s.cfg.ClientPingTimeout {
+		return true
+	}
+	if sess.closing.CompareAndSwap(false, true) {
+		_ = sess.conn.Close()
+	}
+	return false
 }

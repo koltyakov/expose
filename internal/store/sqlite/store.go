@@ -242,8 +242,13 @@ WHERE state = ?`, domain.TunnelStateDisconnected, time.Now().UTC(), domain.Tunne
 }
 
 func (s *Store) AllocateDomainAndTunnel(ctx context.Context, keyID, mode, subdomain, baseDomain string) (domain.Domain, domain.Tunnel, error) {
+	return s.AllocateDomainAndTunnelWithClientMeta(ctx, keyID, mode, subdomain, baseDomain, "")
+}
+
+func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID, mode, subdomain, baseDomain, clientMeta string) (domain.Domain, domain.Tunnel, error) {
 	baseDomain = strings.ToLower(strings.TrimSpace(baseDomain))
 	subdomain = normalizeHostLabel(subdomain)
+	clientMeta = strings.TrimSpace(clientMeta)
 
 	isTemporary := mode == "temporary"
 	var dType string
@@ -344,12 +349,13 @@ VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status,
 		DomainID:    d.ID,
 		State:       domain.TunnelStateDisconnected,
 		IsTemporary: isTemporary,
+		ClientMeta:  clientMeta,
 	}
 
 	if _, err = tx.ExecContext(ctx, `
 INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, connected_at, disconnected_at)
-VALUES(?, ?, ?, ?, ?, NULL, NULL, NULL)`,
-		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary)); err != nil {
+VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)`,
+		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
 
@@ -357,6 +363,66 @@ VALUES(?, ?, ?, ?, ?, NULL, NULL, NULL)`,
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
 	return d, t, nil
+}
+
+func (s *Store) SwapTunnelSession(ctx context.Context, domainID, keyID, clientMeta string) (domain.Tunnel, error) {
+	clientMeta = strings.TrimSpace(clientMeta)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Tunnel{}, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var apiKeyID string
+	var domainType string
+	if err = tx.QueryRowContext(ctx, `
+SELECT api_key_id, type
+FROM domains
+WHERE id = ?`, domainID).Scan(&apiKeyID, &domainType); err != nil {
+		return domain.Tunnel{}, err
+	}
+	if apiKeyID != keyID {
+		return domain.Tunnel{}, errors.New("hostname already in use")
+	}
+
+	now := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `
+UPDATE tunnels
+SET state = ?, disconnected_at = ?
+WHERE domain_id = ? AND state = ?`,
+		domain.TunnelStateDisconnected, now, domainID, domain.TunnelStateConnected); err != nil {
+		return domain.Tunnel{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+UPDATE domains
+SET status = ?
+WHERE id = ?`, domain.DomainStatusActive, domainID); err != nil {
+		return domain.Tunnel{}, err
+	}
+
+	t := domain.Tunnel{
+		ID:          newID("t"),
+		APIKeyID:    keyID,
+		DomainID:    domainID,
+		State:       domain.TunnelStateDisconnected,
+		IsTemporary: domainType == domain.DomainTypeTemporarySubdomain,
+		ClientMeta:  clientMeta,
+	}
+	if _, err = tx.ExecContext(ctx, `
+INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, connected_at, disconnected_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)`,
+		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
+		return domain.Tunnel{}, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return domain.Tunnel{}, err
+	}
+	return t, nil
 }
 
 func (s *Store) CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error) {
@@ -667,6 +733,13 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func nullableString(v string) any {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return v
 }
 
 func ensureParentDir(path string) error {

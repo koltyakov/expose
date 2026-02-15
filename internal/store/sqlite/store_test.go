@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/expose/internal/domain"
 )
 
 func TestAllocateTemporaryAndDisconnect(t *testing.T) {
@@ -406,6 +408,82 @@ func TestTemporarySubdomainCannotBeReusedAcrossAPIKeys(t *testing.T) {
 	}
 	if _, _, err := store.AllocateDomainAndTunnel(ctx, k2.ID, "temporary", "stable2", "example.com"); err == nil {
 		t.Fatal("expected hostname conflict across API keys")
+	}
+}
+
+func TestAllocateDomainAndTunnelWithClientMeta(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_client_meta_alloc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d, tunnel, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, k.ID, "temporary", "stable-meta", "example.com", "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Hostname != "stable-meta.example.com" {
+		t.Fatalf("expected hostname stable-meta.example.com, got %s", d.Hostname)
+	}
+	if tunnel.ClientMeta != "machine-1" {
+		t.Fatalf("expected client meta machine-1, got %q", tunnel.ClientMeta)
+	}
+
+	route, err := store.FindRouteByHost(ctx, d.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.ClientMeta != "machine-1" {
+		t.Fatalf("expected stored client meta machine-1, got %q", route.Tunnel.ClientMeta)
+	}
+}
+
+func TestSwapTunnelSession(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_swap_session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, oldTunnel, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, k.ID, "temporary", "stable-swap", "example.com", "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, oldTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	newTunnel, err := store.SwapTunnelSession(ctx, d.ID, k.ID, "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newTunnel.ID == oldTunnel.ID {
+		t.Fatal("expected a new tunnel id for swapped session")
+	}
+	if newTunnel.DomainID != d.ID {
+		t.Fatalf("expected tunnel domain %s, got %s", d.ID, newTunnel.DomainID)
+	}
+	if newTunnel.ClientMeta != "machine-1" {
+		t.Fatalf("expected client meta machine-1, got %q", newTunnel.ClientMeta)
+	}
+
+	var oldState string
+	if err := store.db.QueryRowContext(ctx, `SELECT state FROM tunnels WHERE id = ?`, oldTunnel.ID).Scan(&oldState); err != nil {
+		t.Fatal(err)
+	}
+	if oldState != domain.TunnelStateDisconnected {
+		t.Fatalf("expected old tunnel to be disconnected, got %s", oldState)
 	}
 }
 

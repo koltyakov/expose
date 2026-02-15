@@ -22,10 +22,11 @@ import (
 )
 
 type registerRequest struct {
-	Mode           string `json:"mode"`
-	Subdomain      string `json:"subdomain,omitempty"`
-	ClientHostname string `json:"client_hostname,omitempty"`
-	LocalPort      string `json:"local_port,omitempty"`
+	Mode            string `json:"mode"`
+	Subdomain       string `json:"subdomain,omitempty"`
+	ClientHostname  string `json:"client_hostname,omitempty"`
+	ClientMachineID string `json:"client_machine_id,omitempty"`
+	LocalPort       string `json:"local_port,omitempty"`
 }
 
 type registerResponse struct {
@@ -66,6 +67,9 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		reg, err := c.register(ctx)
 		if err != nil {
+			if isNonRetriableRegisterError(err) {
+				return err
+			}
 			c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.String())
 			select {
 			case <-ctx.Done():
@@ -189,11 +193,13 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 		mode = "permanent"
 	}
 	hostname, _ := os.Hostname()
+	machineID := resolveClientMachineID(hostname)
 	body, _ := json.Marshal(registerRequest{
-		Mode:           mode,
-		Subdomain:      strings.TrimSpace(c.cfg.Name),
-		ClientHostname: strings.TrimSpace(hostname),
-		LocalPort:      fmt.Sprintf("%d", c.cfg.LocalPort),
+		Mode:            mode,
+		Subdomain:       strings.TrimSpace(c.cfg.Name),
+		ClientHostname:  strings.TrimSpace(hostname),
+		ClientMachineID: machineID,
+		LocalPort:       fmt.Sprintf("%d", c.cfg.LocalPort),
 	})
 	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
@@ -220,6 +226,23 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 		return registerResponse{}, errors.New("server returned empty ws_url")
 	}
 	return out, nil
+}
+
+func resolveClientMachineID(hostname string) string {
+	if v := strings.TrimSpace(os.Getenv("EXPOSE_CLIENT_MACHINE_ID")); v != "" {
+		return v
+	}
+	for _, p := range []string{
+		"/etc/machine-id",
+		"/var/lib/dbus/machine-id",
+	} {
+		if b, err := os.ReadFile(p); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return strings.TrimSpace(hostname)
 }
 
 func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelproto.HTTPRequest) *tunnelproto.HTTPResponse {
@@ -281,4 +304,12 @@ func nextBackoff(current time.Duration) time.Duration {
 		return reconnectMaxDelay
 	}
 	return next
+}
+
+func isNonRetriableRegisterError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "hostname already in use")
 }

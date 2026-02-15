@@ -59,6 +59,15 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("ws connect: %w", err)
 	}
 	defer conn.Close()
+	stopClose := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopClose:
+		}
+	}()
+	defer close(stopClose)
 
 	localBase, err := url.Parse(c.cfg.LocalURL)
 	if err != nil {
@@ -74,6 +83,9 @@ func (c *Client) Run(ctx context.Context) error {
 
 		var msg tunnelproto.Message
 		if err := conn.ReadJSON(&msg); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		switch msg.Kind {
@@ -86,11 +98,16 @@ func (c *Client) Run(ctx context.Context) error {
 				Kind:     tunnelproto.KindResponse,
 				Response: resp,
 			}); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
 				return err
 			}
 		case tunnelproto.KindPong, tunnelproto.KindPing:
 			if msg.Kind == tunnelproto.KindPing {
-				_ = conn.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPong})
+				if err := conn.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && ctx.Err() == nil {
+					return err
+				}
 			}
 		case tunnelproto.KindClose:
 			return nil

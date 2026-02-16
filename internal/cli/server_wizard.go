@@ -701,7 +701,6 @@ func printWizardNextSteps(out io.Writer, a serverWizardAnswers) {
 	_, _ = fmt.Fprintln(out, "Next steps")
 	_, _ = fmt.Fprintln(out, "  1) Start the server")
 	_, _ = fmt.Fprintln(out, "     expose server")
-	_, _ = fmt.Fprintln(out, "     # or: make run-server")
 
 	if strings.TrimSpace(a.GeneratedKey) != "" {
 		_, _ = fmt.Fprintln(out, "  2) Login client (API key was generated and saved to .env)")
@@ -713,5 +712,4 @@ func printWizardNextSteps(out io.Writer, a serverWizardAnswers) {
 	}
 	_, _ = fmt.Fprintln(out, "  3) Expose a local app")
 	_, _ = fmt.Fprintln(out, "     expose http 3000")
-	_, _ = fmt.Fprintln(out, "     # or: make run-client EXPOSE_PORT=3000")
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,11 +24,35 @@ import (
 // Store wraps a SQLite database connection for all expose persistence operations.
 type Store struct {
 	db *sql.DB
+
+	touchMu              sync.Mutex
+	lastDomainTouch      map[string]time.Time
+	touchMinInterval     time.Duration
+	touchCleanupInterval time.Duration
+	nextTouchCleanupAt   time.Time
+}
+
+const defaultTouchMinInterval = 30 * time.Second
+const defaultTouchCleanupInterval = 5 * time.Minute
+
+const defaultMaxOpenConns = 1
+const defaultMaxIdleConns = 1
+
+// OpenOptions controls SQLite connection pool sizing.
+type OpenOptions struct {
+	MaxOpenConns int
+	MaxIdleConns int
 }
 
 // Open creates or opens the SQLite database at path, runs migrations, and
 // enables WAL mode for improved concurrent read performance.
 func Open(path string) (*Store, error) {
+	return OpenWithOptions(path, OpenOptions{})
+}
+
+// OpenWithOptions creates or opens the SQLite database at path with tunable
+// connection pool settings, runs migrations, and enables WAL mode.
+func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	if err := ensureParentDir(path); err != nil {
 		return nil, err
 	}
@@ -35,9 +60,21 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// SQLite is more stable with a single writer connection and explicit busy timeout.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// Default is conservative (1/1), but can be raised for read-heavy workloads.
+	maxOpenConns := opts.MaxOpenConns
+	if maxOpenConns <= 0 {
+		maxOpenConns = defaultMaxOpenConns
+	}
+	maxIdleConns := opts.MaxIdleConns
+	if maxIdleConns <= 0 {
+		maxIdleConns = defaultMaxIdleConns
+	}
+	if maxIdleConns > maxOpenConns {
+		maxIdleConns = maxOpenConns
+	}
+
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
 
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
@@ -51,7 +88,14 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("sqlite setup (%s): %w", pragma, err)
 		}
 	}
-	s := &Store{db: db}
+	now := time.Now().UTC()
+	s := &Store{
+		db:                   db,
+		lastDomainTouch:      make(map[string]time.Time),
+		touchMinInterval:     defaultTouchMinInterval,
+		touchCleanupInterval: defaultTouchCleanupInterval,
+		nextTouchCleanupAt:   now.Add(defaultTouchCleanupInterval),
+	}
 	if err := s.Migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -109,6 +153,8 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_domains_type_status ON domains(type, status);
 CREATE INDEX IF NOT EXISTS idx_tunnels_domain_id ON tunnels(domain_id);
 CREATE INDEX IF NOT EXISTS idx_tunnels_domain_state ON tunnels(domain_id, state);
+CREATE INDEX IF NOT EXISTS idx_tunnels_domain_connected_at ON tunnels(domain_id, connected_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_connect_tokens_tunnel_id ON connect_tokens(tunnel_id);
 `
 	_, err := s.db.ExecContext(ctx, ddl)
 	return err
@@ -674,9 +720,14 @@ SELECT
  d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
  t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.connected_at, t.disconnected_at
 FROM domains d
-JOIN tunnels t ON t.domain_id = d.id
+JOIN tunnels t ON t.id = (
+	SELECT id
+	FROM tunnels
+	WHERE domain_id = d.id
+	ORDER BY connected_at DESC, id DESC
+	LIMIT 1
+)
 WHERE d.hostname = ?
-ORDER BY t.connected_at DESC
 LIMIT 1`, host).Scan(
 		&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
 		&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &connectedAt, &disconnectedAt,
@@ -703,8 +754,54 @@ LIMIT 1`, host).Scan(
 }
 
 func (s *Store) TouchDomain(ctx context.Context, domainID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE domains SET last_seen_at = ? WHERE id = ?`, time.Now().UTC(), domainID)
+	now := time.Now().UTC()
+	if !s.reserveDomainTouch(domainID, now) {
+		return nil
+	}
+
+	_, err := s.db.ExecContext(ctx, `UPDATE domains SET last_seen_at = ? WHERE id = ?`, now, domainID)
+	if err != nil {
+		s.rollbackDomainTouch(domainID, now)
+	}
 	return err
+}
+
+func (s *Store) reserveDomainTouch(domainID string, now time.Time) bool {
+	domainID = strings.TrimSpace(domainID)
+	if domainID == "" {
+		return false
+	}
+
+	s.touchMu.Lock()
+	defer s.touchMu.Unlock()
+
+	if now.After(s.nextTouchCleanupAt) {
+		s.cleanupStaleTouchEntriesLocked(now)
+		s.nextTouchCleanupAt = now.Add(s.touchCleanupInterval)
+	}
+	if last, ok := s.lastDomainTouch[domainID]; ok && now.Sub(last) < s.touchMinInterval {
+		return false
+	}
+	s.lastDomainTouch[domainID] = now
+	return true
+}
+
+func (s *Store) rollbackDomainTouch(domainID string, reservedAt time.Time) {
+	s.touchMu.Lock()
+	defer s.touchMu.Unlock()
+
+	if last, ok := s.lastDomainTouch[domainID]; ok && last.Equal(reservedAt) {
+		delete(s.lastDomainTouch, domainID)
+	}
+}
+
+func (s *Store) cleanupStaleTouchEntriesLocked(now time.Time) {
+	cutoff := now.Add(-(s.touchMinInterval * 4))
+	for domainID, last := range s.lastDomainTouch {
+		if last.Before(cutoff) {
+			delete(s.lastDomainTouch, domainID)
+		}
+	}
 }
 
 func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (string, error) {

@@ -53,6 +53,7 @@ const (
 	maxConcurrentForwards      = 32
 	wsMessageBufferSize        = 64
 	clientWSWriteTimeout       = 15 * time.Second
+	clientWSReadLimit          = 32 * 1024 * 1024
 	localForwardResponseMaxB64 = 10 * 1024 * 1024
 )
 
@@ -121,6 +122,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
+	conn.SetReadLimit(clientWSReadLimit)
 
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 

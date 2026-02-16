@@ -54,6 +54,7 @@ type session struct {
 	conn             *websocket.Conn
 	writeMu          sync.Mutex
 	pending          sync.Map
+	pendingCount     atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
 }
@@ -71,7 +72,13 @@ const (
 	tlsModeWildcard      = "wildcard"
 	maxRegisterBodyBytes = 64 * 1024
 	minWSReadLimit       = 32 * 1024 * 1024
+	maxPendingPerSession = 256
 	wsWriteTimeout       = 15 * time.Second
+	httpsReadTimeout     = 30 * time.Second
+	httpsWriteTimeout    = 60 * time.Second
+	httpsIdleTimeout     = 120 * time.Second
+	httpsMaxHeaderBytes  = 1 << 20
+	httpIdleTimeout      = 60 * time.Second
 )
 
 type registerRequest struct {
@@ -171,6 +178,10 @@ func (s *Server) Run(ctx context.Context) error {
 		Addr:              s.cfg.ListenHTTPS,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       httpsReadTimeout,
+		WriteTimeout:      httpsWriteTimeout,
+		IdleTimeout:       httpsIdleTimeout,
+		MaxHeaderBytes:    httpsMaxHeaderBytes,
 		TLSConfig:         tlsConfig,
 	}
 
@@ -186,6 +197,10 @@ func (s *Server) Run(ctx context.Context) error {
 			Addr:              s.cfg.ListenHTTP,
 			Handler:           manager.HTTPHandler(http.NotFoundHandler()),
 			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			IdleTimeout:       httpIdleTimeout,
+			MaxHeaderBytes:    httpsMaxHeaderBytes,
 		}
 		go func() {
 			s.log.Info("starting ACME challenge server", "addr", s.cfg.ListenHTTP)
@@ -382,6 +397,7 @@ func (s *Server) readLoop(sess *session) {
 				continue
 			}
 			if v, ok := sess.pending.LoadAndDelete(msg.Response.ID); ok {
+				sess.releasePending()
 				ch := v.(chan *tunnelproto.HTTPResponse)
 				select {
 				case ch <- msg.Response:
@@ -434,6 +450,10 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reqID := s.nextRequestID()
+	if !sess.tryAcquirePending(maxPendingPerSession) {
+		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		return
+	}
 	requestHeaders := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeaders(requestHeaders)
 	msg := tunnelproto.Message{
@@ -451,7 +471,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	respCh := make(chan *tunnelproto.HTTPResponse, 1)
 	sess.pending.Store(reqID, respCh)
 	if err := sess.writeJSON(msg); err != nil {
-		sess.pending.Delete(reqID)
+		if _, ok := sess.pending.LoadAndDelete(reqID); ok {
+			sess.releasePending()
+		}
 		http.Error(w, "tunnel write failed", http.StatusBadGateway)
 		return
 	}
@@ -476,7 +498,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.store.TouchDomain(r.Context(), route.Domain.ID)
 	case <-time.After(s.cfg.RequestTimeout):
-		sess.pending.Delete(reqID)
+		if _, ok := sess.pending.LoadAndDelete(reqID); ok {
+			sess.releasePending()
+		}
 		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
 	}
 }
@@ -525,7 +549,11 @@ func (s *session) lastSeen() time.Time {
 }
 
 func (s *session) closePending() {
-	s.pending.Range(func(_, v any) bool {
+	s.pending.Range(func(k, v any) bool {
+		if _, ok := s.pending.LoadAndDelete(k); !ok {
+			return true
+		}
+		s.releasePending()
 		ch, ok := v.(chan *tunnelproto.HTTPResponse)
 		if !ok {
 			return true
@@ -533,6 +561,22 @@ func (s *session) closePending() {
 		close(ch)
 		return true
 	})
+}
+
+func (s *session) tryAcquirePending(limit int64) bool {
+	if limit <= 0 {
+		return true
+	}
+	next := s.pendingCount.Add(1)
+	if next <= limit {
+		return true
+	}
+	s.pendingCount.Add(-1)
+	return false
+}
+
+func (s *session) releasePending() {
+	s.pendingCount.Add(-1)
 }
 
 func normalizeHost(host string) string {

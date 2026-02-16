@@ -1,12 +1,12 @@
 # expose
 
 **expose** is a BYOI (Bring Your Own Infrastructure) HTTP tunnel.
-Run your own server, then expose local HTTP ports from any client machine — no third-party services required.
+Run your own server, then expose local HTTP ports from any client machine - no third-party services required.
 
 ## Features
 
 - **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certs.
-- **Env-first** configuration — minimal CLI flags needed.
+- **Env-first** configuration - minimal CLI flags needed.
 - Client `login` persists credentials so you authenticate once:
   | OS | Path |
   |---|---|
@@ -35,18 +35,19 @@ Build from source (requires Go 1.23+):
 go build -o bin/expose ./cmd/expose
 ```
 
-This produces `./bin/expose`. All examples below use `expose` — substitute with the full path to the binary if it is not in your `PATH`.
+This produces `./bin/expose`. All examples below use `expose` - substitute with the full path to the binary if it is not in your `PATH`.
 
 ## Defaults
 
-| Setting | Default | Env override |
-|---|---|---|
-| HTTPS listen | `:10443` | `EXPOSE_LISTEN_HTTPS` |
-| ACME HTTP-01 listen | `:10080` | `EXPOSE_LISTEN_HTTP_CHALLENGE` |
-| SQLite DB | `./expose.db` | `EXPOSE_DB_PATH` |
-| Cert cache | `./cert` | `EXPOSE_CERT_CACHE_DIR` |
+| Setting             | Default       | Env override                   |
+| ------------------- | ------------- | ------------------------------ |
+| HTTPS listen        | `:10443`      | `EXPOSE_LISTEN_HTTPS`          |
+| ACME HTTP-01 listen | `:10080`      | `EXPOSE_LISTEN_HTTP_CHALLENGE` |
+| SQLite DB           | `./expose.db` | `EXPOSE_DB_PATH`               |
+| Cert cache          | `./cert`      | `EXPOSE_CERT_CACHE_DIR`        |
 
 If you run behind Docker, NAT, or a router, forward:
+
 - `443 -> 10443` (TCP)
 - `80 -> 10080` (TCP)
 
@@ -139,12 +140,12 @@ expose version                           Print version
 
 ### Client flags
 
-| Flag | Env | Description |
-|---|---|---|
-| `--port` | `EXPOSE_PORT` | Local HTTP port on 127.0.0.1 (required) |
-| `--domain` | `EXPOSE_SUBDOMAIN` | Requested subdomain (e.g. `myapp`) |
-| `--server` | `EXPOSE_DOMAIN` | Server URL (HTTPS) |
-| `--api-key` | `EXPOSE_API_KEY` | API key |
+| Flag        | Env                | Description                             |
+| ----------- | ------------------ | --------------------------------------- |
+| `--port`    | `EXPOSE_PORT`      | Local HTTP port on 127.0.0.1 (required) |
+| `--domain`  | `EXPOSE_SUBDOMAIN` | Requested subdomain (e.g. `myapp`)      |
+| `--server`  | `EXPOSE_DOMAIN`    | Server URL (HTTPS)                      |
+| `--api-key` | `EXPOSE_API_KEY`   | API key                                 |
 
 **Examples:**
 
@@ -169,18 +170,18 @@ Why randomization exists:
 
 ### Server flags
 
-| Flag | Env | Default | Description |
-|---|---|---|---|
-| `--domain` | `EXPOSE_DOMAIN` | *(required)* | Public base domain |
-| `--listen` | `EXPOSE_LISTEN_HTTPS` | `:10443` | HTTPS listen address |
-| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE` | `:10080` | ACME challenge listener |
-| `--db` | `EXPOSE_DB_PATH` | `./expose.db` | SQLite DB path |
-| `--tls-mode` | `EXPOSE_TLS_MODE` | `auto` | `auto\|dynamic\|wildcard` |
-| `--cert-cache-dir` | `EXPOSE_CERT_CACHE_DIR` | `./cert` | Cert cache directory |
-| `--tls-cert-file` | `EXPOSE_TLS_CERT_FILE` | — | Static cert PEM (wildcard) |
-| `--tls-key-file` | `EXPOSE_TLS_KEY_FILE` | — | Static key PEM (wildcard) |
-| `--api-key-pepper` | `EXPOSE_API_KEY_PEPPER` | — | Explicit pepper override |
-| `--log-level` | `EXPOSE_LOG_LEVEL` | `info` | `debug\|info\|warn\|error` |
+| Flag                      | Env                            | Default       | Description                |
+| ------------------------- | ------------------------------ | ------------- | -------------------------- |
+| `--domain`                | `EXPOSE_DOMAIN`                | _(required)_  | Public base domain         |
+| `--listen`                | `EXPOSE_LISTEN_HTTPS`          | `:10443`      | HTTPS listen address       |
+| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE` | `:10080`      | ACME challenge listener    |
+| `--db`                    | `EXPOSE_DB_PATH`               | `./expose.db` | SQLite DB path             |
+| `--tls-mode`              | `EXPOSE_TLS_MODE`              | `auto`        | `auto\|dynamic\|wildcard`  |
+| `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`        | `./cert`      | Cert cache directory       |
+| `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`         | -             | Static cert PEM (wildcard) |
+| `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`          | -             | Static key PEM (wildcard)  |
+| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`        | -             | Explicit pepper override   |
+| `--log-level`             | `EXPOSE_LOG_LEVEL`             | `info`        | `debug\|info\|warn\|error` |
 
 ## Wildcard TLS Mode
 

@@ -1,0 +1,81 @@
+# Quick Start
+
+Get a local HTTP service publicly accessible in under 5 minutes.
+
+## Prerequisites
+
+- Go 1.23+ (to build from source)
+- A domain you control (e.g. `example.com`)
+- A server with a public IP (VPS, home server, etc.)
+
+## Build
+
+```bash
+go build -o bin/expose ./cmd/expose
+```
+
+## 1 - Start the server
+
+On your public-facing machine:
+
+```bash
+export EXPOSE_DOMAIN=example.com
+export EXPOSE_TLS_MODE=auto
+./bin/expose server
+```
+
+> Ports `10443` (HTTPS) and `10080` (ACME HTTP-01) must be reachable from the internet. See [Port Forwarding](port-forwarding.md) if you're behind a router.
+
+## 2 - Create an API key
+
+On the same server:
+
+```bash
+./bin/expose apikey create --name my-key
+```
+
+Copy the `api_key` value from the output.
+
+## 3 - Login from a client machine
+
+```bash
+./bin/expose login --server example.com --api-key <YOUR_API_KEY>
+```
+
+Credentials are saved to `~/.expose/settings.json` - you only need to do this once.
+
+## 4 - Expose a local port
+
+Start your local app (e.g. on port 3000), then:
+
+```bash
+./bin/expose http 3000
+```
+
+You'll see output like:
+
+```
+tunnel ready  public_url=https://k3xnz3.example.com  tunnel_id=...
+```
+
+Open the URL in your browser - traffic is tunnelled to `127.0.0.1:3000`.
+
+## Named subdomain
+
+Request a stable subdomain:
+
+```bash
+./bin/expose http --domain=myapp 3000
+```
+
+This gives you `https://myapp.example.com` every time.
+
+## What's next?
+
+| Topic              | Guide                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| DNS records setup  | [GoDaddy](dns-godaddy.md) · [Cloudflare](dns-cloudflare.md) · [Namecheap](dns-namecheap.md) |
+| Router / NAT setup | [Port Forwarding](port-forwarding.md)                                                       |
+| Cloud deployment   | [VPS Deployment](vps-deployment.md)                                                         |
+| TLS options        | [TLS Modes](tls-modes.md)                                                                   |
+| Key management     | [API Keys](api-keys.md)                                                                     |

@@ -39,9 +39,11 @@ run-server:
 	go run ./cmd/expose server
 
 client-login:
-	go run ./cmd/expose login \
-		--server $${EXPOSE_DOMAIN:-example.com} \
-		--api-key $${EXPOSE_API_KEY:-}
+	@if [ -n "$$EXPOSE_API_KEY" ]; then \
+		go run ./cmd/expose login --server "$${EXPOSE_DOMAIN:-example.com}" --api-key "$$EXPOSE_API_KEY"; \
+	else \
+		go run ./cmd/expose login --server "$${EXPOSE_DOMAIN:-example.com}"; \
+	fi
 
 run-client:
 	@if [ -z "$$EXPOSE_PORT" ]; then echo "EXPOSE_PORT is required"; exit 1; fi

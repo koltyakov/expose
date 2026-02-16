@@ -110,7 +110,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	clientArgs := []string{"--port", strconv.Itoa(port)}
 	name = strings.TrimSpace(name)
 	if name != "" {
-		clientArgs = append(clientArgs, "--name", name)
+		clientArgs = append(clientArgs, "--domain", name)
 	}
 	serverURL = strings.TrimSpace(serverURL)
 	if serverURL != "" {

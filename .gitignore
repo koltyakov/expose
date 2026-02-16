@@ -30,6 +30,8 @@ go.work.sum
 # Data files
 cert/
 expose.db
+expose.db-*
+tmp/
 
 # Editor/IDE
 # .idea/

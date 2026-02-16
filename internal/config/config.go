@@ -1,3 +1,5 @@
+// Package config defines the configuration structs and flag/env parsing
+// for the expose server and client.
 package config
 
 import (
@@ -9,16 +11,17 @@ import (
 	"time"
 )
 
+// ClientConfig holds all settings required by the tunnel client.
 type ClientConfig struct {
 	ServerURL    string
 	APIKey       string
 	LocalPort    int
 	Name         string
-	Permanent    bool
 	Timeout      time.Duration
 	PingInterval time.Duration
 }
 
+// ServerConfig holds all settings required by the expose HTTPS server.
 type ServerConfig struct {
 	ListenHTTPS            string
 	ListenHTTP             string
@@ -50,6 +53,7 @@ const defaultServerHTTPChallengeListen = ":10080"
 const defaultServerDBPath = "./expose.db"
 const defaultServerCertCacheDir = "./cert"
 
+// ParseClientFlags parses CLI flags and env vars into a [ClientConfig].
 func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg := ClientConfig{
 		ServerURL:    envOrDefault("EXPOSE_DOMAIN", ""),
@@ -64,20 +68,12 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
-	fs.StringVar(&cfg.Name, "name", cfg.Name, "Requested tunnel name (subdomain)")
-	fs.StringVar(&cfg.Name, "subdomain", cfg.Name, "Requested tunnel name (subdomain)")
-	fs.BoolVar(&cfg.Permanent, "permanent", false, "Reserve tunnel/domain permanently")
+	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
 
 	cfg.Name = strings.TrimSpace(cfg.Name)
-	if cfg.Name != "" {
-		cfg.Permanent = true
-	}
-	if cfg.Permanent && cfg.Name == "" {
-		return cfg, errors.New("permanent tunnel requires --name")
-	}
 	if cfg.LocalPort == 0 {
 		return cfg, errors.New("missing --port or EXPOSE_PORT")
 	}
@@ -88,6 +84,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	return cfg, nil
 }
 
+// ParseServerFlags parses CLI flags and env vars into a [ServerConfig].
 func ParseServerFlags(args []string) (ServerConfig, error) {
 	cfg := ServerConfig{
 		ListenHTTPS:            envOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),

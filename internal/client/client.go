@@ -1,3 +1,5 @@
+// Package client implements the expose tunnel client that registers with the
+// server, maintains a WebSocket session, and proxies traffic to a local port.
 package client
 
 import (
@@ -36,10 +38,12 @@ type registerResponse struct {
 	ServerTLSMode string `json:"server_tls_mode"`
 }
 
+// Client connects to the expose server and proxies public traffic to a local port.
 type Client struct {
-	cfg    config.ClientConfig
-	log    *slog.Logger
-	client *http.Client
+	cfg       config.ClientConfig
+	log       *slog.Logger
+	apiClient *http.Client // for registration API calls
+	fwdClient *http.Client // for local upstream forwarding
 }
 
 const (
@@ -47,12 +51,21 @@ const (
 	reconnectMaxDelay     = 1 * time.Minute
 )
 
+// New creates a Client with the given configuration and logger.
 func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 	return &Client{
 		cfg: cfg,
 		log: logger,
-		client: &http.Client{
+		apiClient: &http.Client{
 			Timeout: cfg.Timeout,
+		},
+		fwdClient: &http.Client{
+			Timeout: 2 * time.Minute,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -141,6 +154,19 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		}()
 	}
 
+	msgCh := make(chan tunnelproto.Message)
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			var msg tunnelproto.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				readErr <- err
+				return
+			}
+			msgCh <- msg
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -150,46 +176,43 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				return ctx.Err()
 			}
 			return err
-		default:
-		}
-
-		var msg tunnelproto.Message
-		if err := conn.ReadJSON(&msg); err != nil {
+		case err := <-readErr:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return err
-		}
-		switch msg.Kind {
-		case tunnelproto.KindRequest:
-			if msg.Request == nil {
-				continue
-			}
-			resp := c.forwardLocal(ctx, localBase, msg.Request)
-			if err := writeJSON(tunnelproto.Message{
-				Kind:     tunnelproto.KindResponse,
-				Response: resp,
-			}); err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
+		case msg := <-msgCh:
+			switch msg.Kind {
+			case tunnelproto.KindRequest:
+				if msg.Request == nil {
+					continue
 				}
-				return err
-			}
-		case tunnelproto.KindPong, tunnelproto.KindPing:
-			if msg.Kind == tunnelproto.KindPing {
-				if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && ctx.Err() == nil {
+				resp := c.forwardLocal(ctx, localBase, msg.Request)
+				if err := writeJSON(tunnelproto.Message{
+					Kind:     tunnelproto.KindResponse,
+					Response: resp,
+				}); err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
 					return err
 				}
+			case tunnelproto.KindPong, tunnelproto.KindPing:
+				if msg.Kind == tunnelproto.KindPing {
+					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && ctx.Err() == nil {
+						return err
+					}
+				}
+			case tunnelproto.KindClose:
+				return errors.New("server closed tunnel")
 			}
-		case tunnelproto.KindClose:
-			return errors.New("server closed tunnel")
 		}
 	}
 }
 
 func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	mode := "temporary"
-	if c.cfg.Permanent {
+	if c.cfg.Name != "" {
 		mode = "permanent"
 	}
 	hostname, _ := os.Hostname()
@@ -209,7 +232,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.apiClient.Do(req)
 	if err != nil {
 		return registerResponse{}, err
 	}
@@ -266,7 +289,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	localReq.Header.Del("Host")
 	localReq.Host = base.Host
 
-	resp, err := c.client.Do(localReq)
+	resp, err := c.fwdClient.Do(localReq)
 	if err != nil {
 		return &tunnelproto.HTTPResponse{
 			ID:      req.ID,
@@ -280,19 +303,9 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	return &tunnelproto.HTTPResponse{
 		ID:      req.ID,
 		Status:  resp.StatusCode,
-		Headers: cloneHeaders(resp.Header),
+		Headers: tunnelproto.CloneHeaders(resp.Header),
 		BodyB64: tunnelproto.EncodeBody(respBody),
 	}
-}
-
-func cloneHeaders(h http.Header) map[string][]string {
-	out := make(map[string][]string, len(h))
-	for k, v := range h {
-		c := make([]string, len(v))
-		copy(c, v)
-		out[k] = c
-	}
-	return out
 }
 
 func nextBackoff(current time.Duration) time.Duration {

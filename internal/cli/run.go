@@ -1,3 +1,5 @@
+// Package cli implements the expose command-line interface, dispatching
+// subcommands for server, client, login, and API key administration.
 package cli
 
 import (
@@ -24,6 +26,8 @@ import (
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
+// Run is the main CLI entry point. It parses args and dispatches to the
+// appropriate subcommand, returning a process exit code.
 func Run(args []string) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -43,6 +47,11 @@ func Run(args []string) int {
 		return runClientCommand(ctx, args[1:])
 	case "server":
 		return runServer(ctx, args[1:])
+	case "apikey":
+		return runAPIKeyAdmin(ctx, args[1:])
+	case "version", "--version", "-v":
+		printVersion()
+		return 0
 	case "-h", "--help", "help":
 		printUsage()
 		return 0
@@ -73,7 +82,6 @@ func runHTTP(ctx context.Context, args []string) int {
 	port := parseIntEnv("EXPOSE_PORT", 0)
 	fs.IntVar(&port, "port", port, "Local HTTP port on 127.0.0.1")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
-	fs.StringVar(&name, "name", name, "Requested public subdomain (e.g. myapp)")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	if err := fs.Parse(args); err != nil {
@@ -256,7 +264,7 @@ func runServer(ctx context.Context, args []string) int {
 
 func runAPIKeyAdmin(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: expose server apikey <create|list|revoke> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: expose apikey <create|list|revoke> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -371,21 +379,44 @@ func runAPIKeyRevoke(ctx context.Context, args []string) int {
 }
 
 func printUsage() {
-	fmt.Println(`expose - simple BYOI tunnel tool
+	fmt.Println(`expose - Bring Your Own Infrastructure (BYOI) HTTP tunnel
+
+Expose local HTTP ports to the internet through your own server.
 
 Usage:
-  expose [tunnel-flags]            # default: tunnel mode
-  expose login [flags]
-  expose http [flags] <port>
-  expose tunnel [flags]
-  expose client [flags]
-  expose client login [flags]
-  expose client http [flags] <port>
-  expose client tunnel [flags]
-  expose server [flags]
-  expose server apikey create [flags]
-  expose server apikey list [flags]
-  expose server apikey revoke [flags]`)
+  expose http <port>                    Expose local port (temporary subdomain)
+  expose http --domain=myapp <port>     Expose with a named subdomain
+  expose login                          Save server URL and API key
+  expose server                         Start tunnel server
+  expose apikey create --name NAME      Create a new API key
+  expose apikey list                    List all API keys
+  expose apikey revoke --id=ID          Revoke an API key
+  expose version                        Print version
+  expose help                           Show this help
+
+Quick Start:
+  1. expose server                                 # start server
+  2. expose apikey create --name default            # create API key
+  3. expose login --server example.com --api-key KEY  # save credentials
+  4. expose http 3000                               # expose local port
+
+Environment Variables:
+  EXPOSE_DOMAIN           Server base domain (e.g. example.com)
+  EXPOSE_API_KEY          API key for client authentication
+  EXPOSE_PORT             Local port to expose
+  EXPOSE_SUBDOMAIN        Requested subdomain name
+  EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
+  EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
+  EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
+
+For detailed documentation, see: https://github.com/koltyakov/expose`)
+}
+
+// Version is set at build time via -ldflags.
+var Version = "dev"
+
+func printVersion() {
+	fmt.Println("expose", Version)
 }
 
 func envOr(key, def string) string {

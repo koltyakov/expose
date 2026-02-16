@@ -1,24 +1,30 @@
+// Package domain defines the core data types shared across the expose
+// server, store, and tunnel protocol layers.
 package domain
 
 import "time"
 
+// Domain type constants distinguish temporary from permanent subdomains.
 const (
 	DomainTypeTemporarySubdomain = "temporary_subdomain"
 	DomainTypePermanentSubdomain = "permanent_subdomain"
 )
 
+// Domain status constants track whether a domain is currently routable.
 const (
 	DomainStatusActive   = "active"
 	DomainStatusReserved = "reserved"
 	DomainStatusInactive = "inactive"
 )
 
+// Tunnel state constants describe the lifecycle of a tunnel session.
 const (
 	TunnelStateConnected    = "connected"
 	TunnelStateDisconnected = "disconnected"
 	TunnelStateClosed       = "closed"
 )
 
+// APIKey represents a server-managed authentication key.
 type APIKey struct {
 	ID        string
 	Name      string
@@ -27,6 +33,7 @@ type APIKey struct {
 	RevokedAt *time.Time
 }
 
+// Domain represents a registered subdomain record (temporary or permanent).
 type Domain struct {
 	ID         string
 	APIKeyID   string
@@ -37,6 +44,7 @@ type Domain struct {
 	LastSeenAt *time.Time
 }
 
+// Tunnel represents an active or historic tunnel session.
 type Tunnel struct {
 	ID             string
 	APIKeyID       string
@@ -48,6 +56,7 @@ type Tunnel struct {
 	DisconnectedAt *time.Time
 }
 
+// TunnelRoute pairs a [Domain] with its most recent [Tunnel] for routing.
 type TunnelRoute struct {
 	Domain Domain
 	Tunnel Tunnel

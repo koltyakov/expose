@@ -1,3 +1,5 @@
+// Package clientsettings persists and loads client credentials (server URL
+// and API key) in a JSON file under the user's cache directory.
 package clientsettings
 
 import (
@@ -8,15 +10,24 @@ import (
 	"strings"
 )
 
+// Settings contains the persisted client credentials.
 type Settings struct {
 	ServerURL string `json:"server_url"`
 	APIKey    string `json:"api_key"`
 }
 
+// Path returns the absolute path to the settings file.
+// It uses the user's home directory so credentials survive temp-dir cleanup.
 func Path() string {
-	return filepath.Join(os.TempDir(), ".expose", "settings.json")
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, ".expose", "settings.json")
 }
 
+// Load reads and validates the settings file. Returns an error if the file
+// is missing or contains empty credentials.
 func Load() (Settings, error) {
 	path := Path()
 	raw, err := os.ReadFile(path)
@@ -35,6 +46,7 @@ func Load() (Settings, error) {
 	return s, nil
 }
 
+// Save writes validated credentials to the settings file with 0600 permissions.
 func Save(s Settings) error {
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)

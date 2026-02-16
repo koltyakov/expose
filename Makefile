@@ -1,5 +1,6 @@
 APP := expose
 PKG := github.com/koltyakov/expose
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 ifneq (,$(wildcard .env))
 include .env
@@ -32,7 +33,7 @@ test:
 	go test ./...
 
 build:
-	go build -o bin/$(APP) ./cmd/expose
+	go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o bin/$(APP) ./cmd/expose
 
 run-server:
 	go run ./cmd/expose server

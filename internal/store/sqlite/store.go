@@ -1,3 +1,5 @@
+// Package sqlite implements the expose data store backed by a SQLite database.
+// It manages API keys, domains, tunnels, connect tokens, and server settings.
 package sqlite
 
 import (
@@ -17,10 +19,13 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
+// Store wraps a SQLite database connection for all expose persistence operations.
 type Store struct {
 	db *sql.DB
 }
 
+// Open creates or opens the SQLite database at path, runs migrations, and
+// enables WAL mode for improved concurrent read performance.
 func Open(path string) (*Store, error) {
 	if err := ensureParentDir(path); err != nil {
 		return nil, err
@@ -28,6 +33,11 @@ func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
+	}
+	// Enable WAL mode for better concurrent read performance and reduced lock contention.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable WAL mode: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.Migrate(context.Background()); err != nil {
@@ -37,10 +47,12 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// Close closes the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Migrate creates all required tables and indexes if they do not already exist.
 func (s *Store) Migrate(ctx context.Context) error {
 	const ddl = `
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -714,12 +726,26 @@ func normalizeHostLabel(v string) string {
 
 func randomSlug(length int) string {
 	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
-	b := make([]byte, length)
-	_, _ = rand.Read(b)
-	for i := range b {
-		b[i] = alphabet[int(b[i])%len(alphabet)]
+	const n = byte(len(alphabet))
+	// Rejection threshold avoids modulo bias: largest multiple of n <= 256.
+	const maxFair = 256 - (256 % int(n))
+	slug := make([]byte, length)
+	buf := make([]byte, length+16) // over-read to reduce rand calls
+	filled := 0
+	for filled < length {
+		_, _ = rand.Read(buf)
+		for _, b := range buf {
+			if int(b) >= maxFair {
+				continue
+			}
+			slug[filled] = alphabet[b%n]
+			filled++
+			if filled == length {
+				break
+			}
+		}
 	}
-	return string(b)
+	return string(slug)
 }
 
 func newID(prefix string) string {

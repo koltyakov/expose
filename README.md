@@ -1,24 +1,50 @@
 # expose
 
-`expose` is a BYOI tunnel: run your own server, then expose local HTTP ports from clients.
+**expose** is a BYOI (Bring Your Own Infrastructure) HTTP tunnel.
+Run your own server, then expose local HTTP ports from any client machine — no third-party services required.
 
-## What Changed
+## Features
 
-- Server and client are env-first. `make run-server` / `make run-client` no longer bind many CLI flags.
-- Client exposes a local `port` (not a local URL).
-- Client supports `login` and stores credentials in temp settings:
-  - `<temp>/.expose/settings.json`
-  - Windows: `%TEMP%\.expose\settings.json`
-  - Linux/macOS: usually `/tmp/.expose/settings.json`
-- External public traffic is HTTPS-only.
-- Single domain parameter: `EXPOSE_DOMAIN` (for example `example.com`).
+- **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certs.
+- **Env-first** configuration — minimal CLI flags needed.
+- Client `login` persists credentials so you authenticate once:
+  | OS | Path |
+  |---|---|
+  | Windows | `%USERPROFILE%\.expose\settings.json` |
+  | Linux / macOS | `~/.expose/settings.json` |
+- Single domain parameter: `EXPOSE_DOMAIN` (e.g. `example.com`).
+
+## Architecture Overview
+
+```mermaid
+flowchart LR
+    A["Browser"] -- HTTPS --> B["expose server<br/>(TLS + routing)"]
+    B -- WebSocket <--> C["expose client<br/>(tunnel proxy)"]
+    C -- HTTP --> D["Local app<br/>(127.0.0.1:PORT)"]
+```
+
+1. **Server** listens on HTTPS, manages TLS (ACME or wildcard), and routes traffic by hostname.
+2. **Client** registers a tunnel via REST, then holds a WebSocket for proxying requests.
+3. Public HTTP requests to `*.EXPOSE_DOMAIN` are forwarded through the WebSocket to the client's local port.
+
+## Installation
+
+Build from source (requires Go 1.23+):
+
+```bash
+go build -o bin/expose ./cmd/expose
+```
+
+This produces `./bin/expose`. All examples below use `expose` — substitute with the full path to the binary if it is not in your `PATH`.
 
 ## Defaults
 
-- HTTPS listen: `:10443`
-- ACME HTTP-01 challenge listen: `:10080`
-- SQLite DB: `./expose.db`
-- Cert cache: `./cert`
+| Setting | Default | Env override |
+|---|---|---|
+| HTTPS listen | `:10443` | `EXPOSE_LISTEN_HTTPS` |
+| ACME HTTP-01 listen | `:10080` | `EXPOSE_LISTEN_HTTP_CHALLENGE` |
+| SQLite DB | `./expose.db` | `EXPOSE_DB_PATH` |
+| Cert cache | `./cert` | `EXPOSE_CERT_CACHE_DIR` |
 
 If you run behind Docker, NAT, or a router, forward:
 - `443 -> 10443` (TCP)
@@ -30,11 +56,6 @@ Create DNS records for your `EXPOSE_DOMAIN` zone before starting clients:
 
 - `A` record `@` -> your server public IPv4
 - `A` record `*` -> your server public IPv4
-
-Optional for IPv6:
-
-- `AAAA` record `@` -> your server public IPv6
-- `AAAA` record `*` -> your server public IPv6
 
 Notes:
 
@@ -64,19 +85,13 @@ If `EXPOSE_API_KEY_PEPPER` is unset and no machine-id is available, server initi
 ### 2. Start server
 
 ```bash
-go run ./cmd/expose server
-```
-
-Or:
-
-```bash
-make run-server
+expose server
 ```
 
 ### 3. Create API key
 
 ```bash
-go run ./cmd/expose server apikey create --name default
+expose apikey create --name default
 ```
 
 Copy `api_key` from output.
@@ -84,29 +99,17 @@ Copy `api_key` from output.
 ### 4. Login client once
 
 ```bash
-go run ./cmd/expose login --server https://example.com --api-key <api_key>
+expose login --server <example.com> --api-key <api_key>
 ```
 
 If `--server` or `--api-key` is omitted in an interactive shell, `expose login` prompts for missing values.
+
 In CI/non-interactive runs, pass both flags to avoid prompts.
-
-Or:
-
-```bash
-make client-login
-```
 
 ### 5. Expose local app port
 
 ```bash
-go run ./cmd/expose http 3000
-```
-
-Or:
-
-```bash
-export EXPOSE_PORT=3000
-make run-client
+expose http 3000
 ```
 
 `--server` and `--api-key` are optional after login (stored settings are used). You can still pass them to override.
@@ -114,41 +117,43 @@ make run-client
 Named tunnel example:
 
 ```bash
-go run ./cmd/expose http --domain=my-app 8080
+expose http --domain=myapp 8080
 ```
 
-This requests `https://my-app.<EXPOSE_DOMAIN>`.
+This requests `https://myapp.<EXPOSE_DOMAIN>`.
 
-## CLI
+## CLI Reference
+
+Run `expose help` (or `expose --help`) for the full command list.
 
 ```text
-expose [tunnel-flags]
-expose login [flags]
-expose http [flags] <port>
-expose tunnel [flags]
-expose client [flags]
-expose client login [flags]
-expose client http [flags] <port>
-expose client tunnel [flags]
-expose server [flags]
-expose server apikey create [flags]
-expose server apikey list [flags]
-expose server apikey revoke [flags]
+expose http <port>                       Expose local port (temporary subdomain)
+expose http --domain=myapp <port>        Expose with a named subdomain
+expose login                             Save server URL and API key
+expose server                            Start tunnel server
+expose apikey create --name NAME         Create API key
+expose apikey list                       List API keys
+expose apikey revoke --id=ID             Revoke API key
+expose version                           Print version
 ```
 
 ### Client flags
 
-- `http` command:
-  - `expose http 3000` -> temporary/random subdomain
-  - `expose http --domain=myapp 3000` -> `https://myapp.<EXPOSE_DOMAIN>`
-  - optional overrides: `--server`, `--api-key`
-- `--port` local HTTP port on `127.0.0.1` (required outside `expose http <port>` form)
-- `--server` server URL (HTTPS)
-- `--api-key` API key
-- `--name` requested tunnel name (subdomain)
-- `--permanent` reserve tunnel/domain permanently (legacy; `--name` already enables this)
+| Flag | Env | Description |
+|---|---|---|
+| `--port` | `EXPOSE_PORT` | Local HTTP port on 127.0.0.1 (required) |
+| `--domain` | `EXPOSE_SUBDOMAIN` | Requested subdomain (e.g. `myapp`) |
+| `--server` | `EXPOSE_DOMAIN` | Server URL (HTTPS) |
+| `--api-key` | `EXPOSE_API_KEY` | API key |
 
-Default mode is temporary. If `--name` is not set, host allocation is automatic:
+**Examples:**
+
+```bash
+expose http 3000                      # temporary random subdomain
+expose http --domain=myapp 3000       # named: https://myapp.<EXPOSE_DOMAIN>
+```
+
+Default mode is temporary. If `--domain` is not set, host allocation is automatic:
 
 - Wildcard TLS active: randomized temporary host (6-char slug) is allocated.
 - Wildcard TLS not active: server first tries a deterministic host from `client_hostname + ":" + local_port`:
@@ -164,15 +169,18 @@ Why randomization exists:
 
 ### Server flags
 
-- `--domain` public base domain (required if `EXPOSE_DOMAIN` is not set)
-- `--listen` HTTPS listen address (default `:10443`)
-- `--http-challenge-listen` ACME challenge listen (default `:10080`)
-- `--db` SQLite DB path (default `./expose.db`)
-- `--tls-mode` `auto|dynamic|wildcard` (default `auto`)
-- `--cert-cache-dir` cert cache dir (default `./cert`)
-- `--tls-cert-file` static cert file (wildcard mode)
-- `--tls-key-file` static key file (wildcard mode)
-- `--api-key-pepper` explicit pepper override (optional)
+| Flag | Env | Default | Description |
+|---|---|---|---|
+| `--domain` | `EXPOSE_DOMAIN` | *(required)* | Public base domain |
+| `--listen` | `EXPOSE_LISTEN_HTTPS` | `:10443` | HTTPS listen address |
+| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE` | `:10080` | ACME challenge listener |
+| `--db` | `EXPOSE_DB_PATH` | `./expose.db` | SQLite DB path |
+| `--tls-mode` | `EXPOSE_TLS_MODE` | `auto` | `auto\|dynamic\|wildcard` |
+| `--cert-cache-dir` | `EXPOSE_CERT_CACHE_DIR` | `./cert` | Cert cache directory |
+| `--tls-cert-file` | `EXPOSE_TLS_CERT_FILE` | — | Static cert PEM (wildcard) |
+| `--tls-key-file` | `EXPOSE_TLS_KEY_FILE` | — | Static key PEM (wildcard) |
+| `--api-key-pepper` | `EXPOSE_API_KEY_PEPPER` | — | Explicit pepper override |
+| `--log-level` | `EXPOSE_LOG_LEVEL` | `info` | `debug\|info\|warn\|error` |
 
 ## Wildcard TLS Mode
 
@@ -185,6 +193,7 @@ When to use wildcard mode:
 - you want predictable TLS behavior across many rotating hosts
 
 If wildcard cert files are missing, server prints a concrete Let's Encrypt DNS-01 walkthrough and exits:
+
 - required SANs
 - expected file locations
 - certbot command shape

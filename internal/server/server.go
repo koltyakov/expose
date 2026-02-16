@@ -1,3 +1,5 @@
+// Package server implements the expose HTTPS reverse-proxy server with
+// WebSocket-based tunnel management, ACME TLS, and session lifecycle.
 package server
 
 import (
@@ -30,6 +32,8 @@ import (
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
+// Server is the main expose HTTPS server that manages tunnel registrations,
+// WebSocket sessions, TLS certificates, and public HTTP proxying.
 type Server struct {
 	cfg           config.ServerConfig
 	store         *sqlite.Store
@@ -84,6 +88,7 @@ var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// New creates a Server with the given configuration, store, and logger.
 func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger) *Server {
 	return &Server{
 		cfg:   cfg,
@@ -93,6 +98,8 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger) *Ser
 	}
 }
 
+// Run starts the HTTPS server, ACME challenge server, and background janitor.
+// It blocks until ctx is cancelled or a fatal error occurs.
 func (s *Server) Run(ctx context.Context) error {
 	resetCount, err := s.store.ResetConnectedTunnels(ctx)
 	if err != nil {
@@ -416,7 +423,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			Method:  r.Method,
 			Path:    r.URL.Path,
 			Query:   r.URL.RawQuery,
-			Headers: cloneHeaders(r.Header),
+			Headers: tunnelproto.CloneHeaders(r.Header),
 			BodyB64: tunnelproto.EncodeBody(body),
 		},
 	}
@@ -500,16 +507,6 @@ func (s *session) closePending() {
 		close(ch)
 		return true
 	})
-}
-
-func cloneHeaders(h http.Header) map[string][]string {
-	out := make(map[string][]string, len(h))
-	for k, v := range h {
-		c := make([]string, len(v))
-		copy(c, v)
-		out[k] = c
-	}
-	return out
 }
 
 func normalizeHost(host string) string {

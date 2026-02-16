@@ -229,9 +229,16 @@ func mergeClientSettings(cfg *config.ClientConfig) error {
 }
 
 func runServer(ctx context.Context, args []string) int {
-	if len(args) > 0 && args[0] == "apikey" {
-		return runAPIKeyAdmin(ctx, args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case "apikey":
+			return runAPIKeyAdmin(ctx, args[1:])
+		case "wizard":
+			return runServerWizard(ctx, args[1:])
+		}
 	}
+
+	loadServerEnvFromDotEnv(".env")
 
 	cfg, err := config.ParseServerFlags(args)
 	if err != nil {
@@ -260,6 +267,19 @@ func runServer(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func loadServerEnvFromDotEnv(path string) {
+	values := loadEnvFileValues(path)
+	for key, value := range values {
+		if !strings.HasPrefix(key, "EXPOSE_") {
+			continue
+		}
+		if existing := strings.TrimSpace(os.Getenv(key)); existing != "" {
+			continue
+		}
+		_ = os.Setenv(key, value)
+	}
 }
 
 func runAPIKeyAdmin(ctx context.Context, args []string) int {
@@ -388,6 +408,7 @@ Usage:
   expose http --domain=myapp <port>     Expose with a named subdomain
   expose login                          Save server URL and API key
   expose server                         Start tunnel server
+  expose server wizard                  Guided server setup + .env write
   expose apikey create --name NAME      Create a new API key
   expose apikey list                    List all API keys
   expose apikey revoke --id=ID          Revoke an API key

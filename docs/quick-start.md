@@ -19,6 +19,12 @@ go build -o bin/expose ./cmd/expose
 On your public-facing machine:
 
 ```bash
+./bin/expose server wizard
+```
+
+Or configure environment variables manually:
+
+```bash
 export EXPOSE_DOMAIN=example.com
 export EXPOSE_TLS_MODE=auto
 ./bin/expose server

@@ -66,6 +66,14 @@ Notes:
 
 ## Quick Start
 
+Interactive setup (recommended):
+
+```bash
+expose server wizard
+```
+
+The wizard asks for server parameters with defaults, writes `.env`, and can generate an API key.
+
 ### 1. Configure server env
 
 ```bash
@@ -132,6 +140,7 @@ expose http <port>                       Expose local port (temporary subdomain)
 expose http --domain=myapp <port>        Expose with a named subdomain
 expose login                             Save server URL and API key
 expose server                            Start tunnel server
+expose server wizard                     Guided server setup + .env write
 expose apikey create --name NAME         Create API key
 expose apikey list                       List API keys
 expose apikey revoke --id=ID             Revoke API key

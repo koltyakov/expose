@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps fmt lint vet test test-race test-coverage build build-all release-check release-local ci run-server run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps fmt lint vet test test-race test-coverage build build-all release-check release-local ci run-server run-server-wizard run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -26,6 +26,7 @@ help:
 	@echo "  make release-local  - Build snapshot artifacts via GoReleaser"
 	@echo "  make ci             - Run local CI checks"
 	@echo "  make run-server     - Run server (env-driven)"
+	@echo "  make run-server-wizard - Guided server setup (.env + optional API key)"
 	@echo "  make run-client     - Run tunnel client (env-driven)"
 	@echo "  make client-login   - Save client server URL + API key"
 	@echo "  make apikey-create  - Create API key"
@@ -94,6 +95,9 @@ ci: deps fmt vet test test-race build release-check
 
 run-server:
 	go run ./cmd/expose server
+
+run-server-wizard:
+	go run ./cmd/expose server wizard
 
 client-login:
 	@if [ -n "$$EXPOSE_API_KEY" ]; then \

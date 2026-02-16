@@ -18,7 +18,7 @@ func TestAllocateTemporaryAndDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_close_temp")
@@ -55,7 +55,7 @@ func TestConnectTokenConsume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_close_perm")
@@ -89,7 +89,7 @@ func TestOpenCreatesParentDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("expected db file to exist at %s: %v", dbPath, err)
@@ -101,7 +101,7 @@ func TestCloseTemporaryTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_disconnected_closed")
@@ -144,7 +144,7 @@ func TestCloseTemporaryTunnelIgnoresPermanent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash")
@@ -184,7 +184,7 @@ func TestSetTunnelDisconnectedKeepsClosedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash")
@@ -222,7 +222,7 @@ func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_purge")
@@ -263,7 +263,7 @@ func TestIsHostnameActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_active")
@@ -303,7 +303,7 @@ func TestResetConnectedTunnels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_reset")
@@ -358,7 +358,7 @@ func TestTemporarySubdomainReusedForSameAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_temp_reuse")
@@ -391,7 +391,7 @@ func TestTemporarySubdomainCannotBeReusedAcrossAPIKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k1, err := store.CreateAPIKey(ctx, "test1", "hash_temp_reuse_key1")
@@ -416,7 +416,7 @@ func TestAllocateDomainAndTunnelWithClientMeta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_client_meta_alloc")
@@ -449,7 +449,7 @@ func TestSwapTunnelSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	k, err := store.CreateAPIKey(ctx, "test", "hash_swap_session")
@@ -492,7 +492,7 @@ func TestResolveServerPepperAllowsEmptyInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	current, exists, err := store.GetServerPepper(ctx)
@@ -525,7 +525,7 @@ func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	if _, err := store.ResolveServerPepper(ctx, ""); err != nil {

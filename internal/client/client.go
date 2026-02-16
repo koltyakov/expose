@@ -116,7 +116,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	stopClose := make(chan struct{})
 	go func() {
 		select {
@@ -236,7 +236,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	if err != nil {
 		return registerResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return registerResponse{}, errors.New(strings.TrimSpace(string(b)))
@@ -298,7 +298,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			BodyB64: tunnelproto.EncodeBody([]byte("local upstream unavailable")),
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	return &tunnelproto.HTTPResponse{
 		ID:      req.ID,

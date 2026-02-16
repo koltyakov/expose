@@ -245,7 +245,7 @@ func runServer(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "db error:", err)
 		return 1
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	pepper, err := resolveServerPepper(ctx, store, cfg.APIKeyPepper)
 	if err != nil {
@@ -295,7 +295,7 @@ func runAPIKeyCreate(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "db error:", err)
 		return 1
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	resolvedPepper, err := resolveServerPepper(ctx, store, pepper)
 	if err != nil {
@@ -333,7 +333,7 @@ func runAPIKeyList(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "db error:", err)
 		return 1
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	keys, err := store.ListAPIKeys(ctx)
 	if err != nil {
@@ -368,7 +368,7 @@ func runAPIKeyRevoke(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "db error:", err)
 		return 1
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if err := store.RevokeAPIKey(ctx, id); err != nil {
 		fmt.Fprintln(os.Stderr, "revoke key:", err)
@@ -508,7 +508,9 @@ func isInteractiveInput() bool {
 }
 
 func prompt(reader *bufio.Reader, label string) (string, error) {
-	fmt.Fprint(os.Stdout, label)
+	if _, err := fmt.Fprint(os.Stdout, label); err != nil {
+		return "", err
+	}
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return "", err

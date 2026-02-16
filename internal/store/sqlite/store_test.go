@@ -538,5 +538,9 @@ func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
 
 func openTestStore(t *testing.T) (*Store, error) {
 	t.Helper()
-	return Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", newID("test")))
+	id, err := newID("test")
+	if err != nil {
+		return nil, err
+	}
+	return Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", id))
 }

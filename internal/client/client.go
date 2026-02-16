@@ -5,11 +5,13 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,6 +57,7 @@ const (
 	clientWSWriteTimeout       = 15 * time.Second
 	clientWSReadLimit          = 32 * 1024 * 1024
 	localForwardResponseMaxB64 = 10 * 1024 * 1024
+	wsHandshakeTimeout         = 10 * time.Second
 )
 
 // New creates a Client with the given configuration and logger.
@@ -118,7 +121,11 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, reg.WSURL, nil)
+	dialer := websocket.Dialer{
+		HandshakeTimeout: wsHandshakeTimeout,
+		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	conn, _, err := dialer.DialContext(ctx, reg.WSURL, nil)
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
@@ -196,7 +203,6 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		}
 	}()
 
-	requestErr := make(chan error, 1)
 	requestSem := make(chan struct{}, maxConcurrentForwards)
 
 	for {
@@ -204,11 +210,6 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		case <-sessionCtx.Done():
 			return sessionCtx.Err()
 		case err := <-keepaliveErr:
-			if sessionCtx.Err() != nil {
-				return sessionCtx.Err()
-			}
-			return err
-		case err := <-requestErr:
 			if sessionCtx.Err() != nil {
 				return sessionCtx.Err()
 			}
@@ -240,10 +241,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 						Kind:     tunnelproto.KindResponse,
 						Response: resp,
 					}); err != nil && sessionCtx.Err() == nil {
-						select {
-						case requestErr <- err:
-						default:
-						}
+						c.log.Warn("failed to send response to server", "req_id", req.ID, "err", err)
 					}
 				}(reqCopy)
 			case tunnelproto.KindPong, tunnelproto.KindPing:
@@ -288,7 +286,17 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return registerResponse{}, errors.New(strings.TrimSpace(string(b)))
+		re := &registerError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(b))}
+		// Try to parse structured JSON error.
+		var errResp struct {
+			Error     string `json:"error"`
+			ErrorCode string `json:"error_code"`
+		}
+		if json.Unmarshal(b, &errResp) == nil && errResp.Error != "" {
+			re.Message = errResp.Error
+			re.Code = errResp.ErrorCode
+		}
+		return registerResponse{}, re
 	}
 	var out registerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -350,7 +358,15 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, localForwardResponseMaxB64))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, localForwardResponseMaxB64))
+	if err != nil {
+		return &tunnelproto.HTTPResponse{
+			ID:      req.ID,
+			Status:  http.StatusBadGateway,
+			Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
+			BodyB64: tunnelproto.EncodeBody([]byte("failed to read local upstream response")),
+		}
+	}
 	respHeaders := tunnelproto.CloneHeaders(resp.Header)
 	netutil.RemoveHopByHopHeaders(respHeaders)
 	return &tunnelproto.HTTPResponse{
@@ -363,19 +379,37 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 
 func nextBackoff(current time.Duration) time.Duration {
 	if current <= 0 {
-		return reconnectInitialDelay
+		current = reconnectInitialDelay
 	}
 	next := current * 2
 	if next > reconnectMaxDelay {
-		return reconnectMaxDelay
+		next = reconnectMaxDelay
 	}
-	return next
+	// Add ±25% jitter to avoid thundering herd on reconnect.
+	jitter := 1.0 + (rand.Float64()-0.5)*0.5 // range [0.75, 1.25]
+	return time.Duration(float64(next) * jitter)
+}
+
+// registerError is a structured error from the server's registration endpoint.
+type registerError struct {
+	StatusCode int
+	Message    string
+	Code       string
+}
+
+func (e *registerError) Error() string {
+	return e.Message
 }
 
 func isNonRetriableRegisterError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var re *registerError
+	if errors.As(err, &re) {
+		return re.Code == "hostname_in_use"
+	}
+	// Fallback for plain-text errors from older servers.
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "hostname already in use")
 }

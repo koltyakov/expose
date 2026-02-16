@@ -42,18 +42,72 @@ type Server struct {
 	hub           *hub
 	wildcardTLSOn bool
 	requestSeq    atomic.Uint64
+	regLimiter    rateLimiter
+}
+
+// rateLimiter implements a simple per-key token-bucket rate limiter.
+type rateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*bucket
+}
+
+type bucket struct {
+	tokens    float64
+	lastCheck time.Time
+}
+
+const (
+	regRateLimit  = 5.0             // registrations per second per key
+	regBurstLimit = 10.0            // max burst
+	regCleanupAge = 5 * time.Minute // evict idle buckets
+)
+
+func (rl *rateLimiter) allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	b, ok := rl.buckets[key]
+	if !ok {
+		b = &bucket{tokens: regBurstLimit, lastCheck: now}
+		rl.buckets[key] = b
+	}
+
+	elapsed := now.Sub(b.lastCheck).Seconds()
+	b.tokens += elapsed * regRateLimit
+	if b.tokens > regBurstLimit {
+		b.tokens = regBurstLimit
+	}
+	b.lastCheck = now
+
+	if b.tokens < 1.0 {
+		return false
+	}
+	b.tokens--
+
+	// Lazily evict stale buckets.
+	if len(rl.buckets) > 100 {
+		for k, v := range rl.buckets {
+			if now.Sub(v.lastCheck) > regCleanupAge {
+				delete(rl.buckets, k)
+			}
+		}
+	}
+	return true
 }
 
 type hub struct {
 	mu       sync.RWMutex
 	sessions map[string]*session
+	wg       sync.WaitGroup
 }
 
 type session struct {
 	tunnelID         string
 	conn             *websocket.Conn
 	writeMu          sync.Mutex
-	pending          sync.Map
+	pendingMu        sync.Mutex
+	pending          map[string]chan *tunnelproto.HTTPResponse
 	pendingCount     atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
@@ -72,7 +126,7 @@ const (
 	tlsModeWildcard      = "wildcard"
 	maxRegisterBodyBytes = 64 * 1024
 	minWSReadLimit       = 32 * 1024 * 1024
-	maxPendingPerSession = 256
+	maxPendingPerSession = 32
 	wsWriteTimeout       = 15 * time.Second
 	httpsReadTimeout     = 30 * time.Second
 	httpsWriteTimeout    = 60 * time.Second
@@ -96,6 +150,17 @@ type registerResponse struct {
 	ServerTLSMode string `json:"server_tls_mode"`
 }
 
+type errorResponse struct {
+	Error     string `json:"error"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+const (
+	errCodeHostnameInUse = "hostname_in_use"
+	errCodeRateLimit     = "rate_limit"
+	errCodeTunnelLimit   = "tunnel_limit"
+)
+
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -103,10 +168,11 @@ var wsUpgrader = websocket.Upgrader{
 // New creates a Server with the given configuration, store, and logger.
 func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger) *Server {
 	return &Server{
-		cfg:   cfg,
-		store: store,
-		log:   logger,
-		hub:   &hub{sessions: map[string]*session{}},
+		cfg:        cfg,
+		store:      store,
+		log:        logger,
+		hub:        &hub{sessions: map[string]*session{}},
+		regLimiter: rateLimiter{buckets: make(map[string]*bucket)},
 	}
 }
 
@@ -172,6 +238,7 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		tlsConfig = &tls.Config{}
 	}
+	tlsConfig.MinVersion = tls.VersionTLS12
 	tlsConfig.GetCertificate = s.selectCertificate(manager, staticCert, s.cfg.TLSMode)
 
 	httpsServer := &http.Server{
@@ -221,6 +288,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		s.closeAllSessions()
 		var firstErr error
 		if err := shutdownServer(httpsServer, 5*time.Second); err != nil {
 			firstErr = err
@@ -230,12 +298,15 @@ func (s *Server) Run(ctx context.Context) error {
 				firstErr = err
 			}
 		}
+		s.hub.wg.Wait()
 		return firstErr
 	case err := <-errCh:
+		s.closeAllSessions()
 		_ = shutdownServer(httpsServer, 5*time.Second)
 		if challengeServer != nil {
 			_ = shutdownServer(challengeServer, 5*time.Second)
 		}
+		s.hub.wg.Wait()
 		return err
 	}
 }
@@ -251,13 +322,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.regLimiter.allow(keyID) {
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "rate limit exceeded", ErrorCode: errCodeRateLimit})
+		return
+	}
+
 	active, err := s.store.ActiveTunnelCountByKey(r.Context(), keyID)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if active >= s.cfg.MaxActivePerKey {
-		http.Error(w, "active tunnel limit reached", http.StatusTooManyRequests)
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
 		return
 	}
 
@@ -308,7 +384,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		domainRec, tunnelRec, err = s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, "", s.cfg.BaseDomain, clientMachineID)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		if isHostnameInUseError(err) {
+			writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
+		} else {
+			http.Error(w, err.Error(), http.StatusConflict)
+		}
 		return
 	}
 	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
@@ -356,6 +436,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	sess := &session{
 		tunnelID: tunnelID,
 		conn:     conn,
+		pending:  make(map[string]chan *tunnelproto.HTTPResponse),
 	}
 	wsReadLimit := s.cfg.MaxBodyBytes * 2
 	if wsReadLimit < minWSReadLimit {
@@ -368,7 +449,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	s.hub.mu.Unlock()
 	s.log.Info("tunnel connected", "tunnel_id", tunnelID)
 
-	go s.readLoop(sess)
+	s.hub.wg.Add(1)
+	go func() {
+		defer s.hub.wg.Done()
+		s.readLoop(sess)
+	}()
 }
 
 func (s *Server) readLoop(sess *session) {
@@ -387,6 +472,9 @@ func (s *Server) readLoop(sess *session) {
 	for {
 		var msg tunnelproto.Message
 		if err := sess.conn.ReadJSON(&msg); err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				s.log.Warn("tunnel read error", "tunnel_id", sess.tunnelID, "err", err)
+			}
 			return
 		}
 		sess.touch(time.Now())
@@ -396,14 +484,13 @@ func (s *Server) readLoop(sess *session) {
 			if msg.Response == nil {
 				continue
 			}
-			if v, ok := sess.pending.LoadAndDelete(msg.Response.ID); ok {
+			if v, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
 				sess.releasePending()
-				ch := v.(chan *tunnelproto.HTTPResponse)
 				select {
-				case ch <- msg.Response:
+				case v <- msg.Response:
 				default:
 				}
-				close(ch)
+				close(v)
 			}
 		case tunnelproto.KindPing:
 			_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong})
@@ -469,14 +556,17 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respCh := make(chan *tunnelproto.HTTPResponse, 1)
-	sess.pending.Store(reqID, respCh)
+	sess.pendingStore(reqID, respCh)
 	if err := sess.writeJSON(msg); err != nil {
-		if _, ok := sess.pending.LoadAndDelete(reqID); ok {
+		if sess.pendingDelete(reqID) {
 			sess.releasePending()
 		}
 		http.Error(w, "tunnel write failed", http.StatusBadGateway)
 		return
 	}
+
+	timer := time.NewTimer(s.cfg.RequestTimeout)
+	defer timer.Stop()
 
 	select {
 	case resp := <-respCh:
@@ -497,11 +587,15 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(b)
 		}
 		_ = s.store.TouchDomain(r.Context(), route.Domain.ID)
-	case <-time.After(s.cfg.RequestTimeout):
-		if _, ok := sess.pending.LoadAndDelete(reqID); ok {
+	case <-timer.C:
+		if sess.pendingDelete(reqID) {
 			sess.releasePending()
 		}
 		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+	case <-r.Context().Done():
+		if sess.pendingDelete(reqID) {
+			sess.releasePending()
+		}
 	}
 }
 
@@ -549,18 +643,52 @@ func (s *session) lastSeen() time.Time {
 }
 
 func (s *session) closePending() {
-	s.pending.Range(func(k, v any) bool {
-		if _, ok := s.pending.LoadAndDelete(k); !ok {
-			return true
-		}
-		s.releasePending()
-		ch, ok := v.(chan *tunnelproto.HTTPResponse)
-		if !ok {
-			return true
-		}
+	s.pendingMu.Lock()
+	for k, ch := range s.pending {
+		delete(s.pending, k)
+		s.pendingCount.Add(-1)
 		close(ch)
-		return true
-	})
+	}
+	s.pendingMu.Unlock()
+}
+
+func (s *session) pendingStore(id string, ch chan *tunnelproto.HTTPResponse) {
+	s.pendingMu.Lock()
+	s.pending[id] = ch
+	s.pendingMu.Unlock()
+}
+
+func (s *session) pendingLoadAndDelete(id string) (chan *tunnelproto.HTTPResponse, bool) {
+	s.pendingMu.Lock()
+	ch, ok := s.pending[id]
+	if ok {
+		delete(s.pending, id)
+	}
+	s.pendingMu.Unlock()
+	return ch, ok
+}
+
+func (s *session) pendingDelete(id string) bool {
+	s.pendingMu.Lock()
+	_, ok := s.pending[id]
+	if ok {
+		delete(s.pending, id)
+	}
+	s.pendingMu.Unlock()
+	return ok
+}
+
+func (s *Server) closeAllSessions() {
+	s.hub.mu.RLock()
+	sessions := make([]*session, 0, len(s.hub.sessions))
+	for _, sess := range s.hub.sessions {
+		sessions = append(sessions, sess)
+	}
+	s.hub.mu.RUnlock()
+
+	for _, sess := range sessions {
+		_ = sess.conn.Close()
+	}
 }
 
 func (s *session) tryAcquirePending(limit int64) bool {
@@ -618,9 +746,15 @@ func (s *Server) nextRequestID() string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(data)
+	_, _ = w.Write([]byte("\n"))
 }
 
 func shutdownServer(server *http.Server, timeout time.Duration) error {

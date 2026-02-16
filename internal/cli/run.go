@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -520,7 +522,33 @@ func detectMachineID() string {
 			}
 		}
 	}
+	if runtime.GOOS == "darwin" {
+		if out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
+			if id := parseDarwinIOPlatformUUID(string(out)); id != "" {
+				return id
+			}
+		}
+		if out, err := exec.Command("sysctl", "-n", "kern.uuid").Output(); err == nil {
+			if id := strings.TrimSpace(string(out)); id != "" {
+				return id
+			}
+		}
+	}
 	return ""
+}
+
+func parseDarwinIOPlatformUUID(raw string) string {
+	const marker = `"IOPlatformUUID" = "`
+	idx := strings.Index(raw, marker)
+	if idx < 0 {
+		return ""
+	}
+	start := idx + len(marker)
+	end := strings.Index(raw[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(raw[start : start+end])
 }
 
 func isInteractiveInput() bool {

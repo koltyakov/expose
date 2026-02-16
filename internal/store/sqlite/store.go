@@ -56,7 +56,13 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	if err := ensureParentDir(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	// Append per-connection PRAGMAs to the DSN so every pooled connection gets them.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	dsn := path + sep + "_pragma=foreign_keys(1)&_pragma=synchronous(normal)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -76,11 +82,11 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db.SetMaxOpenConns(maxOpenConns)
 	db.SetMaxIdleConns(maxIdleConns)
 
+	// journal_mode and busy_timeout are database-wide; set them once here.
+	// foreign_keys and synchronous are per-connection and are handled via DSN _pragma parameters.
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL",
 	}
 	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {
@@ -162,13 +168,17 @@ CREATE INDEX IF NOT EXISTS idx_connect_tokens_tunnel_id ON connect_tokens(tunnel
 
 func (s *Store) CreateAPIKey(ctx context.Context, name, keyHash string) (domain.APIKey, error) {
 	now := time.Now().UTC()
+	id, err := newID("k")
+	if err != nil {
+		return domain.APIKey{}, err
+	}
 	k := domain.APIKey{
-		ID:        newID("k"),
+		ID:        id,
 		Name:      name,
 		KeyHash:   keyHash,
 		CreatedAt: now,
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 INSERT INTO api_keys(id, name, key_hash, created_at, revoked_at)
 VALUES(?, ?, ?, ?, NULL)`, k.ID, k.Name, k.KeyHash, k.CreatedAt)
 	return k, err
@@ -353,8 +363,12 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 	}()
 
 	now := time.Now().UTC()
+	dID, err := newID("d")
+	if err != nil {
+		return domain.Domain{}, domain.Tunnel{}, err
+	}
 	d := domain.Domain{
-		ID:        newID("d"),
+		ID:        dID,
 		APIKeyID:  keyID,
 		Type:      dType,
 		Hostname:  hostname,
@@ -414,8 +428,12 @@ VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status,
 		}
 	}
 
+	tID, err := newID("t")
+	if err != nil {
+		return domain.Domain{}, domain.Tunnel{}, err
+	}
 	t := domain.Tunnel{
-		ID:          newID("t"),
+		ID:          tID,
 		APIKeyID:    keyID,
 		DomainID:    d.ID,
 		State:       domain.TunnelStateDisconnected,
@@ -475,8 +493,12 @@ WHERE id = ?`, domain.DomainStatusActive, domainID); err != nil {
 		return domain.Tunnel{}, err
 	}
 
+	tID2, err := newID("t")
+	if err != nil {
+		return domain.Tunnel{}, err
+	}
 	t := domain.Tunnel{
-		ID:          newID("t"),
+		ID:          tID2,
 		APIKeyID:    keyID,
 		DomainID:    domainID,
 		State:       domain.TunnelStateDisconnected,
@@ -497,8 +519,11 @@ VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)`,
 }
 
 func (s *Store) CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error) {
-	token := newID("ct")
-	_, err := s.db.ExecContext(ctx, `
+	token, err := newID("ct")
+	if err != nil {
+		return "", err
+	}
+	_, err = s.db.ExecContext(ctx, `
 INSERT INTO connect_tokens(token, tunnel_id, expires_at, used_at)
 VALUES(?, ?, ?, NULL)`, token, tunnelID, time.Now().UTC().Add(ttl))
 	return token, err
@@ -806,10 +831,13 @@ func (s *Store) cleanupStaleTouchEntriesLocked(now time.Time) {
 
 func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (string, error) {
 	for i := 0; i < 16; i++ {
-		candidate := randomSlug(6)
+		candidate, err := randomSlug(6)
+		if err != nil {
+			return "", err
+		}
 		hostname := fmt.Sprintf("%s.%s", candidate, baseDomain)
 		var one int
-		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM domains WHERE hostname = ?`, hostname).Scan(&one)
+		err = s.db.QueryRowContext(ctx, `SELECT 1 FROM domains WHERE hostname = ?`, hostname).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {
 			return candidate, nil
 		}
@@ -828,7 +856,7 @@ func normalizeHostLabel(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
-func randomSlug(length int) string {
+func randomSlug(length int) (string, error) {
 	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 	const n = byte(len(alphabet))
 	// Rejection threshold avoids modulo bias: largest multiple of n <= 256.
@@ -837,7 +865,9 @@ func randomSlug(length int) string {
 	buf := make([]byte, length+16) // over-read to reduce rand calls
 	filled := 0
 	for filled < length {
-		_, _ = rand.Read(buf)
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("crypto/rand: %w", err)
+		}
 		for _, b := range buf {
 			if int(b) >= maxFair {
 				continue
@@ -849,13 +879,15 @@ func randomSlug(length int) string {
 			}
 		}
 	}
-	return string(slug)
+	return string(slug), nil
 }
 
-func newID(prefix string) string {
+func newID(prefix string) (string, error) {
 	b := make([]byte, 12)
-	_, _ = rand.Read(b)
-	return prefix + "_" + hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand: %w", err)
+	}
+	return prefix + "_" + hex.EncodeToString(b), nil
 }
 
 func boolToInt(v bool) int {

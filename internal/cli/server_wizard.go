@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/koltyakov/expose/internal/auth"
@@ -318,24 +316,7 @@ func loadEnvFileValues(path string) map[string]string {
 }
 
 func detectWizardMachineID() string {
-	if id := strings.TrimSpace(detectMachineID()); id != "" {
-		return id
-	}
-	if runtime.GOOS != "darwin" {
-		return ""
-	}
-
-	if out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
-		if id := parseDarwinIOPlatformUUID(string(out)); id != "" {
-			return id
-		}
-	}
-	if out, err := exec.Command("sysctl", "-n", "kern.uuid").Output(); err == nil {
-		if id := strings.TrimSpace(string(out)); id != "" {
-			return id
-		}
-	}
-	return ""
+	return detectMachineID()
 }
 
 func resolveWizardPepperDefault(ctx context.Context, dbPath, fallback string) string {
@@ -355,20 +336,6 @@ func resolveWizardPepperDefault(ctx context.Context, dbPath, fallback string) st
 		}
 	}
 	return strings.TrimSpace(fallback)
-}
-
-func parseDarwinIOPlatformUUID(raw string) string {
-	const marker = "\"IOPlatformUUID\" = \""
-	idx := strings.Index(raw, marker)
-	if idx < 0 {
-		return ""
-	}
-	start := idx + len(marker)
-	end := strings.Index(raw[start:], "\"")
-	if end < 0 {
-		return ""
-	}
-	return strings.TrimSpace(raw[start : start+end])
 }
 
 func createWizardAPIKey(ctx context.Context, dbPath, pepper, name string) (string, error) {

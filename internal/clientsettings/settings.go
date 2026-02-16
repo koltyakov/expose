@@ -54,7 +54,7 @@ func Save(s Settings) error {
 		return errors.New("server_url and api_key are required")
 	}
 	path := Path()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(s, "", "  ")

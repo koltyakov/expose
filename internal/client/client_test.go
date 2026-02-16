@@ -15,14 +15,28 @@ import (
 func TestNextBackoff(t *testing.T) {
 	t.Parallel()
 
-	if got := nextBackoff(0); got != reconnectInitialDelay {
-		t.Fatalf("expected initial delay %s, got %s", reconnectInitialDelay, got)
+	// With jitter (±25%), results are in range [0.75*base, 1.25*base].
+	got := nextBackoff(0)
+	base := reconnectInitialDelay * 2
+	lo := time.Duration(float64(base) * 0.75)
+	hi := time.Duration(float64(base) * 1.25)
+	if got < lo || got > hi {
+		t.Fatalf("expected initial backoff in [%s, %s], got %s", lo, hi, got)
 	}
-	if got := nextBackoff(reconnectInitialDelay); got != reconnectInitialDelay*2 {
-		t.Fatalf("expected doubled delay, got %s", got)
+
+	got = nextBackoff(reconnectInitialDelay)
+	base = reconnectInitialDelay * 2
+	lo = time.Duration(float64(base) * 0.75)
+	hi = time.Duration(float64(base) * 1.25)
+	if got < lo || got > hi {
+		t.Fatalf("expected doubled delay in [%s, %s], got %s", lo, hi, got)
 	}
-	if got := nextBackoff(reconnectMaxDelay); got != reconnectMaxDelay {
-		t.Fatalf("expected max delay clamp, got %s", got)
+
+	got = nextBackoff(reconnectMaxDelay)
+	lo = time.Duration(float64(reconnectMaxDelay) * 0.75)
+	hi = time.Duration(float64(reconnectMaxDelay) * 1.25)
+	if got < lo || got > hi {
+		t.Fatalf("expected clamped delay in [%s, %s], got %s", lo, hi, got)
 	}
 }
 

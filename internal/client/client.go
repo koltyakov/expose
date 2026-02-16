@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -47,8 +48,12 @@ type Client struct {
 }
 
 const (
-	reconnectInitialDelay = 2 * time.Second
-	reconnectMaxDelay     = 1 * time.Minute
+	reconnectInitialDelay      = 2 * time.Second
+	reconnectMaxDelay          = 1 * time.Minute
+	maxConcurrentForwards      = 32
+	wsMessageBufferSize        = 64
+	clientWSWriteTimeout       = 15 * time.Second
+	localForwardResponseMaxB64 = 10 * 1024 * 1024
 )
 
 // New creates a Client with the given configuration and logger.
@@ -116,22 +121,37 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
-	defer func() { _ = conn.Close() }()
+
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+
 	stopClose := make(chan struct{})
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-sessionCtx.Done():
 			_ = conn.Close()
 		case <-stopClose:
 		}
 	}()
-	defer close(stopClose)
+
+	var requestWG sync.WaitGroup
+	defer func() {
+		cancelSession()
+		close(stopClose)
+		_ = conn.Close()
+		requestWG.Wait()
+	}()
+
 	var writeMu sync.Mutex
 	writeJSON := func(msg tunnelproto.Message) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		if err := conn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout)); err != nil {
+			return err
+		}
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
 		return conn.WriteJSON(msg)
 	}
+
 	keepaliveErr := make(chan error, 1)
 	if c.cfg.PingInterval > 0 {
 		go func() {
@@ -139,7 +159,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 			defer ticker.Stop()
 			for {
 				select {
-				case <-ctx.Done():
+				case <-sessionCtx.Done():
 					return
 				case <-ticker.C:
 					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
@@ -154,31 +174,46 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		}()
 	}
 
-	msgCh := make(chan tunnelproto.Message)
+	msgCh := make(chan tunnelproto.Message, wsMessageBufferSize)
 	readErr := make(chan error, 1)
 	go func() {
 		for {
 			var msg tunnelproto.Message
 			if err := conn.ReadJSON(&msg); err != nil {
-				readErr <- err
+				select {
+				case readErr <- err:
+				default:
+				}
 				return
 			}
-			msgCh <- msg
+			select {
+			case msgCh <- msg:
+			case <-sessionCtx.Done():
+				return
+			}
 		}
 	}()
 
+	requestErr := make(chan error, 1)
+	requestSem := make(chan struct{}, maxConcurrentForwards)
+
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-sessionCtx.Done():
+			return sessionCtx.Err()
 		case err := <-keepaliveErr:
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if sessionCtx.Err() != nil {
+				return sessionCtx.Err()
+			}
+			return err
+		case err := <-requestErr:
+			if sessionCtx.Err() != nil {
+				return sessionCtx.Err()
 			}
 			return err
 		case err := <-readErr:
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if sessionCtx.Err() != nil {
+				return sessionCtx.Err()
 			}
 			return err
 		case msg := <-msgCh:
@@ -187,19 +222,31 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				if msg.Request == nil {
 					continue
 				}
-				resp := c.forwardLocal(ctx, localBase, msg.Request)
-				if err := writeJSON(tunnelproto.Message{
-					Kind:     tunnelproto.KindResponse,
-					Response: resp,
-				}); err != nil {
-					if ctx.Err() != nil {
-						return ctx.Err()
-					}
-					return err
+				select {
+				case requestSem <- struct{}{}:
+				case <-sessionCtx.Done():
+					return sessionCtx.Err()
 				}
+				requestWG.Add(1)
+				reqCopy := *msg.Request
+				go func(req tunnelproto.HTTPRequest) {
+					defer requestWG.Done()
+					defer func() { <-requestSem }()
+
+					resp := c.forwardLocal(sessionCtx, localBase, &req)
+					if err := writeJSON(tunnelproto.Message{
+						Kind:     tunnelproto.KindResponse,
+						Response: resp,
+					}); err != nil && sessionCtx.Err() == nil {
+						select {
+						case requestErr <- err:
+						default:
+						}
+					}
+				}(reqCopy)
 			case tunnelproto.KindPong, tunnelproto.KindPing:
 				if msg.Kind == tunnelproto.KindPing {
-					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && ctx.Err() == nil {
+					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && sessionCtx.Err() == nil {
 						return err
 					}
 				}
@@ -281,7 +328,9 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	if err != nil {
 		return &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway}
 	}
-	for k, vals := range req.Headers {
+	headers := tunnelproto.CloneHeaders(req.Headers)
+	netutil.RemoveHopByHopHeaders(headers)
+	for k, vals := range headers {
 		for _, v := range vals {
 			localReq.Header.Add(k, v)
 		}
@@ -299,11 +348,13 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, localForwardResponseMaxB64))
+	respHeaders := tunnelproto.CloneHeaders(resp.Header)
+	netutil.RemoveHopByHopHeaders(respHeaders)
 	return &tunnelproto.HTTPResponse{
 		ID:      req.ID,
 		Status:  resp.StatusCode,
-		Headers: tunnelproto.CloneHeaders(resp.Header),
+		Headers: respHeaders,
 		BodyB64: tunnelproto.EncodeBody(respBody),
 	}
 }

@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/netutil"
 )
 
 // Store wraps a SQLite database connection for all expose persistence operations.
@@ -34,10 +35,21 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Enable WAL mode for better concurrent read performance and reduced lock contention.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable WAL mode: %w", err)
+	// SQLite is more stable with a single writer connection and explicit busy timeout.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA synchronous=NORMAL",
+	}
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite setup (%s): %w", pragma, err)
+		}
 	}
 	s := &Store{db: db}
 	if err := s.Migrate(context.Background()); err != nil {
@@ -96,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_tunnels_state ON tunnels(state);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_domains_type_status ON domains(type, status);
 CREATE INDEX IF NOT EXISTS idx_tunnels_domain_id ON tunnels(domain_id);
+CREATE INDEX IF NOT EXISTS idx_tunnels_domain_state ON tunnels(domain_id, state);
 `
 	_, err := s.db.ExecContext(ctx, ddl)
 	return err
@@ -711,13 +724,7 @@ func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (strin
 }
 
 func normalizeHostname(host string) string {
-	host = strings.ToLower(strings.TrimSpace(host))
-	host = strings.TrimSuffix(host, ".")
-	if strings.Contains(host, ":") {
-		parts := strings.Split(host, ":")
-		return parts[0]
-	}
-	return host
+	return netutil.NormalizeHost(host)
 }
 
 func normalizeHostLabel(v string) string {

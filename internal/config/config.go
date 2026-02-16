@@ -5,10 +5,13 @@ package config
 import (
 	"errors"
 	"flag"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/koltyakov/expose/internal/netutil"
 )
 
 // ClientConfig holds all settings required by the tunnel client.
@@ -172,14 +175,18 @@ func envIntOrDefault(key string, def int) int {
 
 func normalizeDomainHost(v string) string {
 	v = strings.TrimSpace(strings.ToLower(v))
-	v = strings.TrimPrefix(v, "https://")
-	v = strings.TrimPrefix(v, "http://")
-	if idx := strings.Index(v, "/"); idx >= 0 {
-		v = v[:idx]
+	if v == "" {
+		return ""
 	}
-	if strings.Contains(v, ":") {
-		parts := strings.Split(v, ":")
-		v = parts[0]
+	if !strings.Contains(v, "://") {
+		v = "https://" + v
 	}
-	return strings.TrimSuffix(v, ".")
+	u, err := url.Parse(v)
+	if err != nil {
+		return netutil.NormalizeHost(v)
+	}
+	if u.Host == "" {
+		return netutil.NormalizeHost(u.Path)
+	}
+	return netutil.NormalizeHost(u.Host)
 }

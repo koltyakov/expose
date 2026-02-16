@@ -28,6 +28,7 @@ import (
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -40,6 +41,7 @@ type Server struct {
 	log           *slog.Logger
 	hub           *hub
 	wildcardTLSOn bool
+	requestSeq    atomic.Uint64
 }
 
 type hub struct {
@@ -64,9 +66,12 @@ type staticCertificate struct {
 }
 
 const (
-	tlsModeAuto     = "auto"
-	tlsModeDynamic  = "dynamic"
-	tlsModeWildcard = "wildcard"
+	tlsModeAuto          = "auto"
+	tlsModeDynamic       = "dynamic"
+	tlsModeWildcard      = "wildcard"
+	maxRegisterBodyBytes = 64 * 1024
+	minWSReadLimit       = 32 * 1024 * 1024
+	wsWriteTimeout       = 15 * time.Second
 )
 
 type registerRequest struct {
@@ -242,7 +247,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req registerRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, maxRegisterBodyBytes, &req); err != nil {
+		if isBodyTooLargeError(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
@@ -333,6 +342,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		tunnelID: tunnelID,
 		conn:     conn,
 	}
+	wsReadLimit := s.cfg.MaxBodyBytes * 2
+	if wsReadLimit < minWSReadLimit {
+		wsReadLimit = minWSReadLimit
+	}
+	sess.conn.SetReadLimit(wsReadLimit)
 	sess.touch(time.Now())
 	s.hub.mu.Lock()
 	s.hub.sessions[tunnelID] = sess
@@ -410,12 +424,18 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, s.cfg.MaxBodyBytes))
+	body, err := readLimitedBody(w, r, s.cfg.MaxBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
-	reqID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+	reqID := s.nextRequestID()
+	requestHeaders := tunnelproto.CloneHeaders(r.Header)
+	netutil.RemoveHopByHopHeaders(requestHeaders)
 	msg := tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
 		Request: &tunnelproto.HTTPRequest{
@@ -423,7 +443,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			Method:  r.Method,
 			Path:    r.URL.Path,
 			Query:   r.URL.RawQuery,
-			Headers: tunnelproto.CloneHeaders(r.Header),
+			Headers: requestHeaders,
 			BodyB64: tunnelproto.EncodeBody(body),
 		},
 	}
@@ -442,7 +462,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "tunnel closed", http.StatusBadGateway)
 			return
 		}
-		for k, vals := range resp.Headers {
+		respHeaders := tunnelproto.CloneHeaders(resp.Headers)
+		netutil.RemoveHopByHopHeaders(respHeaders)
+		for k, vals := range respHeaders {
 			for _, v := range vals {
 				w.Header().Add(k, v)
 			}
@@ -483,6 +505,10 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 func (s *session) writeJSON(msg tunnelproto.Message) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+		return err
+	}
+	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
 	return s.conn.WriteJSON(msg)
 }
 
@@ -510,12 +536,41 @@ func (s *session) closePending() {
 }
 
 func normalizeHost(host string) string {
-	host = strings.ToLower(strings.TrimSpace(host))
-	if strings.Contains(host, ":") {
-		p := strings.Split(host, ":")
-		return p[0]
+	return netutil.NormalizeHost(host)
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	defer func() { _ = r.Body.Close() }()
+
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
 	}
-	return strings.TrimSuffix(host, ".")
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain a single JSON object")
+		}
+		return err
+	}
+	return nil
+}
+
+func readLimitedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
+	reader := http.MaxBytesReader(w, r.Body, maxBytes)
+	defer func() { _ = reader.Close() }()
+	return io.ReadAll(reader)
+}
+
+func isBodyTooLargeError(err error) bool {
+	var tooLarge *http.MaxBytesError
+	return errors.As(err, &tooLarge)
+}
+
+func (s *Server) nextRequestID() string {
+	return fmt.Sprintf("req_%d_%d", time.Now().UnixNano(), s.requestSeq.Add(1))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

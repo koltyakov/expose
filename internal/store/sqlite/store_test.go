@@ -82,6 +82,187 @@ func TestConnectTokenConsume(t *testing.T) {
 	}
 }
 
+func TestConsumeConnectTokenErrorDoesNotLeakTransaction(t *testing.T) {
+	store, err := openTestStoreWithOptions(t, OpenOptions{MaxOpenConns: 1, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_token_tx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "toktx", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := store.CreateConnectToken(ctx, tunnel.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumeConnectToken(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumeConnectToken(ctx, token); err == nil {
+		t.Fatal("expected second consume to fail")
+	}
+	assertStoreWritableAfterError(t, store, tunnel.ID)
+
+	expiredToken, err := store.CreateConnectToken(ctx, tunnel.ID, -time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumeConnectToken(ctx, expiredToken); err == nil {
+		t.Fatal("expected expired token consume to fail")
+	}
+	assertStoreWritableAfterError(t, store, tunnel.ID)
+}
+
+func TestAllocateConflictDoesNotLeakTransaction(t *testing.T) {
+	store, err := openTestStoreWithOptions(t, OpenOptions{MaxOpenConns: 1, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k1, err := store.CreateAPIKey(ctx, "k1", "hash_alloc_conflict_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := store.CreateAPIKey(ctx, "k2", "hash_alloc_conflict_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, tunnel, err := store.AllocateDomainAndTunnel(ctx, k1.ID, "temporary", "same-sub", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AllocateDomainAndTunnel(ctx, k2.ID, "temporary", "same-sub", "example.com"); err == nil {
+		t.Fatal("expected hostname conflict")
+	}
+	assertStoreWritableAfterError(t, store, tunnel.ID)
+}
+
+func TestSwapConflictDoesNotLeakTransaction(t *testing.T) {
+	store, err := openTestStoreWithOptions(t, OpenOptions{MaxOpenConns: 1, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k1, err := store.CreateAPIKey(ctx, "k1", "hash_swap_conflict_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := store.CreateAPIKey(ctx, "k2", "hash_swap_conflict_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, tunnel, err := store.AllocateDomainAndTunnel(ctx, k1.ID, "temporary", "swap-sub", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SwapTunnelSession(ctx, d.ID, k2.ID, "machine-other"); err == nil {
+		t.Fatal("expected hostname conflict on swap")
+	}
+	assertStoreWritableAfterError(t, store, tunnel.ID)
+}
+
+func TestPurgeStaleConnectTokens(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_token_purge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "purge-token", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expiredToken, err := store.CreateConnectToken(ctx, tunnel.ID, -time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldUsedToken, err := store.CreateConnectToken(ctx, tunnel.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumeConnectToken(ctx, oldUsedToken); err != nil {
+		t.Fatal(err)
+	}
+	recentUsedToken, err := store.CreateConnectToken(ctx, tunnel.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumeConnectToken(ctx, recentUsedToken); err != nil {
+		t.Fatal(err)
+	}
+	freshToken, err := store.CreateConnectToken(ctx, tunnel.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	oldUsedAt := now.Add(-2 * time.Hour)
+	recentUsedAt := now.Add(-15 * time.Minute)
+	if _, err := store.db.ExecContext(ctx, `UPDATE connect_tokens SET used_at = ? WHERE token = ?`, oldUsedAt, oldUsedToken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE connect_tokens SET used_at = ? WHERE token = ?`, recentUsedAt, recentUsedToken); err != nil {
+		t.Fatal(err)
+	}
+
+	purged, err := store.PurgeStaleConnectTokens(ctx, now, now.Add(-time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purged != 2 {
+		t.Fatalf("expected 2 purged tokens, got %d", purged)
+	}
+
+	remaining := map[string]bool{}
+	rows, err := store.db.QueryContext(ctx, `SELECT token FROM connect_tokens`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			t.Fatal(err)
+		}
+		remaining[token] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if remaining[expiredToken] {
+		t.Fatal("expected expired token to be purged")
+	}
+	if remaining[oldUsedToken] {
+		t.Fatal("expected old used token to be purged")
+	}
+	if !remaining[recentUsedToken] {
+		t.Fatal("expected recent used token to remain")
+	}
+	if !remaining[freshToken] {
+		t.Fatal("expected fresh token to remain")
+	}
+}
+
 func TestOpenCreatesParentDirectory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "nested", "path", "expose.db")
 
@@ -538,9 +719,23 @@ func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
 
 func openTestStore(t *testing.T) (*Store, error) {
 	t.Helper()
+	return openTestStoreWithOptions(t, OpenOptions{})
+}
+
+func openTestStoreWithOptions(t *testing.T, opts OpenOptions) (*Store, error) {
+	t.Helper()
 	id, err := newID("test")
 	if err != nil {
 		return nil, err
 	}
-	return Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", id))
+	return OpenWithOptions(fmt.Sprintf("file:%s?mode=memory&cache=shared", id), opts)
+}
+
+func assertStoreWritableAfterError(t *testing.T, store *Store, tunnelID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := store.CreateConnectToken(ctx, tunnelID, time.Minute); err != nil {
+		t.Fatalf("store should remain writable after tx error path: %v", err)
+	}
 }

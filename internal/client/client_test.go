@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,57 @@ func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 	}
 	if got := firstHeaderValue(resp.Headers, "X-Upstream"); got != "ok" {
 		t.Fatalf("expected X-Upstream header to be preserved, got %q", got)
+	}
+}
+
+func TestIsNonRetriableRegisterError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "hostname conflict code",
+			err:  &registerError{StatusCode: http.StatusConflict, Code: "hostname_in_use", Message: "hostname already in use"},
+			want: true,
+		},
+		{
+			name: "unauthorized status",
+			err:  &registerError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"},
+			want: true,
+		},
+		{
+			name: "bad request status",
+			err:  &registerError{StatusCode: http.StatusBadRequest, Message: "invalid mode"},
+			want: true,
+		},
+		{
+			name: "rate limit status",
+			err:  &registerError{StatusCode: http.StatusTooManyRequests, Message: "rate limit exceeded"},
+			want: false,
+		},
+		{
+			name: "server error status",
+			err:  &registerError{StatusCode: http.StatusBadGateway, Message: "upstream"},
+			want: false,
+		},
+		{
+			name: "plain unauthorized fallback",
+			err:  io.ErrUnexpectedEOF,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		if got := isNonRetriableRegisterError(tc.err); got != tc.want {
+			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	if got := isNonRetriableRegisterError(errors.New("unauthorized")); !got {
+		t.Fatal("expected plain unauthorized error to be non-retriable")
 	}
 }
 

@@ -133,6 +133,8 @@ const (
 	httpsIdleTimeout     = 120 * time.Second
 	httpsMaxHeaderBytes  = 1 << 20
 	httpIdleTimeout      = 60 * time.Second
+	usedTokenRetention   = 1 * time.Hour
+	tokenPurgeBatchLimit = 1000
 )
 
 type registerRequest struct {
@@ -1003,21 +1005,22 @@ func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
 	hosts, err := s.store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-s.cfg.TempRetention), 100)
 	if err != nil {
 		s.log.Error("temporary domain cleanup failed", "err", err)
-		return
-	}
-	if len(hosts) == 0 {
-		return
-	}
-	removedFiles := 0
-	for _, host := range hosts {
-		removed, err := removeTunnelCertCache(s.cfg.CertCacheDir, host)
+	} else if len(hosts) > 0 {
+		removedFiles, failedFiles, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
 		if err != nil {
-			s.log.Error("failed to remove certificate cache during cleanup", "hostname", host, "err", err)
-			continue
+			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
+		} else {
+			s.log.Info("stale temporary domains cleaned", "domains", len(hosts), "cert_files", removedFiles, "cert_failures", failedFiles)
 		}
-		removedFiles += removed
 	}
-	s.log.Info("stale temporary domains cleaned", "domains", len(hosts), "cert_files", removedFiles)
+
+	now := time.Now().UTC()
+	purged, err := s.store.PurgeStaleConnectTokens(ctx, now, now.Add(-usedTokenRetention), tokenPurgeBatchLimit)
+	if err != nil {
+		s.log.Error("connect token cleanup failed", "err", err)
+	} else if purged > 0 {
+		s.log.Info("stale connect tokens cleaned", "tokens", purged)
+	}
 }
 
 func removeTunnelCertCache(cacheDir, hostname string) (int, error) {
@@ -1047,6 +1050,63 @@ func removeTunnelCertCache(cacheDir, hostname string) (int, error) {
 		removed++
 	}
 	return removed, nil
+}
+
+func removeTunnelCertCacheBatch(cacheDir string, hosts []string) (int, int, error) {
+	if strings.TrimSpace(cacheDir) == "" || len(hosts) == 0 {
+		return 0, 0, nil
+	}
+
+	hostSet := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		hostSet[host] = struct{}{}
+	}
+	if len(hostSet) == 0 {
+		return 0, 0, nil
+	}
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+
+	removed := 0
+	failed := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !shouldDeleteCertCacheEntry(name, hostSet) {
+			continue
+		}
+		path := filepath.Join(cacheDir, name)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failed++
+			continue
+		}
+		removed++
+	}
+
+	return removed, failed, nil
+}
+
+func shouldDeleteCertCacheEntry(name string, hostSet map[string]struct{}) bool {
+	if _, ok := hostSet[name]; ok {
+		return true
+	}
+	if idx := strings.IndexByte(name, '+'); idx > 0 {
+		_, ok := hostSet[name[:idx]]
+		return ok
+	}
+	return false
 }
 
 func isHostnameInUseError(err error) bool {

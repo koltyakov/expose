@@ -407,9 +407,25 @@ func isNonRetriableRegisterError(err error) bool {
 	}
 	var re *registerError
 	if errors.As(err, &re) {
-		return re.Code == "hostname_in_use"
+		if re.Code == "hostname_in_use" {
+			return true
+		}
+		// Retry for backpressure and transient timeout statuses.
+		if re.StatusCode == http.StatusTooManyRequests || re.StatusCode == http.StatusRequestTimeout {
+			return false
+		}
+		// Other 4xx statuses are usually auth or request-shape errors and should
+		// fail fast instead of reconnect-looping forever.
+		return re.StatusCode >= 400 && re.StatusCode < 500
 	}
 	// Fallback for plain-text errors from older servers.
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(msg, "hostname already in use")
+	if strings.Contains(msg, "hostname already in use") {
+		return true
+	}
+	return strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "forbidden") ||
+		strings.Contains(msg, "invalid mode") ||
+		strings.Contains(msg, "invalid json") ||
+		strings.Contains(msg, "requires subdomain")
 }

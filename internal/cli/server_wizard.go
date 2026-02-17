@@ -573,31 +573,20 @@ func askWizardYesNo(ctx context.Context, reader *bufio.Reader, out io.Writer, ti
 }
 
 func readWizardLine(ctx context.Context, reader *bufio.Reader) (string, error) {
-	type readResult struct {
-		line string
-		err  error
-	}
-
-	resCh := make(chan readResult, 1)
-	go func() {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) && line != "" {
-				resCh <- readResult{line: strings.TrimSpace(line)}
-				return
-			}
-			resCh <- readResult{err: err}
-			return
-		}
-		resCh <- readResult{line: strings.TrimSpace(line)}
-	}()
-
 	select {
 	case <-ctx.Done():
 		return "", context.Canceled
-	case res := <-resCh:
-		return res.line, res.err
+	default:
 	}
+
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		if errors.Is(err, io.EOF) && line != "" {
+			return strings.TrimSpace(line), nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }
 
 func validateWizardDomain(v string) error {

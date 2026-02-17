@@ -34,6 +34,7 @@ type Store struct {
 
 const defaultTouchMinInterval = 30 * time.Second
 const defaultTouchCleanupInterval = 5 * time.Minute
+const defaultConnectTokenPurgeLimit = 1000
 
 const defaultMaxOpenConns = 1
 const defaultMaxIdleConns = 1
@@ -159,8 +160,11 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_domains_type_status ON domains(type, status);
 CREATE INDEX IF NOT EXISTS idx_tunnels_domain_id ON tunnels(domain_id);
 CREATE INDEX IF NOT EXISTS idx_tunnels_domain_state ON tunnels(domain_id, state);
+CREATE INDEX IF NOT EXISTS idx_tunnels_api_key_state ON tunnels(api_key_id, state);
 CREATE INDEX IF NOT EXISTS idx_tunnels_domain_connected_at ON tunnels(domain_id, connected_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_connect_tokens_tunnel_id ON connect_tokens(tunnel_id);
+CREATE INDEX IF NOT EXISTS idx_connect_tokens_expires_at ON connect_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_connect_tokens_used_at ON connect_tokens(used_at);
 `
 	_, err := s.db.ExecContext(ctx, ddl)
 	return err
@@ -287,11 +291,7 @@ func (s *Store) ResetConnectedTunnels(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err = tx.ExecContext(ctx, `
 UPDATE domains
@@ -356,11 +356,7 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 	if err != nil {
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UTC()
 	dID, err := newID("d")
@@ -460,11 +456,7 @@ func (s *Store) SwapTunnelSession(ctx context.Context, domainID, keyID, clientMe
 	if err != nil {
 		return domain.Tunnel{}, err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	var apiKeyID string
 	var domainType string
@@ -534,11 +526,7 @@ func (s *Store) ConsumeConnectToken(ctx context.Context, token string) (string, 
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	var tunnelID string
 	var expires time.Time
@@ -549,15 +537,27 @@ FROM connect_tokens
 WHERE token = ?`, token).Scan(&tunnelID, &expires, &used); err != nil {
 		return "", err
 	}
+	now := time.Now().UTC()
 	if used.Valid {
 		return "", errors.New("token already used")
 	}
-	if time.Now().UTC().After(expires) {
+	if now.After(expires) {
 		return "", errors.New("token expired")
 	}
 
-	if _, err = tx.ExecContext(ctx, `UPDATE connect_tokens SET used_at = ? WHERE token = ?`, time.Now().UTC(), token); err != nil {
+	res, err := tx.ExecContext(ctx, `
+UPDATE connect_tokens
+SET used_at = ?
+WHERE token = ? AND used_at IS NULL AND expires_at >= ?`, now, token, now)
+	if err != nil {
 		return "", err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if affected == 0 {
+		return "", errors.New("token already used")
 	}
 	if err = tx.Commit(); err != nil {
 		return "", err
@@ -579,11 +579,7 @@ func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) erro
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	var state string
 	var isTemp bool
@@ -618,11 +614,7 @@ func (s *Store) CloseTemporaryTunnel(ctx context.Context, tunnelID string) (stri
 	if err != nil {
 		return "", false, err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	var state string
 	var isTemp bool
@@ -673,11 +665,7 @@ func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan tim
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
 SELECT
@@ -730,6 +718,34 @@ LIMIT ?`,
 		return nil, err
 	}
 	return hosts, nil
+}
+
+// PurgeStaleConnectTokens removes expired tokens and used tokens older than the
+// provided cutoff. It limits each run to avoid long write transactions.
+func (s *Store) PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = defaultConnectTokenPurgeLimit
+	}
+	now = now.UTC()
+	usedOlderThan = usedOlderThan.UTC()
+
+	res, err := s.db.ExecContext(ctx, `
+DELETE FROM connect_tokens
+WHERE token IN (
+	SELECT token
+	FROM connect_tokens
+	WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)
+	ORDER BY COALESCE(used_at, expires_at) ASC
+	LIMIT ?
+)`, now, usedOlderThan, limit)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error) {

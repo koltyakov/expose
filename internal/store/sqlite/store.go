@@ -21,6 +21,10 @@ import (
 	"github.com/koltyakov/expose/internal/netutil"
 )
 
+// ErrHostnameInUse is returned when the requested hostname is already allocated
+// by another key or tunnel type and cannot be claimed by the caller.
+var ErrHostnameInUse = errors.New("hostname already in use")
+
 // Store wraps a SQLite database connection for all expose persistence operations.
 type Store struct {
 	db *sql.DB
@@ -391,7 +395,7 @@ WHERE hostname = ? AND api_key_id = ? AND type = ?`,
 INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
 VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
 				if strings.Contains(strings.ToLower(err.Error()), "unique") {
-					return domain.Domain{}, domain.Tunnel{}, errors.New("hostname already in use")
+					return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
 				}
 				return domain.Domain{}, domain.Tunnel{}, err
 			}
@@ -404,7 +408,7 @@ FROM domains
 WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingType)
 		if err == nil {
 			if existingAPIKeyID != keyID || existingType != domain.DomainTypeTemporarySubdomain {
-				return domain.Domain{}, domain.Tunnel{}, errors.New("hostname already in use")
+				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
 			}
 			d.ID = existingID
 			if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID); err != nil {
@@ -417,7 +421,7 @@ WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingT
 INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
 VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
 				if strings.Contains(strings.ToLower(err.Error()), "unique") {
-					return domain.Domain{}, domain.Tunnel{}, errors.New("hostname already in use")
+					return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
 				}
 				return domain.Domain{}, domain.Tunnel{}, err
 			}
@@ -467,7 +471,7 @@ WHERE id = ?`, domainID).Scan(&apiKeyID, &domainType); err != nil {
 		return domain.Tunnel{}, err
 	}
 	if apiKeyID != keyID {
-		return domain.Tunnel{}, errors.New("hostname already in use")
+		return domain.Tunnel{}, ErrHostnameInUse
 	}
 
 	now := time.Now().UTC()
@@ -701,17 +705,26 @@ LIMIT ?`,
 	}
 
 	hosts := make([]string, 0, len(candidates))
+	ids := make([]any, 0, len(candidates))
 	for _, c := range candidates {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM connect_tokens WHERE tunnel_id IN (SELECT id FROM tunnels WHERE domain_id = ?)`, c.id); err != nil {
-			return nil, err
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM tunnels WHERE domain_id = ?`, c.id); err != nil {
-			return nil, err
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id = ?`, c.id); err != nil {
-			return nil, err
-		}
+		ids = append(ids, c.id)
 		hosts = append(hosts, c.hostname)
+	}
+
+	if len(ids) > 0 {
+		placeholders := strings.Repeat("?,", len(ids))
+		placeholders = placeholders[:len(placeholders)-1]
+		if _, err = tx.ExecContext(ctx,
+			`DELETE FROM connect_tokens WHERE tunnel_id IN (SELECT id FROM tunnels WHERE domain_id IN (`+placeholders+`))`,
+			ids...); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tunnels WHERE domain_id IN (`+placeholders+`)`, ids...); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id IN (`+placeholders+`)`, ids...); err != nil {
+			return nil, err
+		}
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -846,19 +859,47 @@ func (s *Store) cleanupStaleTouchEntriesLocked(now time.Time) {
 }
 
 func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (string, error) {
-	for i := 0; i < 16; i++ {
-		candidate, err := randomSlug(6)
+	const attempts = 16
+	slugs := make([]string, 0, attempts)
+	hostnames := make([]any, 0, attempts)
+	slugByHostname := make(map[string]string, attempts)
+	for i := 0; i < attempts; i++ {
+		slug, err := randomSlug(6)
 		if err != nil {
 			return "", err
 		}
-		hostname := fmt.Sprintf("%s.%s", candidate, baseDomain)
-		var one int
-		err = s.db.QueryRowContext(ctx, `SELECT 1 FROM domains WHERE hostname = ?`, hostname).Scan(&one)
-		if errors.Is(err, sql.ErrNoRows) {
-			return candidate, nil
+		hostname := fmt.Sprintf("%s.%s", slug, baseDomain)
+		if _, dup := slugByHostname[hostname]; dup {
+			continue
 		}
-		if err != nil {
+		slugs = append(slugs, slug)
+		hostnames = append(hostnames, hostname)
+		slugByHostname[hostname] = slug
+	}
+
+	placeholders := strings.Repeat("?,", len(hostnames))
+	placeholders = placeholders[:len(placeholders)-1]
+	rows, err := s.db.QueryContext(ctx, `SELECT hostname FROM domains WHERE hostname IN (`+placeholders+`)`, hostnames...)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	taken := make(map[string]struct{}, len(hostnames))
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
 			return "", err
+		}
+		taken[h] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+
+	for _, slug := range slugs {
+		hostname := fmt.Sprintf("%s.%s", slug, baseDomain)
+		if _, conflict := taken[hostname]; !conflict {
+			return slug, nil
 		}
 	}
 	return "", errors.New("failed to generate unique subdomain")

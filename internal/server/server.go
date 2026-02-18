@@ -43,6 +43,7 @@ type Server struct {
 	wildcardTLSOn bool
 	requestSeq    atomic.Uint64
 	regLimiter    rateLimiter
+	routes        routeCache
 }
 
 // rateLimiter implements a simple per-key token-bucket rate limiter.
@@ -84,16 +85,20 @@ func (rl *rateLimiter) allow(key string) bool {
 		return false
 	}
 	b.tokens--
+	return true
+}
 
-	// Lazily evict stale buckets.
-	if len(rl.buckets) > 100 {
-		for k, v := range rl.buckets {
-			if now.Sub(v.lastCheck) > regCleanupAge {
-				delete(rl.buckets, k)
-			}
+// cleanup evicts idle rate-limit buckets. Called periodically by the janitor
+// so that the hot allow() path is never burdened with map iteration.
+func (rl *rateLimiter) cleanup() {
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for k, v := range rl.buckets {
+		if now.Sub(v.lastCheck) > regCleanupAge {
+			delete(rl.buckets, k)
 		}
 	}
-	return true
 }
 
 type hub struct {
@@ -111,6 +116,48 @@ type session struct {
 	pendingCount     atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
+}
+
+// routeCache stores recently resolved hostname→TunnelRoute mappings with a
+// short TTL. Entries are explicitly invalidated on connect/disconnect to keep
+// the data fresh; the TTL is a safety-net for any missed invalidation.
+type routeCache struct {
+	mu      sync.RWMutex
+	entries map[string]routeCacheEntry
+}
+
+type routeCacheEntry struct {
+	route     domain.TunnelRoute
+	expiresAt time.Time
+}
+
+const routeCacheTTL = 5 * time.Second
+
+func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
+	c.mu.RLock()
+	e, ok := c.entries[host]
+	c.mu.RUnlock()
+	if !ok || time.Now().After(e.expiresAt) {
+		return domain.TunnelRoute{}, false
+	}
+	return e.route, true
+}
+
+func (c *routeCache) set(host string, route domain.TunnelRoute) {
+	c.mu.Lock()
+	c.entries[host] = routeCacheEntry{route: route, expiresAt: time.Now().Add(routeCacheTTL)}
+	c.mu.Unlock()
+}
+
+// deleteByTunnelID removes any cached entry whose tunnel matches tunnelID.
+func (c *routeCache) deleteByTunnelID(tunnelID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for host, e := range c.entries {
+		if e.route.Tunnel.ID == tunnelID {
+			delete(c.entries, host)
+		}
+	}
 }
 
 type staticCertificate struct {
@@ -175,6 +222,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger) *Ser
 		log:        logger,
 		hub:        &hub{sessions: map[string]*session{}},
 		regLimiter: rateLimiter{buckets: make(map[string]*bucket)},
+		routes:     routeCache{entries: make(map[string]routeCacheEntry)},
 	}
 }
 
@@ -300,7 +348,7 @@ func (s *Server) Run(ctx context.Context) error {
 				firstErr = err
 			}
 		}
-		s.hub.wg.Wait()
+		waitGroupWait(&s.hub.wg, 15*time.Second)
 		return firstErr
 	case err := <-errCh:
 		s.closeAllSessions()
@@ -308,7 +356,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if challengeServer != nil {
 			_ = shutdownServer(challengeServer, 5*time.Second)
 		}
-		s.hub.wg.Wait()
+		waitGroupWait(&s.hub.wg, 15*time.Second)
 		return err
 	}
 }
@@ -434,6 +482,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("failed to mark tunnel connected", "tunnel_id", tunnelID, "err", err)
 		return
 	}
+	// Evict any stale cached route entry so the next public request reflects
+	// the newly connected state.
+	s.routes.deleteByTunnelID(tunnelID)
 
 	sess := &session{
 		tunnelID: tunnelID,
@@ -465,9 +516,12 @@ func (s *Server) readLoop(sess *session) {
 		s.hub.mu.Lock()
 		delete(s.hub.sessions, sess.tunnelID)
 		s.hub.mu.Unlock()
-		if err := s.store.SetTunnelDisconnected(context.Background(), sess.tunnelID); err != nil {
+		s.routes.deleteByTunnelID(sess.tunnelID)
+		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := s.store.SetTunnelDisconnected(disconnectCtx, sess.tunnelID); err != nil {
 			s.log.Error("failed to mark tunnel disconnected", "tunnel_id", sess.tunnelID, "err", err)
 		}
+		disconnectCancel()
 		s.log.Info("tunnel disconnected", "tunnel_id", sess.tunnelID)
 	}()
 
@@ -507,14 +561,19 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := normalizeHost(r.Host)
-	route, err := s.store.FindRouteByHost(r.Context(), host)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "unknown host", http.StatusNotFound)
+	route, ok := s.routes.get(host)
+	if !ok {
+		var dbErr error
+		route, dbErr = s.store.FindRouteByHost(r.Context(), host)
+		if dbErr != nil {
+			if errors.Is(dbErr, sql.ErrNoRows) {
+				http.Error(w, "unknown host", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.routes.set(host, route)
 	}
 
 	s.hub.mu.RLock()
@@ -588,7 +647,8 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		if err == nil && len(b) > 0 {
 			_, _ = w.Write(b)
 		}
-		_ = s.store.TouchDomain(r.Context(), route.Domain.ID)
+		domainID := route.Domain.ID
+		go func() { _ = s.store.TouchDomain(context.Background(), domainID) }()
 	case <-timer.C:
 		if sess.pendingDelete(reqID) {
 			sess.releasePending()
@@ -766,6 +826,22 @@ func shutdownServer(server *http.Server, timeout time.Duration) error {
 		return err
 	}
 	return nil
+}
+
+// waitGroupWait blocks until wg reaches zero or timeout elapses.
+// Returns false if the timeout fired before all goroutines finished.
+func waitGroupWait(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (s *Server) loadStaticCertificate(mode string) (*staticCertificate, error) {
@@ -950,8 +1026,10 @@ func stableTemporarySubdomain(hostname, port string) string {
 func (s *Server) runJanitor(ctx context.Context) {
 	heartbeatTicker := time.NewTicker(s.cfg.HeartbeatCheckInterval)
 	cleanupTicker := time.NewTicker(s.cfg.CleanupInterval)
+	bucketTicker := time.NewTicker(regCleanupAge)
 	defer heartbeatTicker.Stop()
 	defer cleanupTicker.Stop()
+	defer bucketTicker.Stop()
 
 	for {
 		select {
@@ -961,6 +1039,8 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.expireStaleSessions()
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
+		case <-bucketTicker.C:
+			s.regLimiter.cleanup()
 		}
 	}
 }
@@ -985,7 +1065,9 @@ func (s *Server) expireStaleSessions() {
 		}
 
 		s.log.Warn("client heartbeat timeout", "tunnel_id", sess.tunnelID, "last_seen", lastSeen.UTC().Format(time.RFC3339))
-		hostname, closed, err := s.store.CloseTemporaryTunnel(context.Background(), sess.tunnelID)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		hostname, closed, err := s.store.CloseTemporaryTunnel(closeCtx, sess.tunnelID)
+		closeCancel()
 		if err != nil {
 			s.log.Error("failed to close stale temporary tunnel", "tunnel_id", sess.tunnelID, "err", err)
 		}
@@ -1110,10 +1192,7 @@ func shouldDeleteCertCacheEntry(name string, hostSet map[string]struct{}) bool {
 }
 
 func isHostnameInUseError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "hostname already in use")
+	return errors.Is(err, sqlite.ErrHostnameInUse)
 }
 
 func normalizedClientMachineID(machineID, hostname string) string {

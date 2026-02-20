@@ -421,9 +421,6 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 					},
 				}); err != nil {
 					deleteWSConn(streamID)
-					if c.display != nil {
-						c.display.TrackWSClose(streamID)
-					}
 					continue
 				}
 				startLocalWSReader(streamID, upstreamConn)

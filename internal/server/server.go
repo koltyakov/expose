@@ -1006,9 +1006,7 @@ func (s *session) wsPendingLoad(id string) (chan tunnelproto.Message, bool) {
 
 func (s *session) wsPendingDelete(id string) {
 	s.wsMu.Lock()
-	if _, ok := s.wsPending[id]; ok {
-		delete(s.wsPending, id)
-	}
+	delete(s.wsPending, id)
 	s.wsMu.Unlock()
 }
 
@@ -1065,13 +1063,17 @@ func injectForwardedFor(h map[string][]string, remoteAddr string) {
 	if ip == "" {
 		return
 	}
-	existing := ""
+	var existing string
+	var existingKey string
 	for k, vals := range h {
-		if strings.EqualFold(k, "X-Forwarded-For") && len(vals) > 0 {
+		if strings.ToLower(k) == "x-forwarded-for" && len(vals) > 0 {
 			existing = strings.TrimSpace(vals[0])
-			delete(h, k)
+			existingKey = k
 			break
 		}
+	}
+	if existingKey != "" {
+		delete(h, existingKey)
 	}
 	if existing != "" {
 		h["X-Forwarded-For"] = []string{existing + ", " + ip}

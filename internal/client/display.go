@@ -94,7 +94,7 @@ func (d *Display) ShowBanner(version string) {
 	defer d.mu.Unlock()
 	d.version = version
 	if d.color {
-		fmt.Fprint(d.out, ansiHideCur)
+		_, _ = fmt.Fprint(d.out, ansiHideCur)
 	}
 	d.redraw()
 }
@@ -104,7 +104,7 @@ func (d *Display) Cleanup() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.color {
-		fmt.Fprint(d.out, ansiShowCur)
+		_, _ = fmt.Fprint(d.out, ansiShowCur)
 	}
 }
 
@@ -136,16 +136,13 @@ func (d *Display) LogRequest(method, path string, status int, duration time.Dura
 	defer d.mu.Unlock()
 	d.totalHTTP++
 	d.trackVisitor(headers)
-	d.requests = append(d.requests, requestEntry{
+	d.appendEntry(requestEntry{
 		ts:       time.Now(),
 		method:   method,
 		path:     path,
 		status:   status,
 		duration: duration,
 	})
-	if len(d.requests) > maxDisplayRequests {
-		d.requests = d.requests[len(d.requests)-maxDisplayRequests:]
-	}
 	d.redraw()
 }
 
@@ -189,15 +186,11 @@ func (d *Display) TrackWSClose(id string) {
 func (d *Display) ShowWarning(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.requests = append(d.requests, requestEntry{
+	d.appendEntry(requestEntry{
 		ts:     time.Now(),
 		method: "WARN",
 		path:   msg,
-		status: 0,
 	})
-	if len(d.requests) > maxDisplayRequests {
-		d.requests = d.requests[len(d.requests)-maxDisplayRequests:]
-	}
 	d.redraw()
 }
 
@@ -205,16 +198,24 @@ func (d *Display) ShowWarning(msg string) {
 func (d *Display) ShowInfo(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.requests = append(d.requests, requestEntry{
+	d.appendEntry(requestEntry{
 		ts:     time.Now(),
 		method: "INFO",
 		path:   msg,
-		status: 0,
 	})
-	if len(d.requests) > maxDisplayRequests {
-		d.requests = d.requests[len(d.requests)-maxDisplayRequests:]
-	}
 	d.redraw()
+}
+
+// appendEntry adds a request entry to the rolling log, evicting the oldest
+// entry when the log exceeds maxDisplayRequests. It copies into a new backing
+// array to avoid retaining references from a growing underlying slice.
+// Caller must hold d.mu.
+func (d *Display) appendEntry(e requestEntry) {
+	d.requests = append(d.requests, e)
+	if len(d.requests) > maxDisplayRequests {
+		copy(d.requests, d.requests[len(d.requests)-maxDisplayRequests:])
+		d.requests = d.requests[:maxDisplayRequests]
+	}
 }
 
 // trackVisitor builds a fingerprint from the request headers and adds it
@@ -234,38 +235,37 @@ func visitorFingerprint(headers map[string][]string) string {
 		return ""
 	}
 
-	var ip string
-	// Check X-Forwarded-For first — take the first (leftmost = original client) IP.
+	var xff, xri, ua string
 	for k, vals := range headers {
-		if strings.EqualFold(k, "X-Forwarded-For") && len(vals) > 0 {
-			parts := strings.Split(vals[0], ",")
-			if v := strings.TrimSpace(parts[0]); v != "" {
-				ip = v
-				break
+		if len(vals) == 0 {
+			continue
+		}
+		switch strings.ToLower(k) {
+		case "x-forwarded-for":
+			if xff == "" {
+				xff = vals[0]
+			}
+		case "x-real-ip":
+			if xri == "" {
+				xri = vals[0]
+			}
+		case "user-agent":
+			if ua == "" {
+				ua = vals[0]
 			}
 		}
 	}
-	// Fallback to X-Real-Ip.
+
+	var ip string
+	if xff != "" {
+		parts := strings.Split(xff, ",")
+		ip = strings.TrimSpace(parts[0])
+	}
 	if ip == "" {
-		for k, vals := range headers {
-			if strings.EqualFold(k, "X-Real-Ip") && len(vals) > 0 {
-				if v := strings.TrimSpace(vals[0]); v != "" {
-					ip = v
-					break
-				}
-			}
-		}
+		ip = strings.TrimSpace(xri)
 	}
 	if ip == "" {
 		return ""
-	}
-
-	var ua string
-	for k, vals := range headers {
-		if strings.EqualFold(k, "User-Agent") && len(vals) > 0 {
-			ua = vals[0]
-			break
-		}
 	}
 
 	return ip + "|" + ua
@@ -376,7 +376,7 @@ func (d *Display) redraw() {
 		}
 	}
 
-	fmt.Fprint(d.out, b.String())
+	_, _ = fmt.Fprint(d.out, b.String())
 }
 
 // writeField writes a label–value pair aligned to displayFieldWidth.

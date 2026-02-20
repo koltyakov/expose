@@ -85,10 +85,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 
 	cfg.Name = strings.TrimSpace(cfg.Name)
-	cfg.User = strings.TrimSpace(cfg.User)
-	if cfg.User == "" {
-		cfg.User = "admin"
-	}
+	cfg.User = trimOrDefault(cfg.User, "admin")
 	cfg.Password = strings.TrimSpace(cfg.Password)
 	if cfg.LocalPort == 0 {
 		return cfg, errors.New("missing --port or EXPOSE_PORT")
@@ -150,10 +147,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	if cfg.BaseDomain == "" {
 		return cfg, errors.New("missing --domain or EXPOSE_DOMAIN")
 	}
-	cfg.TLSMode = strings.ToLower(strings.TrimSpace(cfg.TLSMode))
-	if cfg.TLSMode == "" {
-		cfg.TLSMode = "auto"
-	}
+	cfg.TLSMode = normalizeLowerOrDefault(cfg.TLSMode, "auto")
 	switch cfg.TLSMode {
 	case "auto", "dynamic", "wildcard":
 	default:
@@ -201,6 +195,22 @@ func envIntOrDefault(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func trimOrDefault(v, def string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+func normalizeLowerOrDefault(v, def string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 func normalizeDomainHost(v string) string {

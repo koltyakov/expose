@@ -12,8 +12,8 @@ import (
 
 // Settings contains the persisted client credentials.
 type Settings struct {
-	ServerURL string `json:"server_url"`
-	APIKey    string `json:"api_key"`
+	ServerURL string `json:"server"`
+	APIKey    string `json:"apiKey"`
 }
 
 // Path returns the absolute path to the settings file.
@@ -41,7 +41,7 @@ func Load() (Settings, error) {
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	if s.ServerURL == "" || s.APIKey == "" {
-		return Settings{}, errors.New("settings file is missing server_url or api_key")
+		return Settings{}, errors.New("settings file is missing `server` or `apiKey`")
 	}
 	return s, nil
 }
@@ -51,7 +51,7 @@ func Save(s Settings) error {
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	if s.ServerURL == "" || s.APIKey == "" {
-		return errors.New("server_url and api_key are required")
+		return errors.New("`server` and `apiKey` are required")
 	}
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

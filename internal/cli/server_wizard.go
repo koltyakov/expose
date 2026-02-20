@@ -367,18 +367,16 @@ func buildWizardEnvEntries(a serverWizardAnswers) []envEntry {
 		{Key: "EXPOSE_TLS_MODE", Value: a.TLSMode},
 	}
 	if a.TLSMode == "wildcard" {
+		entries = appendWizardDBAndCertEntries(entries, a)
 		entries = append(entries,
-			envEntry{Key: "EXPOSE_DB_PATH", Value: a.DBPath},
-			envEntry{Key: "EXPOSE_CERT_CACHE_DIR", Value: a.CertCacheDir},
 			envEntry{Key: "EXPOSE_TLS_CERT_FILE", Value: a.TLSCertFile},
 			envEntry{Key: "EXPOSE_TLS_KEY_FILE", Value: a.TLSKeyFile},
 		)
 	} else {
 		entries = append(entries,
 			envEntry{Key: "EXPOSE_LISTEN_HTTP_CHALLENGE", Value: a.ListenHTTP},
-			envEntry{Key: "EXPOSE_DB_PATH", Value: a.DBPath},
-			envEntry{Key: "EXPOSE_CERT_CACHE_DIR", Value: a.CertCacheDir},
 		)
+		entries = appendWizardDBAndCertEntries(entries, a)
 	}
 	entries = append(entries,
 		envEntry{Key: "EXPOSE_LOG_LEVEL", Value: a.LogLevel},
@@ -388,6 +386,13 @@ func buildWizardEnvEntries(a serverWizardAnswers) []envEntry {
 		entries = append(entries, envEntry{Key: "EXPOSE_API_KEY", Value: a.GeneratedKey})
 	}
 	return entries
+}
+
+func appendWizardDBAndCertEntries(entries []envEntry, a serverWizardAnswers) []envEntry {
+	return append(entries,
+		envEntry{Key: "EXPOSE_DB_PATH", Value: a.DBPath},
+		envEntry{Key: "EXPOSE_CERT_CACHE_DIR", Value: a.CertCacheDir},
+	)
 }
 
 func upsertEnvFile(path string, entries []envEntry) error {
@@ -457,11 +462,6 @@ func upsertEnvFile(path string, entries []envEntry) error {
 
 	content := strings.Join(lines, "\n") + "\n"
 	return os.WriteFile(path, []byte(content), 0o644)
-}
-
-func parseEnvAssignmentKey(line string) (string, bool) {
-	key, _, ok := parseEnvAssignment(line)
-	return key, ok
 }
 
 func parseEnvAssignment(line string) (string, string, bool) {

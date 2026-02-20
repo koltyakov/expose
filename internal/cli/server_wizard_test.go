@@ -125,16 +125,19 @@ func TestUpsertEnvFileUpdatesAndAppends(t *testing.T) {
 	}
 }
 
-func TestParseEnvAssignmentKey(t *testing.T) {
-	key, ok := parseEnvAssignmentKey("export EXPOSE_DOMAIN=example.com")
+func TestParseEnvAssignment(t *testing.T) {
+	key, value, ok := parseEnvAssignment("export EXPOSE_DOMAIN=example.com")
 	if !ok {
 		t.Fatal("expected assignment to be parsed")
 	}
 	if key != "EXPOSE_DOMAIN" {
 		t.Fatalf("expected EXPOSE_DOMAIN, got %s", key)
 	}
+	if value != "example.com" {
+		t.Fatalf("expected example.com, got %s", value)
+	}
 
-	if _, ok := parseEnvAssignmentKey("# comment"); ok {
+	if _, _, ok := parseEnvAssignment("# comment"); ok {
 		t.Fatal("expected comments to be ignored")
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -114,6 +115,8 @@ type session struct {
 	writeMu          sync.Mutex
 	pendingMu        sync.Mutex
 	pending          map[string]chan *tunnelproto.HTTPResponse
+	wsMu             sync.Mutex
+	wsPending        map[string]chan tunnelproto.Message
 	pendingCount     atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
@@ -314,6 +317,7 @@ func (s *Server) Run(ctx context.Context) error {
 		IdleTimeout:       httpsIdleTimeout,
 		MaxHeaderBytes:    httpsMaxHeaderBytes,
 		TLSConfig:         tlsConfig,
+		ErrorLog:          log.New(newHTTPSErrorLogWriter(s.log, useDynamicACME), "", 0),
 	}
 
 	errChSize := 1
@@ -533,9 +537,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	s.routes.deleteByTunnelID(tunnelID)
 
 	sess := &session{
-		tunnelID: tunnelID,
-		conn:     conn,
-		pending:  make(map[string]chan *tunnelproto.HTTPResponse),
+		tunnelID:  tunnelID,
+		conn:      conn,
+		pending:   make(map[string]chan *tunnelproto.HTTPResponse),
+		wsPending: make(map[string]chan tunnelproto.Message),
 	}
 	wsReadLimit := s.cfg.MaxBodyBytes * 2
 	if wsReadLimit < minWSReadLimit {
@@ -559,6 +564,7 @@ func (s *Server) readLoop(sess *session) {
 	defer func() {
 		_ = sess.conn.Close()
 		sess.closePending()
+		sess.closeWSPending()
 		s.hub.mu.Lock()
 		delete(s.hub.sessions, sess.tunnelID)
 		s.hub.mu.Unlock()
@@ -593,6 +599,27 @@ func (s *Server) readLoop(sess *session) {
 				default:
 				}
 				close(v)
+			}
+		case tunnelproto.KindWSOpenAck:
+			if msg.WSOpenAck == nil {
+				continue
+			}
+			if ch, ok := sess.wsPendingLoad(msg.WSOpenAck.ID); ok {
+				ch <- msg
+			}
+		case tunnelproto.KindWSData:
+			if msg.WSData == nil {
+				continue
+			}
+			if ch, ok := sess.wsPendingLoad(msg.WSData.ID); ok {
+				ch <- msg
+			}
+		case tunnelproto.KindWSClose:
+			if msg.WSClose == nil {
+				continue
+			}
+			if ch, ok := sess.wsPendingLoad(msg.WSClose.ID); ok {
+				ch <- msg
 			}
 		case tunnelproto.KindPing:
 			_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong})
@@ -643,6 +670,10 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if websocket.IsWebSocketUpgrade(r) {
+		s.handlePublicWebSocket(w, r, route, sess)
+		return
+	}
 
 	body, err := readLimitedBody(w, r, s.cfg.MaxBodyBytes)
 	if err != nil {
@@ -659,7 +690,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestHeaders := tunnelproto.CloneHeaders(r.Header)
-	netutil.RemoveHopByHopHeaders(requestHeaders)
+	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
 	msg := tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
 		Request: &tunnelproto.HTTPRequest{
@@ -692,7 +723,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respHeaders := tunnelproto.CloneHeaders(resp.Headers)
-		netutil.RemoveHopByHopHeaders(respHeaders)
+		netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 		for k, vals := range respHeaders {
 			for _, v := range vals {
 				w.Header().Add(k, v)
@@ -714,6 +745,147 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		if sess.pendingDelete(reqID) {
 			sess.releasePending()
 		}
+	}
+}
+
+func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
+	streamID := s.nextWSStreamID()
+	streamCh := make(chan tunnelproto.Message, 64)
+	sess.wsPendingStore(streamID, streamCh)
+	defer sess.wsPendingDelete(streamID)
+
+	headers := tunnelproto.CloneHeaders(r.Header)
+	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
+	openMsg := tunnelproto.Message{
+		Kind: tunnelproto.KindWSOpen,
+		WSOpen: &tunnelproto.WSOpen{
+			ID:      streamID,
+			Method:  r.Method,
+			Path:    r.URL.Path,
+			Query:   r.URL.RawQuery,
+			Headers: headers,
+		},
+	}
+	if err := sess.writeJSON(openMsg); err != nil {
+		http.Error(w, "tunnel write failed", http.StatusBadGateway)
+		return
+	}
+
+	timer := time.NewTimer(s.cfg.RequestTimeout)
+	defer timer.Stop()
+
+	var ack *tunnelproto.WSOpenAck
+	for ack == nil {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-timer.C:
+			http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+			return
+		case msg, ok := <-streamCh:
+			if !ok {
+				http.Error(w, "tunnel closed", http.StatusBadGateway)
+				return
+			}
+			if msg.Kind == tunnelproto.KindWSOpenAck && msg.WSOpenAck != nil {
+				ack = msg.WSOpenAck
+			}
+		}
+	}
+
+	if !ack.OK {
+		status := ack.Status
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		if strings.TrimSpace(ack.Error) == "" {
+			http.Error(w, "websocket upstream open failed", status)
+			return
+		}
+		http.Error(w, ack.Error, status)
+		return
+	}
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	if p := strings.TrimSpace(ack.Subprotocol); p != "" {
+		upgrader.Subprotocols = []string{p}
+	}
+	publicConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: websocket.CloseGoingAway, Text: "public upgrade failed"}})
+		return
+	}
+	defer func() {
+		_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: websocket.CloseNormalClosure}})
+	}()
+	defer func() { _ = publicConn.Close() }()
+
+	domainID := route.Domain.ID
+	go func() { _ = s.store.TouchDomain(context.Background(), domainID) }()
+
+	readDone := make(chan struct{})
+	writeDone := make(chan struct{})
+	relayStop := make(chan struct{})
+	defer close(relayStop)
+
+	go func() {
+		defer close(readDone)
+		for {
+			msgType, payload, err := publicConn.ReadMessage()
+			if err != nil {
+				code, text := websocket.CloseNormalClosure, ""
+				var ce *websocket.CloseError
+				if errors.As(err, &ce) {
+					code, text = ce.Code, ce.Text
+				}
+				_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: code, Text: text}})
+				return
+			}
+			if err := sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSData, WSData: &tunnelproto.WSData{ID: streamID, MessageType: msgType, DataB64: tunnelproto.EncodeBody(payload)}}); err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer close(writeDone)
+		for {
+			select {
+			case <-relayStop:
+				return
+			case <-r.Context().Done():
+				return
+			case msg, ok := <-streamCh:
+				if !ok {
+					return
+				}
+				switch msg.Kind {
+				case tunnelproto.KindWSData:
+					if msg.WSData == nil {
+						continue
+					}
+					b, err := tunnelproto.DecodeBody(msg.WSData.DataB64)
+					if err != nil {
+						continue
+					}
+					if err := publicConn.WriteMessage(msg.WSData.MessageType, b); err != nil {
+						return
+					}
+				case tunnelproto.KindWSClose:
+					if msg.WSClose == nil {
+						return
+					}
+					_ = publicConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(msg.WSClose.Code, msg.WSClose.Text), time.Now().Add(5*time.Second))
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-r.Context().Done():
+	case <-readDone:
+	case <-writeDone:
 	}
 }
 
@@ -817,6 +989,36 @@ func (s *session) pendingDelete(id string) bool {
 	return ok
 }
 
+func (s *session) wsPendingStore(id string, ch chan tunnelproto.Message) {
+	s.wsMu.Lock()
+	s.wsPending[id] = ch
+	s.wsMu.Unlock()
+}
+
+func (s *session) wsPendingLoad(id string) (chan tunnelproto.Message, bool) {
+	s.wsMu.Lock()
+	ch, ok := s.wsPending[id]
+	s.wsMu.Unlock()
+	return ch, ok
+}
+
+func (s *session) wsPendingDelete(id string) {
+	s.wsMu.Lock()
+	if _, ok := s.wsPending[id]; ok {
+		delete(s.wsPending, id)
+	}
+	s.wsMu.Unlock()
+}
+
+func (s *session) closeWSPending() {
+	s.wsMu.Lock()
+	for id, ch := range s.wsPending {
+		delete(s.wsPending, id)
+		close(ch)
+	}
+	s.wsMu.Unlock()
+}
+
 func (s *Server) closeAllSessions() {
 	s.hub.mu.RLock()
 	sessions := make([]*session, 0, len(s.hub.sessions))
@@ -882,6 +1084,10 @@ func isBodyTooLargeError(err error) bool {
 
 func (s *Server) nextRequestID() string {
 	return fmt.Sprintf("req_%d_%d", time.Now().UnixNano(), s.requestSeq.Add(1))
+}
+
+func (s *Server) nextWSStreamID() string {
+	return fmt.Sprintf("ws_%d_%d", time.Now().UnixNano(), s.requestSeq.Add(1))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -1038,6 +1244,82 @@ func normalizeTLSMode(mode string) string {
 		return tlsModeAuto
 	}
 	return mode
+}
+
+type httpsServerErrorLogWriter struct {
+	log                  *slog.Logger
+	dynamicACME          bool
+	provisioningHintOnce sync.Once
+}
+
+func newHTTPSErrorLogWriter(logger *slog.Logger, dynamicACME bool) *httpsServerErrorLogWriter {
+	return &httpsServerErrorLogWriter{log: logger, dynamicACME: dynamicACME}
+}
+
+func (w *httpsServerErrorLogWriter) Write(p []byte) (n int, err error) {
+	line := strings.TrimSpace(string(p))
+	if line == "" {
+		return len(p), nil
+	}
+	if w.logTLSHandshakeLine(line) {
+		return len(p), nil
+	}
+	w.log.Warn("https server error", "err", line)
+	return len(p), nil
+}
+
+func (w *httpsServerErrorLogWriter) logTLSHandshakeLine(line string) bool {
+	const marker = "TLS handshake error from "
+	if !strings.Contains(line, marker) {
+		return false
+	}
+	idx := strings.Index(line, marker)
+	if idx < 0 {
+		return false
+	}
+	payload := line[idx+len(marker):]
+	addr, reason, ok := strings.Cut(payload, ": ")
+	if !ok {
+		w.log.Debug("tls handshake dropped", "detail", payload)
+		return true
+	}
+	reason = strings.TrimSpace(reason)
+	if isLikelyScannerTLSReason(reason) {
+		w.log.Debug("tls handshake rejected", "remote_addr", strings.TrimSpace(addr), "reason", reason)
+		return true
+	}
+	if w.dynamicACME && isLikelyTLSProvisioningReason(reason) {
+		w.provisioningHintOnce.Do(func() {
+			w.log.Info("TLS certificate provisioning in progress for a new host; initial handshake retries are expected")
+		})
+		w.log.Info("tls handshake retried during certificate provisioning", "remote_addr", strings.TrimSpace(addr), "reason", reason)
+		return true
+	}
+	w.log.Warn("tls handshake failed", "remote_addr", strings.TrimSpace(addr), "reason", reason)
+	return true
+}
+
+func isLikelyTLSProvisioningReason(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	return strings.Contains(reason, "bad certificate") ||
+		strings.Contains(reason, "failed to verify certificate") ||
+		strings.Contains(reason, "certificate is not standards compliant") ||
+		strings.Contains(reason, "x509:")
+}
+
+func isLikelyScannerTLSReason(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	return reason == "eof" ||
+		strings.Contains(reason, "missing server name") ||
+		strings.Contains(reason, "unsupported application protocols") ||
+		strings.Contains(reason, "offered only unsupported versions") ||
+		strings.Contains(reason, "no cipher suite supported by both client and server")
 }
 
 func (s *Server) wildcardSetupGuide(defaultCertFile, defaultKeyFile string) string {

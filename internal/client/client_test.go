@@ -99,6 +99,63 @@ func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 	}
 }
 
+func TestForwardLocalPreservesWebSocketUpgradeHeaders(t *testing.T) {
+	t.Parallel()
+
+	var gotConnection string
+	var gotUpgrade string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotConnection = r.Header.Get("Connection")
+		gotUpgrade = r.Header.Get("Upgrade")
+		if !strings.EqualFold(gotUpgrade, "websocket") {
+			t.Fatalf("expected Upgrade websocket, got %q", gotUpgrade)
+		}
+		if !strings.EqualFold(gotConnection, "upgrade") {
+			t.Fatalf("expected Connection upgrade, got %q", gotConnection)
+		}
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Upgrade", "websocket")
+		w.Header().Set("Sec-WebSocket-Accept", "abc123")
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	resp := c.forwardLocal(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID:     "req_ws",
+		Method: http.MethodGet,
+		Path:   "/api/ws",
+		Headers: map[string][]string{
+			"Connection": {"keep-alive, upgrade, X-Hop"},
+			"Upgrade":    {"websocket"},
+			"X-Hop":      {"drop"},
+		},
+	})
+
+	if resp.Status != http.StatusSwitchingProtocols {
+		t.Fatalf("expected %d, got %d", http.StatusSwitchingProtocols, resp.Status)
+	}
+	if !strings.EqualFold(gotConnection, "upgrade") {
+		t.Fatalf("expected Connection header preserved for local forward, got %q", gotConnection)
+	}
+	if !strings.EqualFold(gotUpgrade, "websocket") {
+		t.Fatalf("expected Upgrade header preserved for local forward, got %q", gotUpgrade)
+	}
+	if got := firstHeaderValue(resp.Headers, "Connection"); !strings.EqualFold(got, "upgrade") {
+		t.Fatalf("expected Connection response header preserved, got %q", got)
+	}
+	if got := firstHeaderValue(resp.Headers, "Upgrade"); !strings.EqualFold(got, "websocket") {
+		t.Fatalf("expected Upgrade response header preserved, got %q", got)
+	}
+}
+
 func TestIsNonRetriableRegisterError(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +204,52 @@ func TestIsNonRetriableRegisterError(t *testing.T) {
 
 	if got := isNonRetriableRegisterError(errors.New("unauthorized")); !got {
 		t.Fatal("expected plain unauthorized error to be non-retriable")
+	}
+}
+
+func TestIsTLSProvisioningInProgressError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "verify certificate failure",
+			err:  errors.New("Post \"https://example.com\": tls: failed to verify certificate: x509: certificate signed by unknown authority"),
+			want: true,
+		},
+		{
+			name: "standards compliant failure",
+			err:  errors.New("x509: \"example.com\" certificate is not standards compliant"),
+			want: true,
+		},
+		{
+			name: "generic x509",
+			err:  errors.New("x509: certificate has expired or is not yet valid"),
+			want: true,
+		},
+		{
+			name: "network error",
+			err:  errors.New("dial tcp: connect: connection refused"),
+			want: false,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isTLSProvisioningInProgressError(tc.err); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

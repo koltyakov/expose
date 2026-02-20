@@ -198,3 +198,56 @@ func TestAuthorityPort(t *testing.T) {
 		t.Fatalf("expected empty port, got %q", got)
 	}
 }
+
+func TestIsLikelyTLSProvisioningReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{name: "bad certificate", reason: "remote error: tls: bad certificate", want: true},
+		{name: "verify certificate", reason: "tls: failed to verify certificate: x509: certificate signed by unknown authority", want: true},
+		{name: "standards compliant", reason: "x509: \"example.com\" certificate is not standards compliant", want: true},
+		{name: "scanner eof", reason: "EOF", want: false},
+		{name: "unsupported version", reason: "tls: client offered only unsupported versions: [302 301]", want: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isLikelyTLSProvisioningReason(tc.reason); got != tc.want {
+				t.Fatalf("got %v, want %v for reason %q", got, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+func TestIsLikelyScannerTLSReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{name: "eof", reason: "EOF", want: true},
+		{name: "missing server name", reason: "acme/autocert: missing server name", want: true},
+		{name: "unsupported protocols", reason: "tls: client requested unsupported application protocols ([\"http/0.9\" \"h2c\"])", want: true},
+		{name: "unsupported versions", reason: "tls: client offered only unsupported versions: [302 301]", want: true},
+		{name: "no shared cipher", reason: "tls: no cipher suite supported by both client and server", want: true},
+		{name: "bad certificate", reason: "remote error: tls: bad certificate", want: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isLikelyScannerTLSReason(tc.reason); got != tc.want {
+				t.Fatalf("got %v, want %v for reason %q", got, tc.want, tc.reason)
+			}
+		})
+	}
+}

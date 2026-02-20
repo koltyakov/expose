@@ -112,18 +112,9 @@ func runHTTP(ctx context.Context, args []string) int {
 	}
 
 	clientArgs := []string{"--port", strconv.Itoa(port)}
-	name = strings.TrimSpace(name)
-	if name != "" {
-		clientArgs = append(clientArgs, "--domain", name)
-	}
-	serverURL = strings.TrimSpace(serverURL)
-	if serverURL != "" {
-		clientArgs = append(clientArgs, "--server", serverURL)
-	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey != "" {
-		clientArgs = append(clientArgs, "--api-key", apiKey)
-	}
+	clientArgs = appendFlagIfNotEmpty(clientArgs, "--domain", name)
+	clientArgs = appendFlagIfNotEmpty(clientArgs, "--server", serverURL)
+	clientArgs = appendFlagIfNotEmpty(clientArgs, "--api-key", apiKey)
 	if protect {
 		clientArgs = append(clientArgs, "--protect")
 	}
@@ -147,30 +138,27 @@ func runClientLogin(args []string) int {
 	apiKey = strings.TrimSpace(apiKey)
 	canPrompt := isInteractiveInput()
 	reader := bufio.NewReader(os.Stdin)
-	if serverURL == "" {
-		if !canPrompt {
-			fmt.Fprintln(os.Stderr, "client login error: missing --server (or EXPOSE_DOMAIN)")
-			return 2
-		}
-		v, err := prompt(reader, "Server host or URL: ")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "client login error:", err)
-			return 1
-		}
-		serverURL = v
+	var missing bool
+	serverURL, missing, err := resolveRequiredValue(reader, serverURL, canPrompt, "Server host or URL: ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "client login error:", err)
+		return 1
 	}
-	if apiKey == "" {
-		if !canPrompt {
-			fmt.Fprintln(os.Stderr, "client login error: missing --api-key (or EXPOSE_API_KEY)")
-			return 2
-		}
-		v, err := prompt(reader, "API key: ")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "client login error:", err)
-			return 1
-		}
-		apiKey = v
+	if missing {
+		fmt.Fprintln(os.Stderr, "client login error: missing --server (or EXPOSE_DOMAIN)")
+		return 2
 	}
+
+	apiKey, missing, err = resolveRequiredValue(reader, apiKey, canPrompt, "API key: ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "client login error:", err)
+		return 1
+	}
+	if missing {
+		fmt.Fprintln(os.Stderr, "client login error: missing --api-key (or EXPOSE_API_KEY)")
+		return 2
+	}
+
 	if serverURL == "" || apiKey == "" {
 		fmt.Fprintln(os.Stderr, "client login error: server and api key are required")
 		return 2
@@ -217,20 +205,20 @@ func runClient(ctx context.Context, args []string) int {
 }
 
 func mergeClientSettings(cfg *config.ClientConfig) error {
-	hasInlineCreds := strings.TrimSpace(cfg.ServerURL) != "" && strings.TrimSpace(cfg.APIKey) != ""
+	hasInlineCreds := hasNonEmpty(cfg.ServerURL) && hasNonEmpty(cfg.APIKey)
 	if !hasInlineCreds {
 		stored, err := clientsettings.Load()
 		if err != nil {
-			return fmt.Errorf("missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key: %w", err)
+			return missingClientCredentialsError(err)
 		}
-		if strings.TrimSpace(cfg.ServerURL) == "" {
+		if !hasNonEmpty(cfg.ServerURL) {
 			cfg.ServerURL = stored.ServerURL
 		}
-		if strings.TrimSpace(cfg.APIKey) == "" {
+		if !hasNonEmpty(cfg.APIKey) {
 			cfg.APIKey = stored.APIKey
 		}
-		if strings.TrimSpace(cfg.ServerURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
-			return fmt.Errorf("missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key")
+		if !hasNonEmpty(cfg.ServerURL) || !hasNonEmpty(cfg.APIKey) {
+			return missingClientCredentialsError(nil)
 		}
 	}
 	normalized, err := normalizeServerURL(cfg.ServerURL)
@@ -327,17 +315,16 @@ func runAPIKeyAdmin(ctx context.Context, args []string) int {
 func runAPIKeyCreate(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("apikey-create", flag.ContinueOnError)
 	var dbPath, name, pepper string
-	fs.StringVar(&dbPath, "db", envOr("EXPOSE_DB_PATH", "./expose.db"), "sqlite db path")
+	fs.StringVar(&dbPath, "db", defaultDBPath(), "sqlite db path")
 	fs.StringVar(&name, "name", "default", "key label")
 	fs.StringVar(&pepper, "api-key-pepper", envOr("EXPOSE_API_KEY_PEPPER", ""), "hash pepper override")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	store, err := sqlite.Open(dbPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "db error:", err)
-		return 1
+	store, code := openSQLiteStoreOrExit(dbPath)
+	if code != 0 {
+		return code
 	}
 	defer func() { _ = store.Close() }()
 
@@ -367,15 +354,14 @@ func runAPIKeyCreate(ctx context.Context, args []string) int {
 func runAPIKeyList(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("apikey-list", flag.ContinueOnError)
 	var dbPath string
-	fs.StringVar(&dbPath, "db", envOr("EXPOSE_DB_PATH", "./expose.db"), "sqlite db path")
+	fs.StringVar(&dbPath, "db", defaultDBPath(), "sqlite db path")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	store, err := sqlite.Open(dbPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "db error:", err)
-		return 1
+	store, code := openSQLiteStoreOrExit(dbPath)
+	if code != 0 {
+		return code
 	}
 	defer func() { _ = store.Close() }()
 
@@ -397,7 +383,7 @@ func runAPIKeyList(ctx context.Context, args []string) int {
 func runAPIKeyRevoke(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("apikey-revoke", flag.ContinueOnError)
 	var dbPath, id string
-	fs.StringVar(&dbPath, "db", envOr("EXPOSE_DB_PATH", "./expose.db"), "sqlite db path")
+	fs.StringVar(&dbPath, "db", defaultDBPath(), "sqlite db path")
 	fs.StringVar(&id, "id", "", "key id")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -407,10 +393,9 @@ func runAPIKeyRevoke(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	store, err := sqlite.Open(dbPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "db error:", err)
-		return 1
+	store, code := openSQLiteStoreOrExit(dbPath)
+	if code != 0 {
+		return code
 	}
 	defer func() { _ = store.Close() }()
 
@@ -471,6 +456,31 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func hasNonEmpty(v string) bool {
+	return strings.TrimSpace(v) != ""
+}
+
+func missingClientCredentialsError(cause error) error {
+	const message = "missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key"
+	if cause == nil {
+		return errors.New(message)
+	}
+	return fmt.Errorf("%s: %w", message, cause)
+}
+
+func defaultDBPath() string {
+	return envOr("EXPOSE_DB_PATH", "./expose.db")
+}
+
+func openSQLiteStoreOrExit(dbPath string) (*sqlite.Store, int) {
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "db error:", err)
+		return nil, 1
+	}
+	return store, 0
 }
 
 func parseIntEnv(key string, def int) int {
@@ -589,6 +599,29 @@ func prompt(reader *bufio.Reader, label string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+func resolveRequiredValue(reader *bufio.Reader, value string, canPrompt bool, promptLabel string) (string, bool, error) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value, false, nil
+	}
+	if !canPrompt {
+		return "", true, nil
+	}
+	v, err := prompt(reader, promptLabel)
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(v), false, nil
+}
+
+func appendFlagIfNotEmpty(args []string, flagName, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return args
+	}
+	return append(args, flagName, value)
 }
 
 func promptClientPasswordIfNeeded(cfg *config.ClientConfig) error {

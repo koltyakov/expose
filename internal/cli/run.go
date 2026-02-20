@@ -25,6 +25,7 @@ import (
 	"github.com/koltyakov/expose/internal/clientsettings"
 	"github.com/koltyakov/expose/internal/config"
 	ilog "github.com/koltyakov/expose/internal/log"
+	"github.com/koltyakov/expose/internal/selfupdate"
 	"github.com/koltyakov/expose/internal/server"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
@@ -52,6 +53,8 @@ func Run(args []string) int {
 		return runServer(ctx, args[1:])
 	case "apikey":
 		return runAPIKeyAdmin(ctx, args[1:])
+	case "update":
+		return runUpdate(ctx)
 	case "version", "--version", "-v":
 		printVersion()
 		return 0
@@ -435,6 +438,7 @@ Usage:
   expose apikey create --name NAME      Create a new API key
   expose apikey list                    List all API keys
   expose apikey revoke --id=ID          Revoke an API key
+  expose update                         Update to the latest release
   expose version                        Print version
   expose help                           Show this help
 
@@ -463,6 +467,47 @@ var Version = "dev"
 
 func printVersion() {
 	fmt.Println("expose", Version)
+}
+
+func runUpdate(ctx context.Context) int {
+	fmt.Printf("Current version: %s\n", Version)
+	fmt.Println("Checking for updates...")
+
+	rel, err := selfupdate.Check(ctx, Version)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update check failed:", err)
+		return 1
+	}
+	if rel == nil {
+		fmt.Println("Already up to date.")
+		return 0
+	}
+
+	fmt.Printf("New version available: %s\n", strings.TrimPrefix(rel.TagName, "v"))
+
+	if isInteractiveInput() {
+		reader := bufio.NewReader(os.Stdin)
+		answer, err := prompt(reader, "Do you want to update? [y/N] ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Update cancelled.")
+			return 0
+		}
+	}
+
+	fmt.Println("Downloading...")
+	res, err := selfupdate.Apply(ctx, rel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update failed:", err)
+		return 1
+	}
+
+	fmt.Printf("Updated to %s (%s)\n", res.LatestVersion, res.AssetName)
+	return 0
 }
 
 func envOr(key, def string) string {

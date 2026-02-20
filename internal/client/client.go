@@ -48,8 +48,21 @@ type registerResponse struct {
 type Client struct {
 	cfg       config.ClientConfig
 	log       *slog.Logger
+	display   *Display     // optional interactive terminal display
 	apiClient *http.Client // for registration API calls
 	fwdClient *http.Client // for local upstream forwarding
+}
+
+// SetDisplay configures the interactive terminal display.
+// When set, the client renders an ngrok-style interface instead of plain
+// structured log output for tunnel status and request logging.
+func (c *Client) SetDisplay(d *Display) {
+	c.display = d
+}
+
+// SetLogger replaces the client's logger.
+func (c *Client) SetLogger(l *slog.Logger) {
+	c.log = l
 }
 
 const (
@@ -100,13 +113,25 @@ func (c *Client) Run(ctx context.Context) error {
 			if isTLSProvisioningInProgressError(err) {
 				tlsProvisioningRetries++
 				if tlsProvisioningRetries <= tlsProvisioningInfoRetries {
-					c.log.Info("server TLS certificate provisioning in progress; retrying", "err", err, "retry_in", backoff.String())
+					if c.display != nil {
+						c.display.ShowInfo(fmt.Sprintf("TLS certificate provisioning in progress; retrying in %s", backoff.String()))
+					} else {
+						c.log.Info("server TLS certificate provisioning in progress; retrying", "err", err, "retry_in", backoff.String())
+					}
 				} else {
-					c.log.Warn("tunnel register failed while waiting for TLS certificate provisioning", "err", err, "retry_in", backoff.String())
+					if c.display != nil {
+						c.display.ShowWarning(fmt.Sprintf("tunnel register failed (TLS provisioning): %v; retrying in %s", err, backoff.String()))
+					} else {
+						c.log.Warn("tunnel register failed while waiting for TLS certificate provisioning", "err", err, "retry_in", backoff.String())
+					}
 				}
 			} else {
 				tlsProvisioningRetries = 0
-				c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.String())
+				if c.display != nil {
+					c.display.ShowWarning(fmt.Sprintf("tunnel register failed: %v; retrying in %s", err, backoff.String()))
+				} else {
+					c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.String())
+				}
 			}
 			select {
 			case <-ctx.Done():
@@ -118,16 +143,29 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		backoff = reconnectInitialDelay
 		tlsProvisioningRetries = 0
-		c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
-		if reg.ServerTLSMode != "" {
-			c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
+		if c.display != nil {
+			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
+			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID)
+		} else {
+			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
+			if reg.ServerTLSMode != "" {
+				c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
+			}
 		}
 
 		err = c.runSession(ctx, localBase, reg)
 		if ctx.Err() != nil {
 			return nil
 		}
-		c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", reconnectInitialDelay.String())
+		if c.display != nil {
+			reason := "unknown"
+			if err != nil {
+				reason = err.Error()
+			}
+			c.display.ShowReconnecting(reason)
+		} else {
+			c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", reconnectInitialDelay.String())
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -254,6 +292,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		wsMu.Unlock()
 		if ok {
 			_ = streamConn.Close()
+			if c.display != nil {
+				c.display.TrackWSClose(id)
+			}
 		}
 	}
 	startLocalWSReader := func(streamID string, streamConn *websocket.Conn) {
@@ -308,6 +349,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				}
 				requestWG.Add(1)
 				reqCopy := *msg.Request
+				if c.display != nil {
+					c.display.TrackHTTPStart()
+				}
 				go func(req tunnelproto.HTTPRequest) {
 					defer requestWG.Done()
 					defer func() { <-requestSem }()
@@ -318,12 +362,24 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 					if strings.TrimSpace(req.Query) != "" {
 						path = path + "?" + req.Query
 					}
-					c.log.Info("forwarded request", "method", req.Method, "path", path, "status", resp.Status, "duration", time.Since(started).String())
+					elapsed := time.Since(started)
+					if c.display != nil {
+						c.display.LogRequest(req.Method, path, resp.Status, elapsed, req.Headers)
+					} else {
+						c.log.Info("forwarded request", "method", req.Method, "path", path, "status", resp.Status, "duration", elapsed.String())
+					}
 					if err := writeJSON(tunnelproto.Message{
 						Kind:     tunnelproto.KindResponse,
 						Response: resp,
 					}); err != nil && sessionCtx.Err() == nil {
-						c.log.Warn("failed to send response to server", "req_id", req.ID, "err", err)
+						if c.display != nil {
+							c.display.ShowWarning(fmt.Sprintf("failed to send response to server: req_id=%s err=%v", req.ID, err))
+						} else {
+							c.log.Warn("failed to send response to server", "req_id", req.ID, "err", err)
+						}
+					}
+					if c.display != nil {
+						c.display.TrackHTTPDone()
 					}
 				}(reqCopy)
 			case tunnelproto.KindWSOpen:
@@ -348,6 +404,13 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 					continue
 				}
 				setWSConn(streamID, upstreamConn)
+				if c.display != nil {
+					wsPath := msg.WSOpen.Path
+					if msg.WSOpen.Query != "" {
+						wsPath += "?" + msg.WSOpen.Query
+					}
+					c.display.TrackWSOpen(streamID, wsPath, msg.WSOpen.Headers)
+				}
 				if err := writeJSON(tunnelproto.Message{
 					Kind: tunnelproto.KindWSOpenAck,
 					WSOpenAck: &tunnelproto.WSOpenAck{
@@ -358,6 +421,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 					},
 				}); err != nil {
 					deleteWSConn(streamID)
+					if c.display != nil {
+						c.display.TrackWSClose(streamID)
+					}
 					continue
 				}
 				startLocalWSReader(streamID, upstreamConn)

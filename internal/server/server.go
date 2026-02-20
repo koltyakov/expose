@@ -691,6 +691,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 	requestHeaders := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
+	injectForwardedFor(requestHeaders, r.RemoteAddr)
 	msg := tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
 		Request: &tunnelproto.HTTPRequest{
@@ -756,6 +757,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 
 	headers := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
+	injectForwardedFor(headers, r.RemoteAddr)
 	openMsg := tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpen,
 		WSOpen: &tunnelproto.WSOpen{
@@ -1050,6 +1052,32 @@ func (s *session) releasePending() {
 
 func normalizeHost(host string) string {
 	return netutil.NormalizeHost(host)
+}
+
+// injectForwardedFor appends the client's IP to the X-Forwarded-For header
+// chain so the tunnel client can identify unique callers.
+func injectForwardedFor(h map[string][]string, remoteAddr string) {
+	ip := remoteAddr
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		ip = host
+	}
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return
+	}
+	existing := ""
+	for k, vals := range h {
+		if strings.EqualFold(k, "X-Forwarded-For") && len(vals) > 0 {
+			existing = strings.TrimSpace(vals[0])
+			delete(h, k)
+			break
+		}
+	}
+	if existing != "" {
+		h["X-Forwarded-For"] = []string{existing + ", " + ip}
+	} else {
+		h["X-Forwarded-For"] = []string{ip}
+	}
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {

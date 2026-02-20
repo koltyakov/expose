@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -195,8 +196,21 @@ func runClient(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
-	logger := ilog.New("info")
-	c := client.New(cfg, logger)
+
+	var logger *slog.Logger
+	c := client.New(cfg, nil) // logger set below
+
+	if isInteractiveOutput() {
+		display := client.NewDisplay(true)
+		display.ShowBanner(Version)
+		defer display.Cleanup()
+		c.SetDisplay(display)
+		logger = ilog.NewStderr("warn")
+	} else {
+		logger = ilog.New("info")
+	}
+	c.SetLogger(logger)
+
 	if err := c.Run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "client error:", err)
 		return 1
@@ -584,6 +598,14 @@ func parseDarwinIOPlatformUUID(raw string) string {
 
 func isInteractiveInput() bool {
 	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func isInteractiveOutput() bool {
+	info, err := os.Stdout.Stat()
 	if err != nil {
 		return false
 	}

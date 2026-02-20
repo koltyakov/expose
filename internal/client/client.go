@@ -619,6 +619,12 @@ func resolveClientMachineID(hostname string) string {
 	return strings.TrimSpace(hostname)
 }
 
+var bufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
 func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelproto.HTTPRequest) *tunnelproto.HTTPResponse {
 	target := *base
 	target.Path = strings.TrimSuffix(base.Path, "/") + req.Path
@@ -661,7 +667,10 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			Headers: respHeaders,
 		}
 	}
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, localForwardResponseMaxB64+1))
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+	_, err = buf.ReadFrom(io.LimitReader(resp.Body, localForwardResponseMaxB64+1))
 	if err != nil {
 		return &tunnelproto.HTTPResponse{
 			ID:      req.ID,
@@ -670,7 +679,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			BodyB64: tunnelproto.EncodeBody([]byte("failed to read local upstream response")),
 		}
 	}
-	if len(respBody) > localForwardResponseMaxB64 {
+	if buf.Len() > localForwardResponseMaxB64 {
 		return &tunnelproto.HTTPResponse{
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
@@ -683,7 +692,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		ID:      req.ID,
 		Status:  resp.StatusCode,
 		Headers: respHeaders,
-		BodyB64: tunnelproto.EncodeBody(respBody),
+		BodyB64: tunnelproto.EncodeBody(buf.Bytes()),
 	}
 }
 

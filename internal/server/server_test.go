@@ -54,7 +54,10 @@ func TestReadLimitedBodyReturnsTooLargeError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("123456")))
 	w := httptest.NewRecorder()
 
-	_, err := readLimitedBody(w, req, 4)
+	_, cleanup, err := readLimitedBody(w, req, 4)
+	if err == nil {
+		cleanup()
+	}
 	if !isBodyTooLargeError(err) {
 		t.Fatalf("expected request body too large error, got %v", err)
 	}

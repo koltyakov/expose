@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/tls"
@@ -19,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -675,7 +677,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := readLimitedBody(w, r, s.cfg.MaxBodyBytes)
+	buf, cleanup, err := readLimitedBody(w, r, s.cfg.MaxBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -684,6 +686,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
+	defer cleanup()
 	reqID := s.nextRequestID()
 	if !sess.tryAcquirePending(maxPendingPerSession) {
 		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
@@ -700,7 +703,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			Path:    r.URL.Path,
 			Query:   r.URL.RawQuery,
 			Headers: requestHeaders,
-			BodyB64: tunnelproto.EncodeBody(body),
+			BodyB64: tunnelproto.EncodeBody(buf.Bytes()),
 		},
 	}
 
@@ -1101,10 +1104,23 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst 
 	return nil
 }
 
-func readLimitedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
+var bufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
+func readLimitedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (*bytes.Buffer, func(), error) {
 	reader := http.MaxBytesReader(w, r.Body, maxBytes)
 	defer func() { _ = reader.Close() }()
-	return io.ReadAll(reader)
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	_, err := buf.ReadFrom(reader)
+	if err != nil {
+		bufferPool.Put(buf)
+		return nil, nil, err
+	}
+	return buf, func() { bufferPool.Put(buf) }, nil
 }
 
 func isBodyTooLargeError(err error) bool {
@@ -1113,11 +1129,21 @@ func isBodyTooLargeError(err error) bool {
 }
 
 func (s *Server) nextRequestID() string {
-	return fmt.Sprintf("req_%d_%d", time.Now().UnixNano(), s.requestSeq.Add(1))
+	b := make([]byte, 0, 32)
+	b = append(b, "req_"...)
+	b = strconv.AppendInt(b, time.Now().UnixNano(), 10)
+	b = append(b, '_')
+	b = strconv.AppendUint(b, s.requestSeq.Add(1), 10)
+	return string(b)
 }
 
 func (s *Server) nextWSStreamID() string {
-	return fmt.Sprintf("ws_%d_%d", time.Now().UnixNano(), s.requestSeq.Add(1))
+	b := make([]byte, 0, 32)
+	b = append(b, "ws_"...)
+	b = strconv.AppendInt(b, time.Now().UnixNano(), 10)
+	b = append(b, '_')
+	b = strconv.AppendUint(b, s.requestSeq.Add(1), 10)
+	return string(b)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

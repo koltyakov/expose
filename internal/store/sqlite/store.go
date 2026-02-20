@@ -40,8 +40,8 @@ const defaultTouchMinInterval = 30 * time.Second
 const defaultTouchCleanupInterval = 5 * time.Minute
 const defaultConnectTokenPurgeLimit = 1000
 
-const defaultMaxOpenConns = 1
-const defaultMaxIdleConns = 1
+const defaultMaxOpenConns = 10
+const defaultMaxIdleConns = 10
 
 // OpenOptions controls SQLite connection pool sizing.
 type OpenOptions struct {

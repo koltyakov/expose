@@ -18,6 +18,9 @@ import (
 type ClientConfig struct {
 	ServerURL    string
 	APIKey       string
+	User         string
+	Password     string
+	Protect      bool
 	LocalPort    int
 	Name         string
 	Timeout      time.Duration
@@ -63,6 +66,8 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg := ClientConfig{
 		ServerURL:    envOrDefault("EXPOSE_DOMAIN", ""),
 		APIKey:       envOrDefault("EXPOSE_API_KEY", ""),
+		User:         envOrDefault("EXPOSE_USER", "admin"),
+		Password:     envOrDefault("EXPOSE_PASSWORD", ""),
 		LocalPort:    envIntOrDefault("EXPOSE_PORT", 0),
 		Name:         envOrDefault("EXPOSE_SUBDOMAIN", ""),
 		Timeout:      30 * time.Second,
@@ -72,6 +77,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
+	fs.BoolVar(&cfg.Protect, "protect", cfg.Protect, "Protect this tunnel with a password challenge")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	if err := fs.Parse(args); err != nil {
@@ -79,12 +85,21 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 
 	cfg.Name = strings.TrimSpace(cfg.Name)
+	cfg.User = strings.TrimSpace(cfg.User)
+	if cfg.User == "" {
+		cfg.User = "admin"
+	}
+	cfg.Password = strings.TrimSpace(cfg.Password)
 	if cfg.LocalPort == 0 {
 		return cfg, errors.New("missing --port or EXPOSE_PORT")
 	}
 	if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
 		return cfg, errors.New("local port must be between 1 and 65535")
 	}
+	if len(cfg.Password) > 256 {
+		return cfg, errors.New("password must be at most 256 characters")
+	}
+	cfg.Protect = cfg.Protect || cfg.Password != ""
 
 	return cfg, nil
 }

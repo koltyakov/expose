@@ -2,14 +2,17 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -152,4 +155,86 @@ func firstHeaderValue(h map[string][]string, key string) string {
 		return ""
 	}
 	return h[key][0]
+}
+
+func TestRegisterSendsOptionalPassword(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth string
+	var gotUser string
+	var gotPassword string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tunnels/register" {
+			http.NotFound(w, r)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var req registerRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotPassword = req.Password
+		gotUser = req.User
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc"}`)
+	}))
+	defer srv.Close()
+
+	c := New(config.ClientConfig{
+		ServerURL: srv.URL,
+		APIKey:    "key123",
+		User:      "admin",
+		Password:  "session-pass",
+		LocalPort: 8080,
+	}, nil)
+
+	_, err := c.register(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPassword != "session-pass" {
+		t.Fatalf("expected password in register payload, got %q", gotPassword)
+	}
+	if gotUser != "admin" {
+		t.Fatalf("expected user in register payload, got %q", gotUser)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Fatalf("expected bearer auth header, got %q", gotAuth)
+	}
+}
+
+func TestNormalizeWSURLPort(t *testing.T) {
+	tests := []struct {
+		name      string
+		wsURL     string
+		serverURL string
+		want      string
+	}{
+		{
+			name:      "inject non-default server port",
+			wsURL:     "wss://myapp.example.com/v1/tunnels/connect?token=abc",
+			serverURL: "https://example.com:10443",
+			want:      "wss://myapp.example.com:10443/v1/tunnels/connect?token=abc",
+		},
+		{
+			name:      "keep explicit ws port",
+			wsURL:     "wss://myapp.example.com:9443/v1/tunnels/connect?token=abc",
+			serverURL: "https://example.com:10443",
+			want:      "wss://myapp.example.com:9443/v1/tunnels/connect?token=abc",
+		},
+		{
+			name:      "ignore default server port",
+			wsURL:     "wss://myapp.example.com/v1/tunnels/connect?token=abc",
+			serverURL: "https://example.com",
+			want:      "wss://myapp.example.com/v1/tunnels/connect?token=abc",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeWSURLPort(tt.wsURL, tt.serverURL); got != tt.want {
+				t.Fatalf("normalizeWSURLPort(): got %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

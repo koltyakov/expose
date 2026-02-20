@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/koltyakov/expose/internal/auth"
 )
 
 func TestStableTemporarySubdomain(t *testing.T) {
@@ -127,5 +129,72 @@ func TestRemoveTunnelCertCacheBatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cacheDir, "unrelated.txt")); err != nil {
 		t.Fatalf("expected unrelated.txt to remain, err=%v", err)
+	}
+}
+
+func TestWriteBasicAuthChallenge(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeBasicAuthChallenge(rr)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("WWW-Authenticate"); got == "" {
+		t.Fatal("expected WWW-Authenticate header")
+	}
+}
+
+func TestIsAuthorizedBasicPassword(t *testing.T) {
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
+	req.SetBasicAuth("admin", "session-pass")
+	if !isAuthorizedBasicPassword(req, "admin", hash) {
+		t.Fatal("expected valid basic auth password to pass")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
+	req.SetBasicAuth("user", "wrong")
+	if isAuthorizedBasicPassword(req, "admin", hash) {
+		t.Fatal("expected wrong basic auth password to fail")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
+	req.SetBasicAuth("other", "session-pass")
+	if isAuthorizedBasicPassword(req, "admin", hash) {
+		t.Fatal("expected wrong basic auth username to fail")
+	}
+}
+
+func TestRegistrationWSAuthority(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		fallback string
+		want     string
+	}{
+		{name: "non default port preserved", host: "127.0.0.1.sslip.io:10443", fallback: "example.com", want: "127.0.0.1.sslip.io:10443"},
+		{name: "default port removed", host: "example.com:443", fallback: "example.com", want: "example.com"},
+		{name: "bare host", host: "example.com", fallback: "fallback.example.com", want: "example.com"},
+		{name: "empty host uses fallback", host: "", fallback: "fallback.example.com", want: "fallback.example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := registrationWSAuthority(tt.host, tt.fallback); got != tt.want {
+				t.Fatalf("registrationWSAuthority(%q): got %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthorityPort(t *testing.T) {
+	if got := authorityPort("example.com:10443"); got != "10443" {
+		t.Fatalf("expected 10443, got %q", got)
+	}
+	if got := authorityPort("example.com"); got != "" {
+		t.Fatalf("expected empty port, got %q", got)
 	}
 }

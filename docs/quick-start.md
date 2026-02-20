@@ -85,3 +85,6 @@ This gives you `https://myapp.example.com` every time.
 | Cloud deployment   | [VPS Deployment](vps-deployment.md)                                                         |
 | TLS options        | [TLS Modes](tls-modes.md)                                                                   |
 | Key management     | [API Keys](api-keys.md)                                                                     |
+| Local machine E2E  | [Local Testing](local-testing.md)                                                           |
+
+For local single-machine testing using `127.0.0.1.sslip.io`, follow [Local Testing](local-testing.md).

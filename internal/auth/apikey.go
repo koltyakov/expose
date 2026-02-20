@@ -8,6 +8,8 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // GenerateAPIKey returns a cryptographically random, URL-safe API key string.
@@ -31,4 +33,21 @@ func ConstantTimeHashEquals(a, b string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// HashPassword returns a bcrypt hash for a plain-text password.
+func HashPassword(password string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(h), nil
+}
+
+// VerifyPasswordHash reports whether the plain-text password matches hash.
+func VerifyPasswordHash(hash, password string) bool {
+	if hash == "" || password == "" {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }

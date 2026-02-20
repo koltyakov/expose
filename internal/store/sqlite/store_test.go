@@ -50,6 +50,38 @@ func TestAllocateTemporaryAndDisconnect(t *testing.T) {
 	}
 }
 
+func TestSetTunnelAccessPasswordHashAndRouteLookup(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_password_route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, tunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "pwtest", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelAccessCredentials(ctx, tunnel.ID, "admin", "bcrypt-hash"); err != nil {
+		t.Fatal(err)
+	}
+
+	route, err := store.FindRouteByHost(ctx, d.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.AccessPasswordHash != "bcrypt-hash" {
+		t.Fatalf("expected access password hash to roundtrip, got %q", route.Tunnel.AccessPasswordHash)
+	}
+	if route.Tunnel.AccessUser != "admin" {
+		t.Fatalf("expected access user to roundtrip, got %q", route.Tunnel.AccessUser)
+	}
+}
+
 func TestConnectTokenConsume(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {

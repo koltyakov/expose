@@ -81,9 +81,11 @@ func runHTTP(ctx context.Context, args []string) int {
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	name := ""
+	protect := false
 	port := parseIntEnv("EXPOSE_PORT", 0)
 	fs.IntVar(&port, "port", port, "Local HTTP port on 127.0.0.1")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
+	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with a password challenge")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	if err := fs.Parse(args); err != nil {
@@ -121,6 +123,9 @@ func runHTTP(ctx context.Context, args []string) int {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey != "" {
 		clientArgs = append(clientArgs, "--api-key", apiKey)
+	}
+	if protect {
+		clientArgs = append(clientArgs, "--protect")
 	}
 	return runClient(ctx, clientArgs)
 }
@@ -187,12 +192,18 @@ func runClientLogin(args []string) int {
 }
 
 func runClient(ctx context.Context, args []string) int {
+	loadClientEnvFromDotEnv(".env")
+
 	cfg, err := config.ParseClientFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
 	if err := mergeClientSettings(&cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "client config error:", err)
+		return 2
+	}
+	if err := promptClientPasswordIfNeeded(&cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
@@ -206,21 +217,21 @@ func runClient(ctx context.Context, args []string) int {
 }
 
 func mergeClientSettings(cfg *config.ClientConfig) error {
-	if strings.TrimSpace(cfg.ServerURL) != "" && strings.TrimSpace(cfg.APIKey) != "" {
-		return nil
-	}
-	stored, err := clientsettings.Load()
-	if err != nil {
-		return fmt.Errorf("missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key: %w", err)
-	}
-	if strings.TrimSpace(cfg.ServerURL) == "" {
-		cfg.ServerURL = stored.ServerURL
-	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		cfg.APIKey = stored.APIKey
-	}
-	if strings.TrimSpace(cfg.ServerURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
-		return fmt.Errorf("missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key")
+	hasInlineCreds := strings.TrimSpace(cfg.ServerURL) != "" && strings.TrimSpace(cfg.APIKey) != ""
+	if !hasInlineCreds {
+		stored, err := clientsettings.Load()
+		if err != nil {
+			return fmt.Errorf("missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key: %w", err)
+		}
+		if strings.TrimSpace(cfg.ServerURL) == "" {
+			cfg.ServerURL = stored.ServerURL
+		}
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			cfg.APIKey = stored.APIKey
+		}
+		if strings.TrimSpace(cfg.ServerURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
+			return fmt.Errorf("missing client credentials. run `expose login --server https://example.com --api-key <key>` or provide --server/--api-key")
+		}
 	}
 	normalized, err := normalizeServerURL(cfg.ServerURL)
 	if err != nil {
@@ -275,6 +286,14 @@ func runServer(ctx context.Context, args []string) int {
 }
 
 func loadServerEnvFromDotEnv(path string) {
+	loadExposeEnvFromDotEnv(path)
+}
+
+func loadClientEnvFromDotEnv(path string) {
+	loadExposeEnvFromDotEnv(path)
+}
+
+func loadExposeEnvFromDotEnv(path string) {
 	values := loadEnvFileValues(path)
 	for key, value := range values {
 		if !strings.HasPrefix(key, "EXPOSE_") {
@@ -429,6 +448,8 @@ Quick Start:
 Environment Variables:
   EXPOSE_DOMAIN           Server base domain (e.g. example.com)
   EXPOSE_API_KEY          API key for client authentication
+	EXPOSE_USER             Basic auth username for protected tunnel (default: admin)
+	EXPOSE_PASSWORD         Optional public access password for this tunnel session
   EXPOSE_PORT             Local port to expose
   EXPOSE_SUBDOMAIN        Requested subdomain name
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
@@ -568,4 +589,83 @@ func prompt(reader *bufio.Reader, label string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+func promptClientPasswordIfNeeded(cfg *config.ClientConfig) error {
+	if cfg == nil || !cfg.Protect {
+		return nil
+	}
+	if strings.TrimSpace(cfg.User) == "" {
+		cfg.User = "admin"
+	}
+	hasPassword := strings.TrimSpace(cfg.Password) != ""
+	hasUserFromEnv := strings.TrimSpace(os.Getenv("EXPOSE_USER")) != ""
+	hasPasswordFromEnv := strings.TrimSpace(os.Getenv("EXPOSE_PASSWORD")) != ""
+	if hasUserFromEnv && hasPasswordFromEnv && hasPassword {
+		return nil
+	}
+	if !isInteractiveInput() {
+		if !hasPassword {
+			return errors.New("missing password: provide EXPOSE_PASSWORD or run interactively with --protect")
+		}
+		return nil
+	}
+	reader := bufio.NewReader(os.Stdin)
+	if !hasUserFromEnv {
+		label := fmt.Sprintf("Public user (default %s): ", cfg.User)
+		v, err := prompt(reader, label)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(v) != "" {
+			cfg.User = strings.TrimSpace(v)
+		}
+	}
+	if !hasPassword {
+		password, err := promptSecret("Public password (required): ")
+		if err != nil {
+			return err
+		}
+		cfg.Password = strings.TrimSpace(password)
+		if cfg.Password == "" {
+			return errors.New("password is required when --protect is set")
+		}
+	}
+	return nil
+}
+
+func promptSecret(label string) (string, error) {
+	if _, err := fmt.Fprint(os.Stdout, label); err != nil {
+		return "", err
+	}
+	if isInteractiveInput() {
+		echoDisabled := false
+		if err := setTerminalEcho(false); err == nil {
+			echoDisabled = true
+		}
+		defer func() {
+			if echoDisabled {
+				_ = setTerminalEcho(true)
+			}
+			_, _ = fmt.Fprintln(os.Stdout)
+		}()
+	}
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func setTerminalEcho(enable bool) error {
+	arg := "-echo"
+	if enable {
+		arg = "echo"
+	}
+	cmd := exec.Command("stty", arg)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

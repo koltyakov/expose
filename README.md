@@ -149,12 +149,13 @@ expose version                           Print version
 
 ### Client flags
 
-| Flag        | Env                | Description                             |
-| ----------- | ------------------ | --------------------------------------- |
-| `--port`    | `EXPOSE_PORT`      | Local HTTP port on 127.0.0.1 (required) |
-| `--domain`  | `EXPOSE_SUBDOMAIN` | Requested subdomain (e.g. `myapp`)      |
-| `--server`  | `EXPOSE_DOMAIN`    | Server URL (HTTPS)                      |
-| `--api-key` | `EXPOSE_API_KEY`   | API key                                 |
+| Flag        | Env                | Description                                |
+| ----------- | ------------------ | ------------------------------------------ |
+| `--port`    | `EXPOSE_PORT`      | Local HTTP port on 127.0.0.1 (required)    |
+| `--domain`  | `EXPOSE_SUBDOMAIN` | Requested subdomain (e.g. `myapp`)         |
+| `--server`  | `EXPOSE_DOMAIN`    | Server URL (HTTPS)                         |
+| `--api-key` | `EXPOSE_API_KEY`   | API key                                    |
+| `--protect` | -                  | Enable password protection for this tunnel |
 
 **Examples:**
 
@@ -162,6 +163,20 @@ expose version                           Print version
 expose http 3000                      # temporary random subdomain
 expose http --domain=myapp 3000       # named: https://myapp.<EXPOSE_DOMAIN>
 ```
+
+Protected tunnel (interactive prompt):
+
+```bash
+expose http --domain=myapp --protect 3000
+```
+
+Protected tunnel (no prompt):
+
+```bash
+EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
+```
+
+For full local single-machine E2E instructions (`127.0.0.1.sslip.io` + protected tunnel), see [Local Testing](docs/local-testing.md).
 
 Default mode is temporary. If `--domain` is not set, host allocation is automatic:
 

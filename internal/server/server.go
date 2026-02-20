@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -198,6 +199,8 @@ const (
 type registerRequest struct {
 	Mode            string `json:"mode"`
 	Subdomain       string `json:"subdomain,omitempty"`
+	User            string `json:"user,omitempty"`
+	Password        string `json:"password,omitempty"`
 	ClientHostname  string `json:"client_hostname,omitempty"`
 	ClientMachineID string `json:"client_machine_id,omitempty"`
 	LocalPort       string `json:"local_port,omitempty"`
@@ -420,6 +423,30 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "permanent mode requires subdomain", http.StatusBadRequest)
 		return
 	}
+	req.User = strings.TrimSpace(req.User)
+	if req.User == "" {
+		req.User = "admin"
+	}
+	if len(req.User) > 64 {
+		http.Error(w, "user must be at most 64 characters", http.StatusBadRequest)
+		return
+	}
+	req.Password = strings.TrimSpace(req.Password)
+	if len(req.Password) > 256 {
+		http.Error(w, "password must be at most 256 characters", http.StatusBadRequest)
+		return
+	}
+	accessUser := ""
+	passwordHash := ""
+	if req.Password != "" {
+		accessUser = req.User
+		hashed, hashErr := auth.HashPassword(req.Password)
+		if hashErr != nil {
+			http.Error(w, "failed to hash password", http.StatusInternalServerError)
+			return
+		}
+		passwordHash = hashed
+	}
 	autoStableSubdomain := false
 	if req.Mode == "temporary" && strings.TrimSpace(req.Subdomain) == "" && !s.wildcardTLSOn {
 		if stable := stableTemporarySubdomain(req.ClientHostname, req.LocalPort); stable != "" {
@@ -452,14 +479,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if err = s.store.SetTunnelAccessCredentials(r.Context(), tunnelRec.ID, accessUser, passwordHash); err != nil {
+		http.Error(w, "failed to persist tunnel auth settings", http.StatusInternalServerError)
+		return
+	}
 	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
 	if err != nil {
 		http.Error(w, "failed to create connect token", http.StatusInternalServerError)
 		return
 	}
 
+	wsAuthority := registrationWSAuthority(r.Host, normalizeHost(s.cfg.BaseDomain))
 	publicURL := "https://" + domainRec.Hostname
-	wsURL := fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", normalizeHost(s.cfg.BaseDomain), token)
+	if port := authorityPort(wsAuthority); port != "" && port != "443" {
+		publicURL = fmt.Sprintf("https://%s:%s", domainRec.Hostname, port)
+	}
+	wsURL := fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", wsAuthority, token)
 
 	resp := registerResponse{
 		TunnelID:      tunnelRec.ID,
@@ -598,6 +633,16 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown host", http.StatusNotFound)
 		return
 	}
+	if route.Tunnel.AccessPasswordHash != "" {
+		expectedUser := strings.TrimSpace(route.Tunnel.AccessUser)
+		if expectedUser == "" {
+			expectedUser = "admin"
+		}
+		if !isAuthorizedBasicPassword(r, expectedUser, route.Tunnel.AccessPasswordHash) {
+			writeBasicAuthChallenge(w)
+			return
+		}
+	}
 
 	body, err := readLimitedBody(w, r, s.cfg.MaxBodyBytes)
 	if err != nil {
@@ -691,6 +736,22 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return keyID, true
+}
+
+func isAuthorizedBasicPassword(r *http.Request, expectedUser, hash string) bool {
+	user, password, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	if user != expectedUser {
+		return false
+	}
+	return auth.VerifyPasswordHash(hash, password)
+}
+
+func writeBasicAuthChallenge(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="expose", charset="UTF-8"`)
+	http.Error(w, "authentication required", http.StatusUnauthorized)
 }
 
 func (s *session) writeJSON(msg tunnelproto.Message) error {
@@ -1217,6 +1278,37 @@ func normalizedClientMachineID(machineID, hostname string) string {
 		return v
 	}
 	return strings.ToLower(strings.TrimSpace(hostname))
+}
+
+func registrationWSAuthority(hostHeader, fallbackHost string) string {
+	hostHeader = strings.TrimSpace(hostHeader)
+	if hostHeader == "" {
+		return fallbackHost
+	}
+	h, port, err := net.SplitHostPort(hostHeader)
+	if err == nil {
+		h = normalizeHost(h)
+		if h == "" {
+			h = fallbackHost
+		}
+		if port == "" || port == "443" {
+			return h
+		}
+		return net.JoinHostPort(h, port)
+	}
+	hostOnly := normalizeHost(hostHeader)
+	if hostOnly != "" {
+		return hostOnly
+	}
+	return fallbackHost
+}
+
+func authorityPort(authority string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(authority))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(port)
 }
 
 func (s *Server) trySwapInactiveClientSession(ctx context.Context, keyID, subdomain, clientMachineID string) (domain.Domain, domain.Tunnel, bool, error) {

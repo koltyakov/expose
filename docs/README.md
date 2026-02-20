@@ -5,6 +5,7 @@ Short, focused guides covering one topic each.
 ## Getting Started
 
 - [Quick Start](quick-start.md) - Up and running in 5 minutes
+- [Local Testing](local-testing.md) - Single-machine E2E using 127.0.0.1.sslip.io
 - [Architecture Overview](architecture-overview.md) - How expose works under the hood
 
 ## DNS Configuration

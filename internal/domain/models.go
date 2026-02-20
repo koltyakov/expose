@@ -46,14 +46,16 @@ type Domain struct {
 
 // Tunnel represents an active or historic tunnel session.
 type Tunnel struct {
-	ID             string
-	APIKeyID       string
-	DomainID       string
-	State          string
-	IsTemporary    bool
-	ClientMeta     string
-	ConnectedAt    *time.Time
-	DisconnectedAt *time.Time
+	ID                 string
+	APIKeyID           string
+	DomainID           string
+	State              string
+	IsTemporary        bool
+	ClientMeta         string
+	AccessUser         string
+	AccessPasswordHash string
+	ConnectedAt        *time.Time
+	DisconnectedAt     *time.Time
 }
 
 // TunnelRoute pairs a [Domain] with its most recent [Tunnel] for routing.

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,6 +30,8 @@ import (
 type registerRequest struct {
 	Mode            string `json:"mode"`
 	Subdomain       string `json:"subdomain,omitempty"`
+	User            string `json:"user,omitempty"`
+	Password        string `json:"password,omitempty"`
 	ClientHostname  string `json:"client_hostname,omitempty"`
 	ClientMachineID string `json:"client_machine_id,omitempty"`
 	LocalPort       string `json:"local_port,omitempty"`
@@ -269,9 +272,15 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	}
 	hostname, _ := os.Hostname()
 	machineID := resolveClientMachineID(hostname)
+	user := strings.TrimSpace(c.cfg.User)
+	if user == "" {
+		user = "admin"
+	}
 	body, _ := json.Marshal(registerRequest{
 		Mode:            mode,
 		Subdomain:       strings.TrimSpace(c.cfg.Name),
+		User:            user,
+		Password:        strings.TrimSpace(c.cfg.Password),
 		ClientHostname:  strings.TrimSpace(hostname),
 		ClientMachineID: machineID,
 		LocalPort:       fmt.Sprintf("%d", c.cfg.LocalPort),
@@ -307,10 +316,55 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return registerResponse{}, err
 	}
+	out.WSURL = normalizeWSURLPort(out.WSURL, c.cfg.ServerURL)
 	if out.WSURL == "" {
 		return registerResponse{}, errors.New("server returned empty ws_url")
 	}
 	return out, nil
+}
+
+func normalizeWSURLPort(wsURL, serverURL string) string {
+	wsURL = strings.TrimSpace(wsURL)
+	serverURL = strings.TrimSpace(serverURL)
+	if wsURL == "" || serverURL == "" {
+		return wsURL
+	}
+	wsParsed, err := url.Parse(wsURL)
+	if err != nil {
+		return wsURL
+	}
+	if wsParsed.Host == "" {
+		return wsURL
+	}
+	if _, hasPort := splitHostAndPort(wsParsed.Host); hasPort {
+		return wsURL
+	}
+	serverParsed, err := url.Parse(serverURL)
+	if err != nil {
+		return wsURL
+	}
+	port := strings.TrimSpace(serverParsed.Port())
+	if port == "" || port == "443" {
+		return wsURL
+	}
+	host, _ := splitHostAndPort(wsParsed.Host)
+	if host == "" {
+		host = wsParsed.Host
+	}
+	wsParsed.Host = net.JoinHostPort(host, port)
+	return wsParsed.String()
+}
+
+func splitHostAndPort(hostport string) (string, bool) {
+	hostport = strings.TrimSpace(hostport)
+	host, _, err := net.SplitHostPort(hostport)
+	if err == nil {
+		return host, true
+	}
+	if strings.Count(hostport, ":") > 1 && strings.HasPrefix(hostport, "[") && strings.HasSuffix(hostport, "]") {
+		return strings.Trim(hostport, "[]"), false
+	}
+	return hostport, false
 }
 
 func resolveClientMachineID(hostname string) string {

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeDomainHost(t *testing.T) {
 	t.Parallel()
@@ -61,5 +64,74 @@ func TestParseServerFlagsDBPoolValidation(t *testing.T) {
 				t.Fatalf("expected parse error for args: %v", tt.args)
 			}
 		})
+	}
+}
+
+func TestParseClientFlagsPasswordSourcesAndTrim(t *testing.T) {
+	t.Setenv("EXPOSE_PASSWORD", " from-env ")
+
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Password != "from-env" {
+		t.Fatalf("expected trimmed env password, got %q", cfg.Password)
+	}
+}
+
+func TestParseClientFlagsPasswordLengthValidation(t *testing.T) {
+	t.Setenv("EXPOSE_PASSWORD", strings.Repeat("a", 257))
+	_, err := ParseClientFlags([]string{"--port", "8080"})
+	if err == nil {
+		t.Fatal("expected password length validation error")
+	}
+}
+
+func TestParseClientFlagsProtectFlag(t *testing.T) {
+	cfg, err := ParseClientFlags([]string{"--port", "8080", "--protect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Protect {
+		t.Fatal("expected --protect to enable protection")
+	}
+}
+
+func TestParseClientFlagsPasswordEnablesProtect(t *testing.T) {
+	t.Setenv("EXPOSE_PASSWORD", "abc")
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Protect {
+		t.Fatal("expected password to imply protection enabled")
+	}
+}
+
+func TestParseClientFlagsUserDefaultAndOverride(t *testing.T) {
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.User != "admin" {
+		t.Fatalf("expected default user admin, got %q", cfg.User)
+	}
+
+	t.Setenv("EXPOSE_USER", "alice")
+	cfg, err = ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.User != "alice" {
+		t.Fatalf("expected EXPOSE_USER override, got %q", cfg.User)
+	}
+
+	t.Setenv("EXPOSE_USER", "")
+	cfg, err = ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.User != "admin" {
+		t.Fatalf("expected empty EXPOSE_USER to fallback to admin, got %q", cfg.User)
 	}
 }

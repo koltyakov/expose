@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	state TEXT NOT NULL,
 	is_temporary INTEGER NOT NULL,
 	client_meta TEXT NULL,
+	access_user TEXT NULL,
+	access_password_hash TEXT NULL,
 	connected_at DATETIME NULL,
 	disconnected_at DATETIME NULL
 );
@@ -170,8 +172,20 @@ CREATE INDEX IF NOT EXISTS idx_connect_tokens_tunnel_id ON connect_tokens(tunnel
 CREATE INDEX IF NOT EXISTS idx_connect_tokens_expires_at ON connect_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS idx_connect_tokens_used_at ON connect_tokens(used_at);
 `
-	_, err := s.db.ExecContext(ctx, ddl)
-	return err
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_password_hash TEXT NULL`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_user TEXT NULL`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreateAPIKey(ctx context.Context, name, keyHash string) (domain.APIKey, error) {
@@ -442,8 +456,8 @@ VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status,
 	}
 
 	if _, err = tx.ExecContext(ctx, `
-INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, connected_at, disconnected_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)`,
+INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_password_hash, connected_at, disconnected_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
 		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
@@ -502,8 +516,8 @@ WHERE id = ?`, domain.DomainStatusActive, domainID); err != nil {
 		ClientMeta:  clientMeta,
 	}
 	if _, err = tx.ExecContext(ctx, `
-INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, connected_at, disconnected_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)`,
+INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_password_hash, connected_at, disconnected_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
 		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
 		return domain.Tunnel{}, err
 	}
@@ -575,6 +589,16 @@ UPDATE tunnels
 SET state = ?, connected_at = ?, disconnected_at = NULL
 WHERE id = ?`,
 		domain.TunnelStateConnected, time.Now().UTC(), tunnelID)
+	return err
+}
+
+func (s *Store) SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, hash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_password_hash = ? WHERE id = ?`, nullableString(user), nullableString(hash), tunnelID)
+	return err
+}
+
+func (s *Store) SetTunnelAccessPasswordHash(ctx context.Context, tunnelID, hash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_password_hash = ? WHERE id = ?`, "admin", nullableString(hash), tunnelID)
 	return err
 }
 
@@ -768,11 +792,13 @@ func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.Tunnel
 	var connectedAt sql.NullTime
 	var disconnectedAt sql.NullTime
 	var clientMeta sql.NullString
+	var accessUser sql.NullString
+	var accessPasswordHash sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT
  d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
- t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.connected_at, t.disconnected_at
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_password_hash, t.connected_at, t.disconnected_at
 FROM domains d
 JOIN tunnels t ON t.id = (
 	SELECT id
@@ -784,7 +810,7 @@ JOIN tunnels t ON t.id = (
 WHERE d.hostname = ?
 LIMIT 1`, host).Scan(
 		&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
-		&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &connectedAt, &disconnectedAt,
+		&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessPasswordHash, &connectedAt, &disconnectedAt,
 	)
 	if err != nil {
 		return domain.TunnelRoute{}, err
@@ -799,6 +825,12 @@ LIMIT 1`, host).Scan(
 	}
 	if clientMeta.Valid {
 		r.Tunnel.ClientMeta = clientMeta.String
+	}
+	if accessUser.Valid {
+		r.Tunnel.AccessUser = accessUser.String
+	}
+	if accessPasswordHash.Valid {
+		r.Tunnel.AccessPasswordHash = accessPasswordHash.String
 	}
 	if disconnectedAt.Valid {
 		t := disconnectedAt.Time

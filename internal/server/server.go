@@ -149,6 +149,17 @@ func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	c.mu.Unlock()
 }
 
+func (c *routeCache) cleanup() {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for host, e := range c.entries {
+		if now.After(e.expiresAt) {
+			delete(c.entries, host)
+		}
+	}
+}
+
 // deleteByTunnelID removes any cached entry whose tunnel matches tunnelID.
 func (c *routeCache) deleteByTunnelID(tunnelID string) {
 	c.mu.Lock()
@@ -686,10 +697,15 @@ func (s *session) writeJSON(msg tunnelproto.Message) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+		_ = s.conn.Close()
 		return err
 	}
 	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
-	return s.conn.WriteJSON(msg)
+	err := s.conn.WriteJSON(msg)
+	if err != nil {
+		_ = s.conn.Close()
+	}
+	return err
 }
 
 func (s *session) touch(t time.Time) {
@@ -1039,6 +1055,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.expireStaleSessions()
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
+			s.routes.cleanup()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
 		}

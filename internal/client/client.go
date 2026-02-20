@@ -155,10 +155,15 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		if err := conn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout)); err != nil {
+			_ = conn.Close()
 			return err
 		}
 		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
-		return conn.WriteJSON(msg)
+		err := conn.WriteJSON(msg)
+		if err != nil {
+			_ = conn.Close()
+		}
+		return err
 	}
 
 	keepaliveErr := make(chan error, 1)
@@ -358,13 +363,21 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, localForwardResponseMaxB64))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, localForwardResponseMaxB64+1))
 	if err != nil {
 		return &tunnelproto.HTTPResponse{
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
 			Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
 			BodyB64: tunnelproto.EncodeBody([]byte("failed to read local upstream response")),
+		}
+	}
+	if len(respBody) > localForwardResponseMaxB64 {
+		return &tunnelproto.HTTPResponse{
+			ID:      req.ID,
+			Status:  http.StatusBadGateway,
+			Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
+			BodyB64: tunnelproto.EncodeBody([]byte("local upstream response too large")),
 		}
 	}
 	respHeaders := tunnelproto.CloneHeaders(resp.Header)

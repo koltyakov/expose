@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/expose/internal/selfupdate"
+	"github.com/koltyakov/expose/internal/versionutil"
 )
 
 const autoUpdateCheckInterval = 30 * time.Minute
@@ -37,7 +38,7 @@ func autoUpdateOnStart(ctx context.Context, currentVersion string, logger *slog.
 		logger.Info("auto-update: already up to date", "version", currentVersion)
 		return false
 	}
-	logger.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", ensureVPrefix(result.LatestVersion), "asset", result.AssetName)
+	logger.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", versionutil.EnsureVPrefix(result.LatestVersion), "asset", result.AssetName)
 	return true
 }
 
@@ -62,7 +63,7 @@ func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slo
 				continue
 			}
 			if result.Updated {
-				logger.Info("auto-update: update applied", "from", result.CurrentVersion, "to", ensureVPrefix(result.LatestVersion))
+				logger.Info("auto-update: update applied", "from", result.CurrentVersion, "to", versionutil.EnsureVPrefix(result.LatestVersion))
 				onUpdate()
 				return
 			}

@@ -1,0 +1,113 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/koltyakov/expose/internal/domain"
+)
+
+func (s *Store) CreateAPIKey(ctx context.Context, name, keyHash string) (domain.APIKey, error) {
+	now := time.Now().UTC()
+	id, err := newID("k")
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	k := domain.APIKey{
+		ID:        id,
+		Name:      name,
+		KeyHash:   keyHash,
+		CreatedAt: now,
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO api_keys(id, name, key_hash, created_at, revoked_at)
+VALUES(?, ?, ?, ?, NULL)`, k.ID, k.Name, k.KeyHash, k.CreatedAt)
+	return k, err
+}
+
+func (s *Store) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, name, key_hash, created_at, revoked_at
+FROM api_keys
+ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.APIKey
+	for rows.Next() {
+		var k domain.APIKey
+		var revoked sql.NullTime
+		if err := rows.Scan(&k.ID, &k.Name, &k.KeyHash, &k.CreatedAt, &revoked); err != nil {
+			return nil, err
+		}
+		if revoked.Valid {
+			t := revoked.Time
+			k.RevokedAt = &t
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC(), id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error) {
+	var id string
+	stmt := s.resolveAPIKeyIDStmt
+	if stmt == nil {
+		err := s.db.QueryRowContext(ctx, resolveAPIKeyIDQuery, keyHash).Scan(&id)
+		return id, err
+	}
+	err := stmt.QueryRowContext(ctx, keyHash).Scan(&id)
+	return id, err
+}
+
+func (s *Store) GetServerPepper(ctx context.Context) (string, bool, error) {
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = 'api_key_pepper'`).Scan(&current)
+	if err == nil {
+		return current, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+func (s *Store) ResolveServerPepper(ctx context.Context, suggested string) (string, error) {
+	suggested = strings.TrimSpace(suggested)
+
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = 'api_key_pepper'`).Scan(&current)
+	if err == nil {
+		if suggested != "" && suggested != current {
+			return "", errors.New("provided api key pepper does not match database")
+		}
+		return current, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO server_settings(key, value) VALUES('api_key_pepper', ?)`, suggested); err != nil {
+		return "", err
+	}
+	return suggested, nil
+}

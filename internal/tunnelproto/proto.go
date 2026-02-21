@@ -4,6 +4,13 @@ package tunnelproto
 
 import (
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+
+	"github.com/gorilla/websocket"
 )
 
 // Message kinds identify the type of payload carried by a [Message].
@@ -22,6 +29,20 @@ const (
 	KindPong        = "pong"
 	KindError       = "error"
 	KindClose       = "close"
+)
+
+const (
+	// BinaryFrameReqBody carries request body chunks (server -> client).
+	BinaryFrameReqBody byte = 1
+	// BinaryFrameRespBody carries response body chunks (client -> server).
+	BinaryFrameRespBody byte = 2
+	// BinaryFrameWSData carries websocket stream frame payloads.
+	BinaryFrameWSData byte = 3
+)
+
+const (
+	binaryFrameVersion = 1
+	binaryFrameHeader  = 6
 )
 
 // Message is the top-level envelope exchanged on the tunnel WebSocket.
@@ -63,6 +84,7 @@ type HTTPResponse struct {
 type BodyChunk struct {
 	ID      string `json:"id"`
 	DataB64 string `json:"data_b64,omitempty"`
+	Data    []byte `json:"-"`
 }
 
 // WSOpen requests opening a local websocket stream on the client.
@@ -88,6 +110,7 @@ type WSData struct {
 	ID          string `json:"id"`
 	MessageType int    `json:"message_type"`
 	DataB64     string `json:"data_b64,omitempty"`
+	Data        []byte `json:"-"`
 }
 
 // WSClose notifies websocket stream closure.
@@ -111,6 +134,147 @@ func DecodeBody(s string) ([]byte, error) {
 		return nil, nil
 	}
 	return base64.StdEncoding.DecodeString(s)
+}
+
+// Payload returns the decoded bytes for a body chunk regardless of whether it
+// arrived as JSON base64 or as a binary websocket frame.
+func (c *BodyChunk) Payload() ([]byte, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if c.Data != nil {
+		return c.Data, nil
+	}
+	return DecodeBody(c.DataB64)
+}
+
+// Payload returns the decoded bytes for a websocket data frame regardless of
+// whether it arrived as JSON base64 or as a binary websocket frame.
+func (d *WSData) Payload() ([]byte, error) {
+	if d == nil {
+		return nil, nil
+	}
+	if d.Data != nil {
+		return d.Data, nil
+	}
+	return DecodeBody(d.DataB64)
+}
+
+// ReadWSMessage reads the next websocket frame and decodes it into a tunnel
+// message. Text frames are JSON control messages; binary frames are compact
+// data frames used for req/resp body chunks and websocket stream payloads.
+func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
+	for {
+		msgType, data, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
+
+		switch msgType {
+		case websocket.TextMessage:
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				return err
+			}
+			*dst = msg
+			return nil
+		case websocket.BinaryMessage:
+			msg, err := decodeBinaryFrame(data)
+			if err != nil {
+				return err
+			}
+			*dst = msg
+			return nil
+		}
+	}
+}
+
+// WriteBinaryFrame writes a compact binary tunnel frame for high-volume data.
+func WriteBinaryFrame(w io.Writer, frameKind byte, id string, wsMessageType int, payload []byte) error {
+	if len(id) == 0 {
+		return errors.New("binary frame id is required")
+	}
+	if len(id) > 0xffff {
+		return errors.New("binary frame id is too long")
+	}
+	if frameKind != BinaryFrameReqBody && frameKind != BinaryFrameRespBody && frameKind != BinaryFrameWSData {
+		return fmt.Errorf("unsupported binary frame kind: %d", frameKind)
+	}
+
+	wsTypeByte := byte(0)
+	if frameKind == BinaryFrameWSData {
+		if wsMessageType < 0 || wsMessageType > 255 {
+			return fmt.Errorf("invalid websocket message type for binary frame: %d", wsMessageType)
+		}
+		wsTypeByte = byte(wsMessageType)
+	}
+
+	var header [binaryFrameHeader]byte
+	header[0] = binaryFrameVersion
+	header[1] = frameKind
+	header[2] = wsTypeByte
+	binary.BigEndian.PutUint16(header[4:6], uint16(len(id)))
+
+	if _, err := w.Write(header[:]); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, id); err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+func decodeBinaryFrame(data []byte) (Message, error) {
+	if len(data) < binaryFrameHeader {
+		return Message{}, errors.New("binary frame is too short")
+	}
+	if data[0] != binaryFrameVersion {
+		return Message{}, fmt.Errorf("unsupported binary frame version: %d", data[0])
+	}
+
+	frameKind := data[1]
+	wsMsgType := int(data[2])
+	idLen := int(binary.BigEndian.Uint16(data[4:6]))
+	if idLen <= 0 {
+		return Message{}, errors.New("invalid binary frame id length")
+	}
+
+	idStart := binaryFrameHeader
+	idEnd := idStart + idLen
+	if len(data) < idEnd {
+		return Message{}, errors.New("binary frame id is truncated")
+	}
+	idBytes := data[idStart:idEnd]
+	payload := data[idEnd:]
+	id := string(idBytes)
+
+	switch frameKind {
+	case BinaryFrameReqBody:
+		return Message{
+			Kind:      KindReqBody,
+			BodyChunk: &BodyChunk{ID: id, Data: payload},
+		}, nil
+	case BinaryFrameRespBody:
+		return Message{
+			Kind:      KindRespBody,
+			BodyChunk: &BodyChunk{ID: id, Data: payload},
+		}, nil
+	case BinaryFrameWSData:
+		return Message{
+			Kind: KindWSData,
+			WSData: &WSData{
+				ID:          id,
+				MessageType: wsMsgType,
+				Data:        payload,
+			},
+		}, nil
+	default:
+		return Message{}, fmt.Errorf("unsupported binary frame kind: %d", frameKind)
+	}
 }
 
 // CloneHeaders returns a deep copy of an HTTP header map.

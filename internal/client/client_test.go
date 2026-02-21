@@ -518,7 +518,7 @@ func TestForwardAndSendSmallResponseInline(t *testing.T) {
 		Method: http.MethodGet,
 		Path:   "/hello",
 	}
-	c.forwardAndSend(context.Background(), base, req, nil, writeMsg)
+	c.forwardAndSend(context.Background(), base, req, nil, writeMsg, nil)
 
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message for small inline response, got %d", len(msgs))
@@ -577,7 +577,7 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 		Method: http.MethodGet,
 		Path:   "/download",
 	}
-	c.forwardAndSend(context.Background(), base, req, nil, writeMsg)
+	c.forwardAndSend(context.Background(), base, req, nil, writeMsg, nil)
 
 	if len(msgs) < 3 {
 		t.Fatalf("expected at least 3 messages (response header + body chunk(s) + end), got %d", len(msgs))
@@ -670,7 +670,7 @@ func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 		Path:     "/upload",
 		Streamed: true,
 	}
-	c.forwardAndSend(context.Background(), base, req, bodyCh, writeMsg)
+	c.forwardAndSend(context.Background(), base, req, bodyCh, writeMsg, nil)
 
 	expected := "chunk1-chunk2-chunk3"
 	if string(gotBody) != expected {
@@ -713,7 +713,7 @@ func TestForwardAndSendUpstreamUnavailable(t *testing.T) {
 		Method: http.MethodGet,
 		Path:   "/fail",
 	}
-	c.forwardAndSend(context.Background(), base, req, nil, writeMsg)
+	c.forwardAndSend(context.Background(), base, req, nil, writeMsg, nil)
 
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 error response, got %d", len(msgs))

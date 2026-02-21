@@ -553,7 +553,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 		defer conn.Close()
 
 		var msg tunnelproto.Message
-		if err := conn.ReadJSON(&msg); err != nil {
+		if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
 			return
 		}
 		if msg.Kind != tunnelproto.KindRequest {
@@ -616,7 +616,7 @@ func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
 
 		for {
 			var msg tunnelproto.Message
-			if err := conn.ReadJSON(&msg); err != nil {
+			if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
 				return
 			}
 			receivedMsgs <- msg
@@ -692,7 +692,7 @@ done:
 		if msg.BodyChunk == nil {
 			t.Fatal("expected non-nil BodyChunk")
 		}
-		chunk, _ := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+		chunk, _ := msg.BodyChunk.Payload()
 		reassembled = append(reassembled, chunk...)
 	}
 
@@ -725,7 +725,7 @@ func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
 
 		for {
 			var msg tunnelproto.Message
-			if err := conn.ReadJSON(&msg); err != nil {
+			if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
 				return
 			}
 			receivedMsgs <- msg
@@ -814,7 +814,7 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 		defer conn.Close()
 
 		var msg tunnelproto.Message
-		if err := conn.ReadJSON(&msg); err != nil {
+		if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
 			return
 		}
 		if msg.Kind != tunnelproto.KindRequest {

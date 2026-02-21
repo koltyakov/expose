@@ -295,6 +295,31 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		}
 		return err
 	}
+	writeBinary := func(frameKind byte, id string, wsMessageType int, payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := conn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout)); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
+
+		w, err := conn.NextWriter(websocket.BinaryMessage)
+		if err != nil {
+			_ = conn.Close()
+			return err
+		}
+		if err := tunnelproto.WriteBinaryFrame(w, frameKind, id, wsMessageType, payload); err != nil {
+			_ = w.Close()
+			_ = conn.Close()
+			return err
+		}
+		if err := w.Close(); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		return nil
+	}
 
 	var pingSentMu sync.Mutex
 	var pingSentAt time.Time
@@ -335,7 +360,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 	go func() {
 		for {
 			var msg tunnelproto.Message
-			if err := conn.ReadJSON(&msg); err != nil {
+			if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
 				select {
 				case readErr <- err:
 				default:
@@ -395,7 +420,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 					_ = writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: closeCode, Text: closeText}})
 					return
 				}
-				if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSData, WSData: &tunnelproto.WSData{ID: streamID, MessageType: msgType, DataB64: tunnelproto.EncodeBody(payload)}}); err != nil {
+				if err := writeBinary(tunnelproto.BinaryFrameWSData, streamID, msgType, payload); err != nil {
 					return
 				}
 			}
@@ -437,7 +462,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				go func(req tunnelproto.HTTPRequest, bodyCh <-chan []byte) {
 					defer requestWG.Done()
 					defer func() { <-requestSem }()
-					c.forwardAndSend(sessionCtx, localBase, &req, bodyCh, writeJSON)
+					c.forwardAndSend(sessionCtx, localBase, &req, bodyCh, writeJSON, func(id string, payload []byte) error {
+						return writeBinary(tunnelproto.BinaryFrameRespBody, id, 0, payload)
+					})
 				}(reqCopy, bodyCh)
 			case tunnelproto.KindReqBody:
 				if msg.BodyChunk == nil {
@@ -447,7 +474,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				if !ok {
 					continue
 				}
-				data, err := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+				data, err := msg.BodyChunk.Payload()
 				if err != nil {
 					continue
 				}
@@ -516,7 +543,7 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				if !ok {
 					continue
 				}
-				payload, err := tunnelproto.DecodeBody(msg.WSData.DataB64)
+				payload, err := msg.WSData.Payload()
 				if err != nil {
 					continue
 				}
@@ -820,6 +847,7 @@ func (c *Client) forwardAndSend(
 	req *tunnelproto.HTTPRequest,
 	bodyCh <-chan []byte,
 	writeMsg func(tunnelproto.Message) error,
+	writeRespBodyChunk func(id string, payload []byte) error,
 ) {
 	started := time.Now()
 	target := *base
@@ -971,7 +999,12 @@ func (c *Client) forwardAndSend(
 	}
 
 	// Send the already-read data as the first body chunk.
-	if err := writeMsg(tunnelproto.Message{
+	if writeRespBodyChunk != nil {
+		if err := writeRespBodyChunk(req.ID, firstBuf[:n]); err != nil {
+			c.logForwardResult(req, resp.StatusCode, started)
+			return
+		}
+	} else if err := writeMsg(tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBody,
 		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, DataB64: tunnelproto.EncodeBody(firstBuf[:n])},
 	}); err != nil {
@@ -990,7 +1023,12 @@ func (c *Client) forwardAndSend(
 	for {
 		cn, err := resp.Body.Read(chunkBuf)
 		if cn > 0 {
-			if wErr := writeMsg(tunnelproto.Message{
+			if writeRespBodyChunk != nil {
+				if wErr := writeRespBodyChunk(req.ID, chunkBuf[:cn]); wErr != nil {
+					c.logForwardResult(req, resp.StatusCode, started)
+					return
+				}
+			} else if wErr := writeMsg(tunnelproto.Message{
 				Kind:      tunnelproto.KindRespBody,
 				BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, DataB64: tunnelproto.EncodeBody(chunkBuf[:cn])},
 			}); wErr != nil {

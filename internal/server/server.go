@@ -656,7 +656,7 @@ func (s *Server) readLoop(sess *session) {
 
 	for {
 		var msg tunnelproto.Message
-		if err := sess.conn.ReadJSON(&msg); err != nil {
+		if err := tunnelproto.ReadWSMessage(sess.conn, &msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
 				s.log.Warn("tunnel read error", "tunnel_id", sess.tunnelID, "err", err)
 			}
@@ -975,7 +975,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 				_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: code, Text: text}})
 				return
 			}
-			if err := sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSData, WSData: &tunnelproto.WSData{ID: streamID, MessageType: msgType, DataB64: tunnelproto.EncodeBody(payload)}}); err != nil {
+			if err := sess.writeWSData(streamID, msgType, payload); err != nil {
 				return
 			}
 		}
@@ -998,7 +998,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 					if msg.WSData == nil {
 						continue
 					}
-					b, err := tunnelproto.DecodeBody(msg.WSData.DataB64)
+					b, err := msg.WSData.Payload()
 					if err != nil {
 						continue
 					}
@@ -1073,6 +1073,36 @@ func (s *session) writeJSON(msg tunnelproto.Message) error {
 		_ = s.conn.Close()
 	}
 	return err
+}
+
+func (s *session) writeBinaryFrame(frameKind byte, id string, wsMessageType int, payload []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+		_ = s.conn.Close()
+		return err
+	}
+	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
+
+	w, err := s.conn.NextWriter(websocket.BinaryMessage)
+	if err != nil {
+		_ = s.conn.Close()
+		return err
+	}
+	if err := tunnelproto.WriteBinaryFrame(w, frameKind, id, wsMessageType, payload); err != nil {
+		_ = w.Close()
+		_ = s.conn.Close()
+		return err
+	}
+	if err := w.Close(); err != nil {
+		_ = s.conn.Close()
+		return err
+	}
+	return nil
+}
+
+func (s *session) writeWSData(streamID string, messageType int, payload []byte) error {
+	return s.writeBinaryFrame(tunnelproto.BinaryFrameWSData, streamID, messageType, payload)
 }
 
 func (s *session) touch(t time.Time) {
@@ -1413,10 +1443,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	}
 
 	// Send the already-read data as the first body chunk.
-	if err := sess.writeJSON(tunnelproto.Message{
-		Kind:      tunnelproto.KindReqBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: reqID, DataB64: tunnelproto.EncodeBody(firstBuf[:n])},
-	}); err != nil {
+	if err := sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, firstBuf[:n]); err != nil {
 		return true, err
 	}
 
@@ -1431,10 +1458,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	for {
 		cn, err := r.Body.Read(chunkBuf)
 		if cn > 0 {
-			if wErr := sess.writeJSON(tunnelproto.Message{
-				Kind:      tunnelproto.KindReqBody,
-				BodyChunk: &tunnelproto.BodyChunk{ID: reqID, DataB64: tunnelproto.EncodeBody(chunkBuf[:cn])},
-			}); wErr != nil {
+			if wErr := sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, chunkBuf[:cn]); wErr != nil {
 				return true, wErr
 			}
 		}
@@ -1486,7 +1510,7 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 				if msg.BodyChunk == nil {
 					continue
 				}
-				b, err := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+				b, err := msg.BodyChunk.Payload()
 				if err == nil && len(b) > 0 {
 					if _, wErr := w.Write(b); wErr != nil {
 						return

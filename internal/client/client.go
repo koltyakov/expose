@@ -45,6 +45,7 @@ type registerResponse struct {
 	WSURL         string `json:"ws_url"`
 	ServerTLSMode string `json:"server_tls_mode"`
 	ServerVersion string `json:"server_version,omitempty"`
+	WAFEnabled    bool   `json:"waf_enabled,omitempty"`
 }
 
 // ErrAutoUpdated is returned from [Client.Run] when the binary was replaced
@@ -181,7 +182,7 @@ func (c *Client) Run(ctx context.Context) error {
 			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
 			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID)
-			c.display.ShowVersions(c.version, ensureVPrefix(reg.ServerVersion))
+			c.display.ShowVersions(c.version, ensureVPrefix(reg.ServerVersion), reg.WAFEnabled)
 		} else {
 			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
 			if reg.ServerTLSMode != "" {
@@ -575,6 +576,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 						if c.display != nil {
 							c.display.ShowLatency(rtt)
 						}
+					}
+					if msg.Stats != nil && c.display != nil {
+						c.display.ShowWAFStats(msg.Stats.WAFBlocked)
 					}
 				}
 			case tunnelproto.KindClose:

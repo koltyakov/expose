@@ -76,10 +76,12 @@ type Display struct {
 	localAddr     string
 	tlsMode       string
 	serverVersion string
+	wafEnabled    bool   // true when WAF is enabled on the server
 	updateVersion string // non-empty when an update is available
 
 	// counters
-	totalHTTP int // total HTTP requests forwarded
+	totalHTTP  int   // total HTTP requests forwarded
+	wafBlocked int64 // WAF-blocked requests reported by the server
 
 	// session timing
 	sessionStart  time.Time // when the first successful connection happened
@@ -165,11 +167,12 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string)
 }
 
 // ShowVersions sets the client and server version strings and redraws.
-func (d *Display) ShowVersions(clientVersion, serverVersion string) {
+func (d *Display) ShowVersions(clientVersion, serverVersion string, wafEnabled bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.version = clientVersion
 	d.serverVersion = serverVersion
+	d.wafEnabled = wafEnabled
 	d.redraw()
 }
 
@@ -187,6 +190,14 @@ func (d *Display) ShowLatency(rtt time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.latency = rtt
+	d.redraw()
+}
+
+// ShowWAFStats updates the displayed WAF-blocked request count and redraws.
+func (d *Display) ShowWAFStats(blocked int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.wafBlocked = blocked
 	d.redraw()
 }
 
@@ -464,6 +475,9 @@ func (d *Display) redraw() {
 	if sv == "" {
 		sv = "--"
 	}
+	if d.wafEnabled {
+		sv += " (+WAF)"
+	}
 	d.writeField(&b, "Server Version", d.styled(ansiDim, sv))
 	if d.updateVersion != "" {
 		d.writeField(&b, "Update",
@@ -500,6 +514,13 @@ func (d *Display) redraw() {
 	clientCount := len(d.visitors)
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
 	httpSummary := fmt.Sprintf("%d total", d.totalHTTP)
+	if d.wafEnabled {
+		if d.wafBlocked > 0 {
+			httpSummary += ", " + d.styled(ansiRed, fmt.Sprintf("blocked %d", d.wafBlocked))
+		} else {
+			httpSummary += ", blocked 0"
+		}
+	}
 	if wsCount > 0 {
 		d.writeField(&b, "WebSockets", fmt.Sprintf("%d open", wsCount))
 	} else {

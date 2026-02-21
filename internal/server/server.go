@@ -35,6 +35,7 @@ import (
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/waf"
 )
 
 // Server is the main expose HTTPS server that manages tunnel registrations,
@@ -52,6 +53,7 @@ type Server struct {
 	domainTouches chan string
 	domainTouchMu sync.Mutex
 	domainTouched map[string]struct{}
+	wafBlocks     sync.Map // hostname → *atomic.Int64
 }
 
 // rateLimiter implements a simple per-key token-bucket rate limiter.
@@ -278,6 +280,7 @@ type registerResponse struct {
 	WSURL         string `json:"ws_url"`
 	ServerTLSMode string `json:"server_tls_mode"`
 	ServerVersion string `json:"server_version,omitempty"`
+	WAFEnabled    bool   `json:"waf_enabled,omitempty"`
 }
 
 type errorResponse struct {
@@ -333,6 +336,15 @@ func (s *Server) Run(ctx context.Context) error {
 	})
 	mux.HandleFunc("/", s.handlePublic)
 
+	var handler http.Handler = mux
+	if s.cfg.WAFEnabled {
+		handler = waf.NewMiddleware(waf.Config{
+			Enabled: true,
+			OnBlock: s.recordWAFBlock,
+		}, s.log)(handler)
+		s.log.Info("WAF enabled")
+	}
+
 	var manager *autocert.Manager
 	useDynamicACME := s.cfg.TLSMode != tlsModeWildcard
 	if useDynamicACME {
@@ -378,7 +390,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	httpsServer := &http.Server{
 		Addr:              s.cfg.ListenHTTPS,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       httpsReadTimeout,
 		WriteTimeout:      httpsWriteTimeout,
@@ -582,6 +594,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		WSURL:         wsURL,
 		ServerTLSMode: s.serverTLSMode(),
 		ServerVersion: s.version,
+		WAFEnabled:    s.cfg.WAFEnabled,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -737,7 +750,13 @@ func (s *Server) readLoop(sess *session) {
 				s.log.Debug("dropped websocket close signal due stalled stream consumer", "tunnel_id", sess.tunnelID, "stream_id", msg.WSClose.ID)
 			}
 		case tunnelproto.KindPing:
-			_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong})
+			pong := tunnelproto.Message{Kind: tunnelproto.KindPong}
+			if s.cfg.WAFEnabled {
+				if total := s.wafBlocksForTunnel(sess.tunnelID); total > 0 {
+					pong.Stats = &tunnelproto.Stats{WAFBlocked: total}
+				}
+			}
+			_ = sess.writeJSON(pong)
 		}
 	}
 }
@@ -1212,6 +1231,34 @@ func (s *session) closeWSPending() {
 		close(ch)
 	}
 	s.wsMu.Unlock()
+}
+
+// recordWAFBlock increments the WAF-blocked counter for the given hostname.
+// It is called by the WAF middleware's OnBlock callback.
+func (s *Server) recordWAFBlock(host string) {
+	val, _ := s.wafBlocks.LoadOrStore(host, &atomic.Int64{})
+	val.(*atomic.Int64).Add(1)
+}
+
+// wafBlocksForTunnel returns the total number of WAF-blocked requests for
+// all hostnames associated with the given tunnel.
+func (s *Server) wafBlocksForTunnel(tunnelID string) int64 {
+	s.routes.mu.RLock()
+	hosts := s.routes.hostsByTunnel[tunnelID]
+	// Copy the set while holding the lock.
+	hostnames := make([]string, 0, len(hosts))
+	for h := range hosts {
+		hostnames = append(hostnames, h)
+	}
+	s.routes.mu.RUnlock()
+
+	var total int64
+	for _, h := range hostnames {
+		if val, ok := s.wafBlocks.Load(h); ok {
+			total += val.(*atomic.Int64).Load()
+		}
+	}
+	return total
 }
 
 func (s *Server) closeAllSessions() {

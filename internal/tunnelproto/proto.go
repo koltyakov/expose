@@ -55,6 +55,7 @@ type Message struct {
 	WSOpenAck *WSOpenAck    `json:"ws_open_ack,omitempty"`
 	WSData    *WSData       `json:"ws_data,omitempty"`
 	WSClose   *WSClose      `json:"ws_close,omitempty"`
+	Stats     *Stats        `json:"stats,omitempty"`
 	Error     string        `json:"error,omitempty"`
 }
 
@@ -118,6 +119,11 @@ type WSClose struct {
 	ID   string `json:"id"`
 	Code int    `json:"code,omitempty"`
 	Text string `json:"text,omitempty"`
+}
+
+// Stats carries optional server-side statistics piggybacked on pong messages.
+type Stats struct {
+	WAFBlocked int64 `json:"waf_blocked,omitempty"`
 }
 
 // EncodeBody base64-encodes a byte slice for JSON transport.

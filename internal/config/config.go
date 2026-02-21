@@ -49,6 +49,7 @@ type ServerConfig struct {
 	HeartbeatCheckInterval time.Duration
 	CleanupInterval        time.Duration
 	TempRetention          time.Duration
+	WAFEnabled             bool
 }
 
 const defaultClientPingInterval = 30 * time.Second
@@ -124,6 +125,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		HeartbeatCheckInterval: defaultServerHeartbeatCheckInterval,
 		CleanupInterval:        defaultServerCleanupInterval,
 		TempRetention:          defaultServerTempRetention,
+		WAFEnabled:             envBoolOrDefault("EXPOSE_WAF_ENABLE", true),
 	}
 
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -206,6 +208,19 @@ func trimOrDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+func envBoolOrDefault(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func normalizeLowerOrDefault(v, def string) string {

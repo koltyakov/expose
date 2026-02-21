@@ -10,7 +10,7 @@ import (
 
 func newTestDisplay(color bool) (*Display, *bytes.Buffer) {
 	var buf bytes.Buffer
-	d := &Display{out: &buf, color: color, wsConns: make(map[string]wsEntry), visitors: make(map[string]struct{})}
+	d := &Display{out: &buf, color: color, wsConns: make(map[string]wsEntry), visitors: make(map[string]time.Time), nowFunc: time.Now}
 	return d, &buf
 }
 
@@ -76,8 +76,12 @@ func TestDisplayTunnelInfoNoTLSMode(t *testing.T) {
 	d, buf := newTestDisplay(false)
 	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz")
 	out := buf.String()
-	if strings.Contains(out, "TLS Mode") {
-		t.Fatal("expected no TLS Mode field when empty")
+	// TLS Mode field is always present; when empty it shows "--"
+	if !strings.Contains(out, "TLS Mode") {
+		t.Fatal("expected TLS Mode field to always be present")
+	}
+	if !strings.Contains(out, "--") {
+		t.Fatal("expected '--' placeholder for empty TLS Mode")
 	}
 }
 
@@ -198,16 +202,22 @@ func TestDisplayWSTracking(t *testing.T) {
 		t.Fatal("expected 2 open in WebSockets counter")
 	}
 
-	buf.Reset()
 	d.TrackWSClose("ws_1")
 	d.TrackWSClose("ws_2")
-	// Reset and trigger a redraw to get clean final state.
+	// Simulate the debounce timer expiring (clears the display floor).
+	d.mu.Lock()
+	d.wsDisplayMin = 0
+	d.mu.Unlock()
+	// Trigger a clean redraw after the floor is cleared.
 	buf.Reset()
 	d.ShowInfo("sync")
 	out = buf.String()
-	// After all WS closed, "WebSockets" field should not appear.
-	if strings.Contains(out, "WebSockets") {
-		t.Fatal("expected no WebSockets field after all closed")
+	// After all WS closed and debounce expired, should show "--" placeholder.
+	if !strings.Contains(out, "WebSockets") {
+		t.Fatal("expected WebSockets field to always be present")
+	}
+	if !strings.Contains(out, "--") {
+		t.Fatal("expected '--' placeholder for WebSockets after all closed")
 	}
 }
 
@@ -332,6 +342,9 @@ func TestDisplayUniqueClients(t *testing.T) {
 	if !strings.Contains(out, "2 total") {
 		t.Fatal("expected 2 total clients")
 	}
+	if !strings.Contains(out, "2 active") {
+		t.Fatal("expected 2 active clients (both within 60s window)")
+	}
 }
 
 func TestDisplayUniqueClientsSameIPDifferentUA(t *testing.T) {
@@ -367,4 +380,220 @@ func TestDisplayUniqueClientsFromWS(t *testing.T) {
 	if !strings.Contains(out, "1 total") {
 		t.Fatal("expected 1 total client from WebSocket")
 	}
+	if !strings.Contains(out, "1 active") {
+		t.Fatal("expected 1 active client from WebSocket")
+	}
+}
+
+func TestDisplayActiveClientsExpiry(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+
+	h1 := map[string][]string{"X-Forwarded-For": {"1.2.3.4"}, "User-Agent": {"Chrome"}}
+	h2 := map[string][]string{"X-Forwarded-For": {"5.6.7.8"}, "User-Agent": {"Firefox"}}
+
+	d.LogRequest("GET", "/a", 200, time.Millisecond, h1)
+	d.LogRequest("GET", "/b", 200, time.Millisecond, h2)
+
+	// Both visitors active now.
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "2 active") {
+		t.Fatal("expected 2 active clients initially")
+	}
+
+	// Advance time past the 60s window.
+	now = now.Add(61 * time.Second)
+
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "0 active") {
+		t.Fatalf("expected 0 active clients after 61s, got: %s", out)
+	}
+	if !strings.Contains(out, "2 total") {
+		t.Fatal("expected 2 total clients preserved")
+	}
+}
+
+func TestDisplayActiveClientsWSKeepsAlive(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+
+	h := map[string][]string{"X-Forwarded-For": {"1.2.3.4"}, "User-Agent": {"Chrome"}}
+	d.TrackWSOpen("ws_1", "/ws", h)
+
+	// Advance past the 60s window.
+	now = now.Add(120 * time.Second)
+
+	// Visitor should still be active because the WebSocket is open.
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "1 active") {
+		t.Fatalf("expected 1 active from open WebSocket, got: %s", out)
+	}
+
+	// Close the WS — now with expired timestamp, visitor should become inactive.
+	d.TrackWSClose("ws_1")
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "0 active") {
+		t.Fatalf("expected 0 active after WS close + expired window, got: %s", out)
+	}
+	if !strings.Contains(out, "1 total") {
+		t.Fatal("expected 1 total client preserved")
+	}
+}
+
+func TestDisplayPageRefreshKeepsActive(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+
+	h := map[string][]string{"X-Forwarded-For": {"1.2.3.4"}, "User-Agent": {"Chrome"}}
+
+	// Simulate: visitor opens page (HTTP request + WebSocket).
+	d.LogRequest("GET", "/", 200, time.Millisecond, h)
+	d.TrackWSOpen("ws_1", "/ws", h)
+
+	// 5 seconds later, visitor refreshes → WS closes, new HTTP request + WS opens.
+	now = now.Add(5 * time.Second)
+	d.TrackWSClose("ws_1")
+
+	// Between close and new open, active count should still be 1 (within 60s window).
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "1 active") {
+		t.Fatalf("expected 1 active during page refresh gap, got: %s", out)
+	}
+
+	// New page load arrives.
+	d.LogRequest("GET", "/", 200, time.Millisecond, h)
+	d.TrackWSOpen("ws_2", "/ws", h)
+
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "1 active") {
+		t.Fatalf("expected 1 active after refresh, got: %s", out)
+	}
+}
+
+func TestDisplayWSCloseDebounceNoBlink(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowBanner("dev")
+
+	// Open two WebSockets.
+	d.TrackWSOpen("ws_1", "/chat", nil)
+	d.TrackWSOpen("ws_2", "/events", nil)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "2 open") {
+		t.Fatal("expected 2 open WebSockets initially")
+	}
+
+	// Close ws_1 — the floor holds the displayed count at 2.
+	buf.Reset()
+	d.TrackWSClose("ws_1")
+	out = buf.String()
+	// Counter should still show "2 open" thanks to the floor.
+	if !strings.Contains(out, "2 open") {
+		t.Fatalf("expected floor to keep counter at '2 open', got: %s", out)
+	}
+
+	// A new event (e.g. WS open) triggers an immediate redraw which absorbs
+	// the previous close — the counter goes from 2 → 2 smoothly.
+	buf.Reset()
+	d.TrackWSOpen("ws_3", "/new", nil)
+	out = buf.String()
+	if !strings.Contains(out, "2 open") {
+		t.Fatalf("expected 2 open after close+open, got: %s", out)
+	}
+
+	// After the debounce timer fires, the floor clears and the real count shows.
+	d.mu.Lock()
+	d.wsDisplayMin = 0
+	d.mu.Unlock()
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "2 open") {
+		t.Fatalf("expected 2 open (ws_2 + ws_3 still open), got: %s", out)
+	}
+
+	// Close all remaining and clear floor.
+	d.TrackWSClose("ws_2")
+	d.TrackWSClose("ws_3")
+	d.mu.Lock()
+	d.wsDisplayMin = 0
+	d.mu.Unlock()
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "--") {
+		t.Fatalf("expected '--' after all WS closed and debounce expired, got: %s", out)
+	}
+}
+
+func TestDisplayShowLatency(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowBanner("dev")
+	buf.Reset()
+
+	d.ShowLatency(42 * time.Millisecond)
+	out := buf.String()
+	if !strings.Contains(out, "Latency") {
+		t.Fatal("expected Latency label in output")
+	}
+	if !strings.Contains(out, "42ms") {
+		t.Fatalf("expected '42ms' in output, got: %s", out)
+	}
+}
+
+func TestDisplayLatencyHiddenWhenZero(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowBanner("dev")
+	out := buf.String()
+	// Latency field is always present; before any measurement it shows "--".
+	if !strings.Contains(out, "Latency") {
+		t.Fatal("expected Latency field to always be present")
+	}
+	if !strings.Contains(out, "--") {
+		t.Fatal("expected '--' placeholder for Latency before any measurement")
+	}
+	buf.Reset()
 }

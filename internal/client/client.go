@@ -288,6 +288,15 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		return err
 	}
 
+	var pingSentMu sync.Mutex
+	var pingSentAt time.Time
+
+	// Send an immediate ping to measure latency on connect.
+	pingSentAt = time.Now()
+	if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
+		return err
+	}
+
 	keepaliveErr := make(chan error, 1)
 	if c.cfg.PingInterval > 0 {
 		go func() {
@@ -298,6 +307,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				case <-sessionCtx.Done():
 					return
 				case <-ticker.C:
+					pingSentMu.Lock()
+					pingSentAt = time.Now()
+					pingSentMu.Unlock()
 					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
 						select {
 						case keepaliveErr <- err:
@@ -507,6 +519,17 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				if msg.Kind == tunnelproto.KindPing {
 					if err := writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && sessionCtx.Err() == nil {
 						return err
+					}
+				}
+				if msg.Kind == tunnelproto.KindPong {
+					pingSentMu.Lock()
+					sentAt := pingSentAt
+					pingSentMu.Unlock()
+					if !sentAt.IsZero() {
+						rtt := time.Since(sentAt)
+						if c.display != nil {
+							c.display.ShowLatency(rtt)
+						}
 					}
 				}
 			case tunnelproto.KindClose:

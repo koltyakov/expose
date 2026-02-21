@@ -31,6 +31,17 @@ const displayFieldWidth = 26
 // maxDisplayRequests is the number of HTTP request lines kept visible.
 const maxDisplayRequests = 10
 
+// activeClientWindow is the duration within which a visitor is considered
+// "active" based on their last-seen timestamp. WebSocket connections also
+// keep a visitor active for as long as the socket remains open.
+const activeClientWindow = 60 * time.Second
+
+// wsCloseDebounce is the delay before a WebSocket-close event triggers a
+// screen redraw. During a page refresh the browser disconnects and
+// reconnects quickly; the debounce prevents the counter from briefly
+// dropping and causing visible flicker.
+const wsCloseDebounce = 500 * time.Millisecond
+
 // requestEntry stores one logged HTTP request for the rolling display.
 type requestEntry struct {
 	ts       time.Time
@@ -42,9 +53,10 @@ type requestEntry struct {
 
 // wsEntry stores one active WebSocket connection for the display.
 type wsEntry struct {
-	id   string
-	path string
-	ts   time.Time
+	id          string
+	path        string
+	ts          time.Time
+	fingerprint string // visitor fingerprint (IP|UA)
 }
 
 // Display renders an ngrok-inspired terminal interface for the tunnel client.
@@ -68,14 +80,27 @@ type Display struct {
 	// counters
 	totalHTTP int // total HTTP requests forwarded
 
-	// unique visitor tracking (IP + User-Agent fingerprint)
-	visitors map[string]struct{}
+	// latency from most recent ping/pong round-trip
+	latency time.Duration
+
+	// unique visitor tracking (IP + User-Agent fingerprint → last seen)
+	visitors map[string]time.Time
+
+	// nowFunc returns the current time; override in tests.
+	nowFunc func() time.Time
 
 	// rolling request log (most recent at the end)
 	requests []requestEntry
 
 	// active WebSocket streams
 	wsConns map[string]wsEntry
+
+	// wsDisplayMin is the debounced floor for the displayed WebSocket
+	// count. During a page refresh the browser disconnects and quickly
+	// reconnects; by keeping the pre-close count as a floor, the
+	// displayed value never dips below it until the debounce expires.
+	wsDisplayMin    int
+	wsDebounceTimer *time.Timer
 }
 
 // NewDisplay creates a Display that writes to stdout.
@@ -85,7 +110,8 @@ func NewDisplay(color bool) *Display {
 		out:      os.Stdout,
 		color:    color,
 		wsConns:  make(map[string]wsEntry),
-		visitors: make(map[string]struct{}),
+		visitors: make(map[string]time.Time),
+		nowFunc:  time.Now,
 	}
 }
 
@@ -139,6 +165,14 @@ func (d *Display) ShowUpdateStatus(latestVersion string) {
 	d.redraw()
 }
 
+// ShowLatency updates the displayed round-trip latency and redraws.
+func (d *Display) ShowLatency(rtt time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.latency = rtt
+	d.redraw()
+}
+
 // ShowReconnecting sets the status to reconnecting and redraws.
 func (d *Display) ShowReconnecting(reason string) {
 	d.mu.Lock()
@@ -170,16 +204,42 @@ func (d *Display) LogRequest(method, path string, status int, duration time.Dura
 func (d *Display) TrackWSOpen(id, path string, headers map[string][]string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.trackVisitor(headers)
-	d.wsConns[id] = wsEntry{id: id, path: path, ts: time.Now()}
+	fp := visitorFingerprint(headers)
+	d.touchVisitor(fp)
+	d.wsConns[id] = wsEntry{id: id, path: path, ts: d.now(), fingerprint: fp}
 	d.redraw()
 }
 
 // TrackWSClose removes a WebSocket stream and redraws.
+// A debounced display floor prevents the counter from briefly dipping
+// during a page refresh (close + immediate reopen).
 func (d *Display) TrackWSClose(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Capture the count *before* deletion as the display floor.
+	preCloseCount := len(d.wsConns)
 	delete(d.wsConns, id)
+
+	// Set floor to the maximum of the existing floor and the pre-close count.
+	// This handles rapid successive closes correctly.
+	if preCloseCount > d.wsDisplayMin {
+		d.wsDisplayMin = preCloseCount
+	}
+
+	// Cancel any previously pending debounce timer.
+	if d.wsDebounceTimer != nil {
+		d.wsDebounceTimer.Stop()
+	}
+
+	// After the debounce window, clear the floor and redraw with the real count.
+	d.wsDebounceTimer = time.AfterFunc(wsCloseDebounce, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		d.wsDisplayMin = 0
+		d.redraw()
+	})
+
 	d.redraw()
 }
 
@@ -219,13 +279,52 @@ func (d *Display) appendEntry(e requestEntry) {
 	}
 }
 
-// trackVisitor builds a fingerprint from the request headers and adds it
-// to the unique visitors set. Caller must hold d.mu.
+// trackVisitor builds a fingerprint from the request headers and updates
+// the visitor's last-seen timestamp. Caller must hold d.mu.
 func (d *Display) trackVisitor(headers map[string][]string) {
 	fp := visitorFingerprint(headers)
+	d.touchVisitor(fp)
+}
+
+// touchVisitor updates (or creates) the last-seen timestamp for a visitor
+// fingerprint. Caller must hold d.mu.
+func (d *Display) touchVisitor(fp string) {
 	if fp != "" {
-		d.visitors[fp] = struct{}{}
+		d.visitors[fp] = d.now()
 	}
+}
+
+// now returns the current time via the configurable clock.
+func (d *Display) now() time.Time {
+	if d.nowFunc != nil {
+		return d.nowFunc()
+	}
+	return time.Now()
+}
+
+// activeClientCount returns the number of unique visitors considered active.
+// A visitor is active if they were last seen within activeClientWindow OR
+// they currently have an open WebSocket connection. Caller must hold d.mu.
+func (d *Display) activeClientCount() int {
+	now := d.now()
+	cutoff := now.Add(-activeClientWindow)
+	active := make(map[string]struct{})
+
+	// Count visitors seen within the window.
+	for fp, lastSeen := range d.visitors {
+		if lastSeen.After(cutoff) {
+			active[fp] = struct{}{}
+		}
+	}
+
+	// Open WebSocket connections always count as active.
+	for _, ws := range d.wsConns {
+		if ws.fingerprint != "" {
+			active[ws.fingerprint] = struct{}{}
+		}
+	}
+
+	return len(active)
 }
 
 // visitorFingerprint returns a string that identifies a unique visitor
@@ -300,47 +399,68 @@ func (d *Display) redraw() {
 	fmt.Fprintf(&b, "%s%s%s\n\n", name, strings.Repeat(" ", gap), hint)
 
 	// ── Connection info ─────────────────────────────────────────
+	placeholder := d.styled(ansiDim, "--")
+
 	if d.status != "" {
 		statusColor := ansiGreen
 		if d.status != "online" {
 			statusColor = ansiYellow
 		}
 		d.writeField(&b, "Session Status", d.styled(statusColor, d.status))
+	} else {
+		d.writeField(&b, "Session Status", placeholder)
 	}
 	if d.tunnelID != "" {
 		d.writeField(&b, "Tunnel ID", d.styled(ansiDim, d.tunnelID))
+	} else {
+		d.writeField(&b, "Tunnel ID", placeholder)
 	}
-	if d.version != "" || d.serverVersion != "" {
-		sv := d.serverVersion
-		if sv == "" {
-			sv = "unknown"
-		}
-		d.writeField(&b, "Server Version", d.styled(ansiDim, sv))
+	sv := d.serverVersion
+	if sv == "" {
+		sv = "--"
 	}
+	d.writeField(&b, "Server Version", d.styled(ansiDim, sv))
 	if d.updateVersion != "" {
 		d.writeField(&b, "Update",
 			d.styled(ansiYellow, fmt.Sprintf("%s available", d.updateVersion))+
 				d.styled(ansiDim, " — run ")+
 				d.styled(ansiBold, "expose update"))
 	}
+	if d.latency > 0 {
+		d.writeField(&b, "Latency", displayFormatDuration(d.latency))
+	} else {
+		d.writeField(&b, "Latency", placeholder)
+	}
 	if d.publicURL != "" {
 		arrow := d.styled(ansiDim, "→")
 		d.writeField(&b, "Forwarding", fmt.Sprintf("%s %s %s",
 			d.styled(ansiCyan, d.publicURL), arrow, d.localAddr))
+	} else {
+		d.writeField(&b, "Forwarding", placeholder)
 	}
 	if d.tlsMode != "" {
 		d.writeField(&b, "TLS Mode", d.tlsMode)
+	} else {
+		d.writeField(&b, "TLS Mode", placeholder)
 	}
 
 	// ── Connections counter ─────────────────────────────────────
 	wsCount := len(d.wsConns)
+	// Use the debounced floor so the counter never dips below the
+	// pre-close value during a rapid refresh cycle.
+	if d.wsDisplayMin > wsCount {
+		wsCount = d.wsDisplayMin
+	}
+	activeCount := d.activeClientCount()
 	clientCount := len(d.visitors)
-	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", wsCount, clientCount))
+	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
 	httpParts := []string{
 		fmt.Sprintf("%d total", d.totalHTTP),
 	}
 	if wsCount > 0 {
 		d.writeField(&b, "WebSockets", fmt.Sprintf("%d open", wsCount))
+	} else {
+		d.writeField(&b, "WebSockets", placeholder)
 	}
 
 	b.WriteString("\n")

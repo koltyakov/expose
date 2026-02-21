@@ -1233,11 +1233,38 @@ func (s *session) closeWSPending() {
 	s.wsMu.Unlock()
 }
 
-// recordWAFBlock increments the WAF-blocked counter for the given hostname.
-// It is called by the WAF middleware's OnBlock callback.
-func (s *Server) recordWAFBlock(host string) {
-	val, _ := s.wafBlocks.LoadOrStore(host, &atomic.Int64{})
-	val.(*atomic.Int64).Add(1)
+// recordWAFBlock increments the WAF-blocked counter for the given hostname
+// and emits a structured audit log entry that identifies the protected
+// tunnel endpoint.
+func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
+	val, _ := s.wafBlocks.LoadOrStore(evt.Host, &atomic.Int64{})
+	count := val.(*atomic.Int64).Add(1)
+
+	// Try to resolve which tunnel was being targeted.
+	tunnelID := "unknown"
+	domainName := evt.Host
+	route, ok := s.routes.get(evt.Host)
+	if !ok {
+		if r, err := s.store.FindRouteByHost(context.Background(), evt.Host); err == nil {
+			route = r
+			ok = true
+		}
+	}
+	if ok {
+		tunnelID = route.Tunnel.ID
+		domainName = route.Domain.Hostname
+	}
+
+	s.log.Warn("waf audit: request blocked",
+		"rule", evt.Rule,
+		"tunnel_id", tunnelID,
+		"domain", domainName,
+		"method", evt.Method,
+		"uri", evt.RequestURI,
+		"remote", evt.RemoteAddr,
+		"ua", evt.UserAgent,
+		"total_blocks", count,
+	)
 }
 
 // wafBlocksForTunnel returns the total number of WAF-blocked requests for

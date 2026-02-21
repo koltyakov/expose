@@ -11,19 +11,29 @@ import (
 	"strings"
 )
 
+// BlockEvent carries context about a single WAF-blocked request so that
+// callers can produce meaningful audit log entries.
+type BlockEvent struct {
+	Host       string // normalised hostname (port stripped, lowercased)
+	Rule       string // name of the WAF rule that matched
+	Method     string // HTTP method (GET, POST, …)
+	RequestURI string // full request URI including query string
+	RemoteAddr string // client IP (from X-Forwarded-For or RemoteAddr)
+	UserAgent  string // User-Agent header value
+}
+
 // Config controls WAF behaviour.
 type Config struct {
 	Enabled bool
 	// OnBlock is called (if non-nil) every time the WAF blocks a request.
-	// The argument is the normalised hostname from the request's Host header.
-	OnBlock func(host string)
+	OnBlock func(BlockEvent)
 }
 
 // firewall holds pre-compiled rules and the logger.
 type firewall struct {
 	rules   []rule
 	log     *slog.Logger
-	onBlock func(host string)
+	onBlock func(BlockEvent)
 }
 
 // NewMiddleware returns an http.Handler middleware that inspects every
@@ -50,6 +60,7 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 			}
 			if matched, ruleName := fw.check(r); matched {
 				clientIP := clientAddr(r)
+				host := normalizeHost(r.Host)
 				fw.log.Warn("waf blocked request",
 					"rule", ruleName,
 					"method", r.Method,
@@ -58,7 +69,14 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 					"ua", r.UserAgent(),
 				)
 				if fw.onBlock != nil {
-					fw.onBlock(normalizeHost(r.Host))
+					fw.onBlock(BlockEvent{
+						Host:       host,
+						Rule:       ruleName,
+						Method:     r.Method,
+						RequestURI: r.RequestURI,
+						RemoteAddr: clientIP,
+						UserAgent:  r.UserAgent(),
+					})
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)

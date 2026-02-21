@@ -37,6 +37,7 @@ tmp/
 # Editor/IDE
 # .idea/
 # .vscode/
+plans/
 
 # OS generated files
 .DS_Store

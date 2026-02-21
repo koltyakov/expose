@@ -19,15 +19,43 @@ Run your own server, then expose local HTTP ports from any client machine - no t
 ## Architecture Overview
 
 ```mermaid
-flowchart LR
-    A["Browser"] -- HTTPS --> B["expose server<br/>(TLS + routing)"]
-    B -- WebSocket <--> C["expose client<br/>(tunnel proxy)"]
-    C -- HTTP --> D["Local app<br/>(127.0.0.1:PORT)"]
+flowchart TB
+    App["💻 Local app<br/>127.0.0.1:PORT"]
+
+    subgraph client["expose client"]
+        Fwd["Forward"] --> Conn["Connect"] --> Reg["Register"]
+    end
+
+    subgraph server["expose server"]
+        Hub{{"Session hub"}}
+        Route["Route by hostname"]
+        TLS["TLS · WAF"]
+        DB[("SQLite")]
+
+        Hub --> Route --> TLS
+        Route -. resolve .-> DB
+    end
+
+    Browser["🌐 Browser"]
+
+    App -- "HTTP" --> Fwd
+    Hub <-- "WebSocket tunnel" --> Conn
+    Conn -- "token" --> Hub
+    Reg -- "API key" --> Route
+    TLS -- "HTTPS *.domain" --> Browser
 ```
 
-1. **Server** listens on HTTPS, manages TLS (ACME or wildcard), and routes traffic by hostname.
-2. **Client** registers a tunnel via REST, then holds a WebSocket for proxying requests.
-3. Public HTTP requests to `*.EXPOSE_DOMAIN` are forwarded through the WebSocket to the client's local port.
+### Request lifecycle
+
+1. **TLS termination** — the server terminates HTTPS using ACME (auto/dynamic per-host) or a static wildcard certificate.
+2. **WAF** — every inbound request passes the Web Application Firewall, which blocks common attack patterns (SQLi, XSS, path traversal, shell injection, scanner bots) and returns `403` on match.
+3. **Routing** — the server mux dispatches to one of three handlers:
+   - `/v1/tunnels/register` — the client authenticates with an API key (SHA-256 + pepper), a hostname is allocated, and a one-time connect token is returned.
+   - `/v1/tunnels/connect` — the client exchanges the token for a persistent WebSocket session stored in the in-memory session hub.
+   - `/*` (public) — incoming requests are resolved to a tunnel via a hostname route cache (backed by SQLite), optionally authorized with Basic Auth (bcrypt), then forwarded to the matching WebSocket session.
+4. **Tunnel protocol** — requests and responses flow over the WebSocket as JSON envelopes. Large bodies are streamed as binary frames. Full WebSocket relay (open/data/close) is also supported.
+5. **Client proxy** — the client deserializes each forwarded request, issues it against `127.0.0.1:PORT`, and sends the response back through the tunnel.
+6. **Reliability** — the client sends keepalive pings and reconnects with exponential backoff; the server runs a background janitor that expires stale sessions, purges unused temporary domains, and cleans up old cert cache entries.
 
 ## Installation
 

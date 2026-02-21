@@ -330,15 +330,11 @@ func (d *Display) redraw() {
 		d.writeField(&b, "Tunnel ID", d.styled(ansiDim, d.tunnelID))
 	}
 	if d.version != "" || d.serverVersion != "" {
-		cv := d.version
-		if cv == "" {
-			cv = "unknown"
-		}
 		sv := d.serverVersion
 		if sv == "" {
 			sv = "unknown"
 		}
-		d.writeField(&b, "Version", fmt.Sprintf("client: %s / server: %s", d.styled(ansiDim, cv), d.styled(ansiDim, sv)))
+		d.writeField(&b, "Server Version", d.styled(ansiDim, sv))
 	}
 	if d.updateVersion != "" {
 		d.writeField(&b, "Update",
@@ -367,15 +363,16 @@ func (d *Display) redraw() {
 		fmt.Sprintf("%d in-flight", d.activeHTTP),
 		fmt.Sprintf("%d total", d.totalHTTP),
 	}
-	d.writeField(&b, "HTTP Requests", strings.Join(httpParts, ", "))
 	if wsCount > 0 {
 		d.writeField(&b, "WebSockets", fmt.Sprintf("%d open", wsCount))
 	}
 
 	b.WriteString("\n")
 
-	// ── HTTP Requests ───────────────────────────────────────────
+	// ── HTTP Requests (counters) ────────────────────────────────
 	b.WriteString(d.styled(ansiBold, "HTTP Requests"))
+	b.WriteString("  ")
+	b.WriteString(d.styled(ansiDim, strings.Join(httpParts, ", ")))
 	b.WriteString("\n")
 	b.WriteString(d.styled(ansiDim, strings.Repeat("─", 78)))
 	b.WriteString("\n")

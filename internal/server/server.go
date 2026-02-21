@@ -1900,6 +1900,7 @@ func isLikelyScannerTLSReason(reason string) bool {
 		strings.Contains(reason, "unsupported sslv2 handshake received") ||
 		strings.Contains(reason, "host not allowed") ||
 		strings.Contains(reason, "connection reset by peer") ||
+		strings.Contains(reason, "i/o timeout") ||
 		strings.Contains(reason, "http request to an https server")
 }
 

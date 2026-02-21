@@ -24,6 +24,10 @@ Short, focused guides covering one topic each.
 - [TLS Modes](tls-modes.md) - auto vs dynamic vs wildcard TLS
 - [API Keys](api-keys.md) - Create, list, revoke keys and client login
 
+## Security
+
+- [Web Application Firewall](waf.md) - Built-in WAF rules, configuration, and dashboard
+
 ## Help
 
 - [Troubleshooting](troubleshooting.md) - Common issues and fixes

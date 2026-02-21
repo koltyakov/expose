@@ -41,6 +41,7 @@ sequenceDiagram
 | **Client**         | Registers tunnel, holds WebSocket, proxies requests to local port             |
 | **Store (SQLite)** | Persists API keys, domains, tunnel state                                      |
 | **Hub**            | In-memory map of active WebSocket sessions for fast hostname lookup           |
+| **WAF**            | Blocks SQL injection, XSS, path traversal, and other attacks before proxying ([details](waf.md)) |
 
 ## Tunnel Types
 
@@ -48,6 +49,12 @@ sequenceDiagram
 | ------------- | ------------------------------------------------------ | ---------------------------------------------- |
 | **Temporary** | Auto-generated 6-char slug (e.g. `k3xnz3.example.com`) | Cleaned up after disconnect + retention period |
 | **Named**     | User-chosen (e.g. `myapp.example.com`)                 | Persists across reconnects                     |
+
+## Security
+
+- Built-in **Web Application Firewall** blocks common attack patterns (enabled by default)
+- WAF-blocked request counts are streamed to the client dashboard in real time
+- See the dedicated [WAF documentation](waf.md) for the full ruleset and configuration
 
 ## Reliability
 

@@ -208,6 +208,7 @@ Why randomization exists:
 | `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`          | -             | Static key PEM (wildcard)  |
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`        | -             | Explicit pepper override   |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`             | `info`        | `debug\|info\|warn\|error` |
+| -                         | `EXPOSE_WAF_ENABLE`            | `true`        | Enable/disable the WAF     |
 
 ## Wildcard TLS Mode
 
@@ -226,6 +227,28 @@ If wildcard cert files are missing, server prints a concrete Let's Encrypt DNS-0
 - certbot command shape
 
 Dynamic per-host ACME is available in `auto` / `dynamic` and is best for simpler setups with low tunnel churn.
+
+## Web Application Firewall (WAF)
+
+The server includes a built-in WAF that blocks common attack patterns **before** they reach your local app. It is **enabled by default**.
+
+Protected against:
+
+- SQL injection, XSS, path traversal
+- Shell injection, Log4Shell / JNDI
+- Scanner bots (sqlmap, nikto, nuclei, …)
+- Sensitive file probes (`.env`, `.git/`, `/etc/passwd`, …)
+- Header injection (CRLF) and protocol attacks
+
+Blocked requests receive `403 Forbidden` and are logged server-side. The client dashboard shows a real-time **WAF blocked** counter and a `(+WAF)` indicator next to the server version.
+
+To disable:
+
+```bash
+export EXPOSE_WAF_ENABLE=false
+```
+
+For the full ruleset and architecture details, see [WAF documentation](docs/waf.md).
 
 ## Internal Reliability Behavior
 

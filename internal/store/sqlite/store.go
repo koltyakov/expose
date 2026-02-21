@@ -427,29 +427,9 @@ func (s *Store) AllocateDomainAndTunnel(ctx context.Context, keyID, mode, subdom
 }
 
 func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID, mode, subdomain, baseDomain, clientMeta string) (domain.Domain, domain.Tunnel, error) {
-	baseDomain = strings.ToLower(strings.TrimSpace(baseDomain))
-	subdomain = normalizeHostLabel(subdomain)
-	clientMeta = strings.TrimSpace(clientMeta)
-
-	isTemporary := mode == "temporary"
-	var dType string
-	var hostname string
-	if isTemporary {
-		dType = domain.DomainTypeTemporarySubdomain
-		if subdomain == "" {
-			gen, err := s.generateSubdomain(ctx, baseDomain)
-			if err != nil {
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-			subdomain = gen
-		}
-		hostname = fmt.Sprintf("%s.%s", subdomain, baseDomain)
-	} else {
-		dType = domain.DomainTypePermanentSubdomain
-		if subdomain == "" {
-			return domain.Domain{}, domain.Tunnel{}, errors.New("permanent mode requires subdomain")
-		}
-		hostname = fmt.Sprintf("%s.%s", subdomain, baseDomain)
+	in, err := s.buildAllocationInput(ctx, mode, subdomain, baseDomain, clientMeta)
+	if err != nil {
+		return domain.Domain{}, domain.Tunnel{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -459,108 +439,12 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UTC()
-	dID, err := newID("d")
+	d, err := s.claimOrCreateDomainTx(ctx, tx, keyID, in, now)
 	if err != nil {
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
-	d := domain.Domain{
-		ID:        dID,
-		APIKeyID:  keyID,
-		Type:      dType,
-		Hostname:  hostname,
-		Status:    domain.DomainStatusActive,
-		CreatedAt: now,
-	}
-
-	if !isTemporary {
-		var existingID string
-		err = tx.QueryRowContext(ctx, `
-SELECT id FROM domains
-WHERE hostname = ? AND api_key_id = ? AND type = ?`,
-			hostname, keyID, domain.DomainTypePermanentSubdomain).Scan(&existingID)
-		if err == nil {
-			// Reject if there is already a connected tunnel for this domain.
-			var connectedCount int
-			if err = tx.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM tunnels
-WHERE domain_id = ? AND state = ?`, existingID, domain.TunnelStateConnected).Scan(&connectedCount); err != nil {
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-			if connectedCount > 0 {
-				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
-			}
-			d.ID = existingID
-			_, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID)
-			if err != nil {
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return domain.Domain{}, domain.Tunnel{}, err
-		} else {
-			if _, err = tx.ExecContext(ctx, `
-INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
-				if strings.Contains(strings.ToLower(err.Error()), "unique") {
-					return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
-				}
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-		}
-	} else {
-		var existingID, existingAPIKeyID, existingType string
-		err = tx.QueryRowContext(ctx, `
-SELECT id, api_key_id, type
-FROM domains
-WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingType)
-		if err == nil {
-			if existingAPIKeyID != keyID || existingType != domain.DomainTypeTemporarySubdomain {
-				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
-			}
-			// Reject if there is already a connected tunnel for this domain.
-			var connectedCount int
-			if err = tx.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM tunnels
-WHERE domain_id = ? AND state = ?`, existingID, domain.TunnelStateConnected).Scan(&connectedCount); err != nil {
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-			if connectedCount > 0 {
-				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
-			}
-			d.ID = existingID
-			if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID); err != nil {
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return domain.Domain{}, domain.Tunnel{}, err
-		} else {
-			if _, err = tx.ExecContext(ctx, `
-INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
-				if strings.Contains(strings.ToLower(err.Error()), "unique") {
-					return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
-				}
-				return domain.Domain{}, domain.Tunnel{}, err
-			}
-		}
-	}
-
-	tID, err := newID("t")
+	t, err := insertAllocatedTunnelTx(ctx, tx, keyID, d.ID, in.isTemporary, in.clientMeta)
 	if err != nil {
-		return domain.Domain{}, domain.Tunnel{}, err
-	}
-	t := domain.Tunnel{
-		ID:          tID,
-		APIKeyID:    keyID,
-		DomainID:    d.ID,
-		State:       domain.TunnelStateDisconnected,
-		IsTemporary: isTemporary,
-		ClientMeta:  clientMeta,
-	}
-
-	if _, err = tx.ExecContext(ctx, `
-INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_password_hash, connected_at, disconnected_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
-		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
 

@@ -2,12 +2,16 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/waf"
 )
 
 func TestStableTemporarySubdomain(t *testing.T) {
@@ -54,6 +59,47 @@ func TestDecodeJSONBodyRejectsUnknownFields(t *testing.T) {
 
 	if err := decodeJSONBody(w, req, maxRegisterBodyBytes, &body); err == nil {
 		t.Fatal("expected unknown JSON fields to be rejected")
+	}
+}
+
+func TestParseAndValidateRegisterRequestDefaults(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"","password":"secret","client_hostname":"host-a","local_port":"3000"}`))
+	rr := httptest.NewRecorder()
+
+	prepared, ok := srv.parseAndValidateRegisterRequest(rr, req)
+	if !ok {
+		t.Fatalf("expected parseAndValidateRegisterRequest to succeed, status=%d", rr.Code)
+	}
+	if prepared.request.Mode != "temporary" {
+		t.Fatalf("expected default mode temporary, got %q", prepared.request.Mode)
+	}
+	if prepared.request.User != "admin" {
+		t.Fatalf("expected default user admin, got %q", prepared.request.User)
+	}
+	if prepared.accessUser != "admin" {
+		t.Fatalf("expected access user admin when password is set, got %q", prepared.accessUser)
+	}
+	if prepared.passwordHash == "" {
+		t.Fatal("expected password hash to be generated")
+	}
+	if prepared.clientMachineID != "host-a" {
+		t.Fatalf("expected fallback machine id from host, got %q", prepared.clientMachineID)
+	}
+}
+
+func TestRegisterURLsNonDefaultPort(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{cfg: config.ServerConfig{BaseDomain: "example.com"}}
+	publicURL, wsURL := srv.registerURLs("127.0.0.1.sslip.io:10443", "abc.example.com", "token-1")
+	if publicURL != "https://abc.example.com:10443" {
+		t.Fatalf("expected public url with custom port, got %q", publicURL)
+	}
+	if wsURL != "wss://127.0.0.1.sslip.io:10443/v1/tunnels/connect?token=token-1" {
+		t.Fatalf("unexpected ws url: %q", wsURL)
 	}
 }
 
@@ -485,6 +531,89 @@ func TestQueueDomainTouchReleasesDedupOnOverflow(t *testing.T) {
 		t.Fatal("expected dropped domain touch to be released from dedupe tracking")
 	}
 	srv.completeDomainTouch("domain-2")
+}
+
+func TestRecordWAFBlockQueueOverflowNonBlocking(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+		wafAuditQueue: make(chan wafAuditEvent, 1),
+	}
+
+	evt := waf.BlockEvent{
+		Host:       "example.com",
+		Rule:       "sql-injection",
+		Method:     http.MethodGet,
+		RequestURI: "/search?q=1+UNION+SELECT+1",
+		RemoteAddr: "192.0.2.1",
+		UserAgent:  "sqlmap/1.7",
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 5000; i++ {
+			srv.recordWAFBlock(evt)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recordWAFBlock blocked on a full audit queue")
+	}
+
+	val, ok := srv.wafBlocks.Load(evt.Host)
+	if !ok {
+		t.Fatal("expected host counter to exist")
+	}
+	if got := val.(*atomic.Int64).Load(); got != 5000 {
+		t.Fatalf("expected 5000 blocked count, got %d", got)
+	}
+}
+
+func TestRunWAFAuditWorkerStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+		wafAuditQueue: make(chan wafAuditEvent, 4),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		srv.runWAFAuditWorker(ctx)
+		close(done)
+	}()
+
+	srv.wafAuditQueue <- wafAuditEvent{
+		event: waf.BlockEvent{
+			Host:       "example.com",
+			Rule:       "sql-injection",
+			Method:     http.MethodGet,
+			RequestURI: "/search?q=1+UNION+SELECT+1",
+			RemoteAddr: "192.0.2.1",
+			UserAgent:  "sqlmap/1.7",
+		},
+		totalBlocks: 1,
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waf audit worker did not stop after context cancellation")
+	}
 }
 
 func TestHandlePublicRejectsTooLargeBody(t *testing.T) {

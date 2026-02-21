@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -273,6 +275,149 @@ func TestOpenLocalWebSocketOriginCheckAcceptsWithForwardedHost(t *testing.T) {
 	}
 	if status != http.StatusSwitchingProtocols {
 		t.Fatalf("expected %d, got %d", http.StatusSwitchingProtocols, status)
+	}
+}
+
+func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
+	t.Parallel()
+
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok":
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "ok")
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, "bad")
+		}
+	}))
+	defer local.Close()
+
+	localBase, err := url.Parse(local.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gotReq2Response := make(chan int, 1)
+	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		conn.SetReadLimit(64 * 1024 * 1024)
+
+		send := func(msg tunnelproto.Message) error {
+			if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				return err
+			}
+			defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
+			return conn.WriteJSON(msg)
+		}
+
+		// Request 1: streamed body with an invalid method so the client fails fast
+		// before consuming body chunks.
+		if err := send(tunnelproto.Message{
+			Kind: tunnelproto.KindRequest,
+			Request: &tunnelproto.HTTPRequest{
+				ID:       "req_1",
+				Method:   "BAD\nMETHOD",
+				Path:     "/fail",
+				Streamed: true,
+			},
+		}); err != nil {
+			return
+		}
+
+		chunkData := tunnelproto.EncodeBody([]byte("x"))
+		for i := 0; i < streamingReqBodyBufSize+32; i++ {
+			if err := send(tunnelproto.Message{
+				Kind:      tunnelproto.KindReqBody,
+				BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: chunkData},
+			}); err != nil {
+				return
+			}
+		}
+
+		// Request 2 should still be processed even if req_1 stream consumer is
+		// stalled or already closed.
+		if err := send(tunnelproto.Message{
+			Kind: tunnelproto.KindRequest,
+			Request: &tunnelproto.HTTPRequest{
+				ID:     "req_2",
+				Method: http.MethodGet,
+				Path:   "/ok",
+			},
+		}); err != nil {
+			return
+		}
+
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+			var msg tunnelproto.Message
+			if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					continue
+				}
+				return
+			}
+
+			switch msg.Kind {
+			case tunnelproto.KindPing:
+				_ = send(tunnelproto.Message{Kind: tunnelproto.KindPong})
+			case tunnelproto.KindResponse:
+				if msg.Response != nil && msg.Response.ID == "req_2" {
+					gotReq2Response <- msg.Response.Status
+					return
+				}
+			}
+		}
+	}))
+	defer wsSrv.Close()
+
+	c := &Client{
+		cfg: config.ClientConfig{
+			PingInterval: 0,
+		},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	reg := registerResponse{
+		WSURL: "ws" + strings.TrimPrefix(wsSrv.URL, "http"),
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.runSession(ctx, localBase, reg)
+	}()
+
+	select {
+	case status := <-gotReq2Response:
+		if status != http.StatusOK {
+			t.Fatalf("expected req_2 status %d, got %d", http.StatusOK, status)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for req_2 response")
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("runSession returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSession did not return after cancellation")
 	}
 }
 

@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,12 @@ var dummyHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request)
 func newTestMiddleware(t *testing.T) http.Handler {
 	t.Helper()
 	mw := NewMiddleware(Config{Enabled: true}, slog.Default())
+	return mw(dummyHandler)
+}
+
+func newBenchMiddleware() http.Handler {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mw := NewMiddleware(Config{Enabled: true}, logger)
 	return mw(dummyHandler)
 }
 
@@ -262,9 +269,48 @@ func TestCustomHeadersAllowed(t *testing.T) {
 	assertAllowed(t, handler, r)
 }
 
+func TestNormalizeHostCanonicalizesIPv6AndPort(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"Example.com:443":       "example.com",
+		"[2001:db8::1]:10443":   "2001:db8::1",
+		"2001:db8::1":           "2001:db8::1",
+		"sub.example.com.":      "sub.example.com",
+		"  LOCALHOST:8080  ":    "localhost",
+		"[2001:db8::2]":         "2001:db8::2",
+		"[2001:db8::2]:invalid": "2001:db8::2",
+	}
+
+	for in, want := range cases {
+		if got := normalizeHost(in); got != want {
+			t.Fatalf("normalizeHost(%q): got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBlockEventUsesCanonicalHost(t *testing.T) {
+	t.Parallel()
+
+	var gotHost string
+	handler := NewMiddleware(Config{
+		Enabled: true,
+		OnBlock: func(evt BlockEvent) {
+			gotHost = evt.Host
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))(dummyHandler)
+
+	r := httptest.NewRequest(http.MethodGet, "/search?q=1+UNION+SELECT+*+FROM+users", nil)
+	r.Host = "[2001:db8::10]:10443"
+	assertBlocked(t, handler, r)
+
+	if gotHost != "2001:db8::10" {
+		t.Fatalf("expected canonical host in block event, got %q", gotHost)
+	}
+}
+
 func BenchmarkWAFCleanRequest(b *testing.B) {
-	mw := NewMiddleware(Config{Enabled: true}, slog.Default())
-	handler := mw(dummyHandler)
+	handler := newBenchMiddleware()
 	r := httptest.NewRequest(http.MethodGet, "/api/data?page=1&limit=20", nil)
 	r.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
 	r.Header.Set("Accept", "text/html")
@@ -279,8 +325,34 @@ func BenchmarkWAFCleanRequest(b *testing.B) {
 }
 
 func BenchmarkWAFMaliciousRequest(b *testing.B) {
-	mw := NewMiddleware(Config{Enabled: true}, slog.Default())
-	handler := mw(dummyHandler)
+	handler := newBenchMiddleware()
+	r := httptest.NewRequest(http.MethodGet, "/search?q=1+UNION+SELECT+*+FROM+users", nil)
+	r.Header.Set("User-Agent", "sqlmap/1.5")
+	rr := httptest.NewRecorder()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		handler.ServeHTTP(rr, r)
+	}
+}
+
+func BenchmarkWAFCleanRequestDiscardLogger(b *testing.B) {
+	handler := newBenchMiddleware()
+	r := httptest.NewRequest(http.MethodGet, "/api/data?page=1&limit=20", nil)
+	r.Header.Set("User-Agent", "Mozilla/5.0")
+	r.Header.Set("X-Request-ID", "abc-123")
+	rr := httptest.NewRecorder()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		handler.ServeHTTP(rr, r)
+	}
+}
+
+func BenchmarkWAFMaliciousRequestDiscardLogger(b *testing.B) {
+	handler := newBenchMiddleware()
 	r := httptest.NewRequest(http.MethodGet, "/search?q=1+UNION+SELECT+*+FROM+users", nil)
 	r.Header.Set("User-Agent", "sqlmap/1.5")
 	rr := httptest.NewRecorder()

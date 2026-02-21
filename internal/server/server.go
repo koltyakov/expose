@@ -54,6 +54,12 @@ type Server struct {
 	domainTouchMu sync.Mutex
 	domainTouched map[string]struct{}
 	wafBlocks     sync.Map // hostname → *atomic.Int64
+	wafAuditQueue chan wafAuditEvent
+}
+
+type wafAuditEvent struct {
+	event       waf.BlockEvent
+	totalBlocks int64
 }
 
 // rateLimiter implements a simple per-key token-bucket rate limiter.
@@ -259,6 +265,8 @@ const (
 	tokenPurgeBatchLimit  = 1000
 	domainTouchQueueSize  = 2048
 	domainTouchTimeout    = 3 * time.Second
+	wafAuditQueueSize     = 2048
+	wafAuditLookupTimeout = 250 * time.Millisecond
 	wsDataDispatchWait    = 250 * time.Millisecond
 	wsControlDispatchWait = 2 * time.Second
 )
@@ -310,6 +318,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{})},
 		domainTouches: make(chan string, domainTouchQueueSize),
 		domainTouched: make(map[string]struct{}),
+		wafAuditQueue: make(chan wafAuditEvent, wafAuditQueueSize),
 	}
 }
 
@@ -326,6 +335,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go s.runJanitor(ctx)
 	go s.runDomainTouchWorker(ctx)
+	if s.cfg.WAFEnabled {
+		go s.runWAFAuditWorker(ctx)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/tunnels/register", s.handleRegister)
@@ -485,85 +497,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req registerRequest
-	if err := decodeJSONBody(w, r, maxRegisterBodyBytes, &req); err != nil {
-		if isBodyTooLargeError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "invalid json", http.StatusBadRequest)
+	prepared, ok := s.parseAndValidateRegisterRequest(w, r)
+	if !ok {
 		return
 	}
 
-	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
-	if req.Mode == "" {
-		req.Mode = "temporary"
-	}
-	if req.Mode != "temporary" && req.Mode != "permanent" {
-		http.Error(w, "invalid mode", http.StatusBadRequest)
-		return
-	}
-	if req.Mode == "permanent" && req.Subdomain == "" {
-		http.Error(w, "permanent mode requires subdomain", http.StatusBadRequest)
-		return
-	}
-	req.User = strings.TrimSpace(req.User)
-	if req.User == "" {
-		req.User = "admin"
-	}
-	if len(req.User) > 64 {
-		http.Error(w, "user must be at most 64 characters", http.StatusBadRequest)
-		return
-	}
-	req.Password = strings.TrimSpace(req.Password)
-	if len(req.Password) > 256 {
-		http.Error(w, "password must be at most 256 characters", http.StatusBadRequest)
-		return
-	}
-	accessUser := ""
-	passwordHash := ""
-	if req.Password != "" {
-		accessUser = req.User
-		hashed, hashErr := auth.HashPassword(req.Password)
-		if hashErr != nil {
-			http.Error(w, "failed to hash password", http.StatusInternalServerError)
-			return
-		}
-		passwordHash = hashed
-	}
-	autoStableSubdomain := false
-	if req.Mode == "temporary" && strings.TrimSpace(req.Subdomain) == "" && !s.wildcardTLSOn {
-		if stable := stableTemporarySubdomain(req.ClientHostname, req.LocalPort); stable != "" {
-			req.Subdomain = stable
-			autoStableSubdomain = true
-		}
-	}
-	clientMachineID := normalizedClientMachineID(req.ClientMachineID, req.ClientHostname)
-
-	domainRec, tunnelRec, err := s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, req.Subdomain, s.cfg.BaseDomain, clientMachineID)
-	if isHostnameInUseError(err) {
-		if swappedDomain, swappedTunnel, swapped, swapErr := s.trySwapInactiveClientSession(r.Context(), keyID, req.Subdomain, clientMachineID); swapErr != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			s.log.Error("failed to swap inactive tunnel session", "subdomain", req.Subdomain, "err", swapErr)
-			return
-		} else if swapped {
-			domainRec = swappedDomain
-			tunnelRec = swappedTunnel
-			err = nil
-		}
-	}
-	if autoStableSubdomain && isHostnameInUseError(err) {
-		// Only fall back to a random subdomain for cross-key hash collisions.
-		// If the same API key already owns this subdomain with an active
-		// tunnel, the client is trying to duplicate an existing session from
-		// the same machine+port — block it instead of silently assigning a
-		// new random subdomain.
-		host := req.Subdomain + "." + normalizeHost(s.cfg.BaseDomain)
-		if route, routeErr := s.store.FindRouteByHost(r.Context(), host); routeErr != nil || route.Domain.APIKeyID != keyID {
-			domainRec, tunnelRec, err = s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, "", s.cfg.BaseDomain, clientMachineID)
-		}
-	}
+	domainRec, tunnelRec, err := s.allocateRegisterRoute(r.Context(), keyID, prepared)
 	if err != nil {
+		if errors.Is(err, errRegisterSwapInactive) {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		if isHostnameInUseError(err) {
 			writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
 		} else {
@@ -571,22 +515,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err = s.store.SetTunnelAccessCredentials(r.Context(), tunnelRec.ID, accessUser, passwordHash); err != nil {
+
+	if err = s.store.SetTunnelAccessCredentials(r.Context(), tunnelRec.ID, prepared.accessUser, prepared.passwordHash); err != nil {
 		http.Error(w, "failed to persist tunnel auth settings", http.StatusInternalServerError)
 		return
 	}
+
 	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
 	if err != nil {
 		http.Error(w, "failed to create connect token", http.StatusInternalServerError)
 		return
 	}
 
-	wsAuthority := registrationWSAuthority(r.Host, normalizeHost(s.cfg.BaseDomain))
-	publicURL := "https://" + domainRec.Hostname
-	if port := authorityPort(wsAuthority); port != "" && port != "443" {
-		publicURL = fmt.Sprintf("https://%s:%s", domainRec.Hostname, port)
-	}
-	wsURL := fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", wsAuthority, token)
+	publicURL, wsURL := s.registerURLs(r.Host, domainRec.Hostname, token)
 
 	resp := registerResponse{
 		TunnelID:      tunnelRec.ID,
@@ -768,127 +709,29 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := normalizeHost(r.Host)
-	route, ok := s.routes.get(host)
-	if !ok {
-		var dbErr error
-		route, dbErr = s.store.FindRouteByHost(r.Context(), host)
-		if dbErr != nil {
-			if errors.Is(dbErr, sql.ErrNoRows) {
-				http.Error(w, "unknown host", http.StatusNotFound)
-				return
-			}
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		s.routes.set(host, route)
-	}
-
-	s.hub.mu.RLock()
-	sess := s.hub.sessions[route.Tunnel.ID]
-	s.hub.mu.RUnlock()
-	if sess == nil || route.Tunnel.State != domain.TunnelStateConnected {
-		if !route.Tunnel.IsTemporary {
-			http.Error(w, "tunnel offline", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "unknown host", http.StatusNotFound)
+	route, err := s.resolvePublicRoute(r.Context(), host)
+	if err != nil {
+		status, msg := publicRouteLookupErrorStatus(err)
+		http.Error(w, msg, status)
 		return
 	}
-	if route.Tunnel.AccessPasswordHash != "" {
-		expectedUser := strings.TrimSpace(route.Tunnel.AccessUser)
-		if expectedUser == "" {
-			expectedUser = "admin"
-		}
-		if !isAuthorizedBasicPassword(r, expectedUser, route.Tunnel.AccessPasswordHash) {
-			writeBasicAuthChallenge(w)
-			return
-		}
+
+	sess, status, msg, ok := s.resolvePublicSession(route)
+	if !ok {
+		http.Error(w, msg, status)
+		return
 	}
+
+	if !s.authorizePublicRequest(w, r, route) {
+		return
+	}
+
 	if websocket.IsWebSocketUpgrade(r) {
 		s.handlePublicWebSocket(w, r, route, sess)
 		return
 	}
-	if s.cfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
-		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
-	}
 
-	reqID := s.nextRequestID()
-	if !sess.tryAcquirePending(maxPendingPerSession) {
-		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
-		return
-	}
-
-	requestHeaders := tunnelproto.CloneHeaders(r.Header)
-	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
-	injectForwardedProxyHeaders(requestHeaders, r)
-	injectForwardedFor(requestHeaders, r.RemoteAddr)
-
-	respCh := make(chan tunnelproto.Message, streamingChanSize)
-	sess.pendingStore(reqID, respCh)
-
-	// Determine whether to stream the request body or send it inline.
-	streamed, err := s.sendRequestBody(sess, reqID, r, requestHeaders)
-	if err != nil {
-		if sess.pendingDelete(reqID) {
-			sess.releasePending()
-			close(respCh)
-		}
-		if isBodyTooLargeError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "tunnel write failed", http.StatusBadGateway)
-		}
-		return
-	}
-	_ = streamed
-
-	timer := time.NewTimer(s.cfg.RequestTimeout)
-	stopTimer := func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-	}
-	defer stopTimer()
-
-	select {
-	case msg, ok := <-respCh:
-		if !ok || msg.Kind != tunnelproto.KindResponse || msg.Response == nil {
-			http.Error(w, "tunnel closed", http.StatusBadGateway)
-			return
-		}
-		resp := msg.Response
-		respHeaders := tunnelproto.CloneHeaders(resp.Headers)
-		netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
-		for k, vals := range respHeaders {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.Status)
-		if resp.Streamed {
-			s.writeStreamedResponseBody(w, r, respCh, s.cfg.RequestTimeout)
-		} else {
-			b, err := tunnelproto.DecodeBody(resp.BodyB64)
-			if err == nil && len(b) > 0 {
-				_, _ = w.Write(b)
-			}
-		}
-		s.queueDomainTouch(route.Domain.ID)
-	case <-timer.C:
-		if sess.pendingDelete(reqID) {
-			sess.releasePending()
-			close(respCh)
-		}
-		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
-	case <-r.Context().Done():
-		if sess.pendingDelete(reqID) {
-			sess.releasePending()
-			close(respCh)
-		}
-	}
+	s.proxyPublicHTTP(w, r, route, sess)
 }
 
 func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
@@ -927,36 +770,18 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	}
 	defer stopTimer()
 
-	var ack *tunnelproto.WSOpenAck
-	for ack == nil {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-timer.C:
-			http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
-			return
-		case msg, ok := <-streamCh:
-			if !ok {
-				http.Error(w, "tunnel closed", http.StatusBadGateway)
-				return
-			}
-			if msg.Kind == tunnelproto.KindWSOpenAck && msg.WSOpenAck != nil {
-				ack = msg.WSOpenAck
-			}
+	ack, status, msg := s.waitForPublicWSOpenAck(r, timer, streamCh)
+	if status != 0 {
+		if msg != "" {
+			http.Error(w, msg, status)
 		}
+		return
 	}
 	stopTimer()
 
 	if !ack.OK {
-		status := ack.Status
-		if status == 0 {
-			status = http.StatusBadGateway
-		}
-		if strings.TrimSpace(ack.Error) == "" {
-			http.Error(w, "websocket upstream open failed", status)
-			return
-		}
-		http.Error(w, ack.Error, status)
+		status, message := publicWSOpenFailure(ack)
+		http.Error(w, message, status)
 		return
 	}
 
@@ -981,59 +806,8 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	relayStop := make(chan struct{})
 	defer close(relayStop)
 
-	go func() {
-		defer close(readDone)
-		for {
-			msgType, payload, err := publicConn.ReadMessage()
-			if err != nil {
-				code, text := websocket.CloseNormalClosure, ""
-				var ce *websocket.CloseError
-				if errors.As(err, &ce) {
-					code, text = ce.Code, ce.Text
-				}
-				_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: code, Text: text}})
-				return
-			}
-			if err := sess.writeWSData(streamID, msgType, payload); err != nil {
-				return
-			}
-		}
-	}()
-
-	go func() {
-		defer close(writeDone)
-		for {
-			select {
-			case <-relayStop:
-				return
-			case <-r.Context().Done():
-				return
-			case msg, ok := <-streamCh:
-				if !ok {
-					return
-				}
-				switch msg.Kind {
-				case tunnelproto.KindWSData:
-					if msg.WSData == nil {
-						continue
-					}
-					b, err := msg.WSData.Payload()
-					if err != nil {
-						continue
-					}
-					if err := publicConn.WriteMessage(msg.WSData.MessageType, b); err != nil {
-						return
-					}
-				case tunnelproto.KindWSClose:
-					if msg.WSClose == nil {
-						return
-					}
-					_ = publicConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(msg.WSClose.Code, msg.WSClose.Text), time.Now().Add(5*time.Second))
-					return
-				}
-			}
-		}
-	}()
+	s.startPublicWSReadRelay(streamID, sess, publicConn, readDone)
+	s.startPublicWSWriteRelay(r, streamID, publicConn, streamCh, relayStop, writeDone)
 
 	select {
 	case <-r.Context().Done():
@@ -1240,12 +1014,45 @@ func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
 	val, _ := s.wafBlocks.LoadOrStore(evt.Host, &atomic.Int64{})
 	count := val.(*atomic.Int64).Add(1)
 
-	// Try to resolve which tunnel was being targeted.
+	event := wafAuditEvent{
+		event:       evt,
+		totalBlocks: count,
+	}
+	if s.wafAuditQueue != nil {
+		select {
+		case s.wafAuditQueue <- event:
+		default:
+		}
+		return
+	}
+
+	s.logWAFAuditEvent(context.Background(), event)
+}
+
+func (s *Server) runWAFAuditWorker(ctx context.Context) {
+	if s.wafAuditQueue == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt := <-s.wafAuditQueue:
+			s.logWAFAuditEvent(ctx, evt)
+		}
+	}
+}
+
+func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent) {
 	tunnelID := "unknown"
-	domainName := evt.Host
-	route, ok := s.routes.get(evt.Host)
-	if !ok {
-		if r, err := s.store.FindRouteByHost(context.Background(), evt.Host); err == nil {
+	domainName := audit.event.Host
+	route, ok := s.routes.get(audit.event.Host)
+	if !ok && s.store != nil {
+		lookupCtx, cancel := context.WithTimeout(parentCtx, wafAuditLookupTimeout)
+		r, err := s.store.FindRouteByHost(lookupCtx, audit.event.Host)
+		cancel()
+		if err == nil {
 			route = r
 			ok = true
 		}
@@ -1255,15 +1062,18 @@ func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
 		domainName = route.Domain.Hostname
 	}
 
+	if s.log == nil {
+		return
+	}
 	s.log.Warn("waf audit: request blocked",
-		"rule", evt.Rule,
+		"rule", audit.event.Rule,
 		"tunnel_id", tunnelID,
 		"domain", domainName,
-		"method", evt.Method,
-		"uri", evt.RequestURI,
-		"remote", evt.RemoteAddr,
-		"ua", evt.UserAgent,
-		"total_blocks", count,
+		"method", audit.event.Method,
+		"uri", audit.event.RequestURI,
+		"remote", audit.event.RemoteAddr,
+		"ua", audit.event.UserAgent,
+		"total_blocks", audit.totalBlocks,
 	)
 }
 

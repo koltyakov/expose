@@ -37,7 +37,7 @@ func autoUpdateOnStart(ctx context.Context, currentVersion string, logger *slog.
 		logger.Info("auto-update: already up to date", "version", currentVersion)
 		return false
 	}
-	logger.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", result.LatestVersion, "asset", result.AssetName)
+	logger.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", ensureVPrefix(result.LatestVersion), "asset", result.AssetName)
 	return true
 }
 
@@ -62,7 +62,7 @@ func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slo
 				continue
 			}
 			if result.Updated {
-				logger.Info("auto-update: update applied", "from", result.CurrentVersion, "to", result.LatestVersion)
+				logger.Info("auto-update: update applied", "from", result.CurrentVersion, "to", ensureVPrefix(result.LatestVersion))
 				onUpdate()
 				return
 			}

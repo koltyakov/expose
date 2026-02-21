@@ -35,15 +35,23 @@ sudo apt update && sudo apt install -y golang-go git
 # Clone and build
 git clone https://github.com/koltyakov/expose.git
 cd expose
-go build -o /usr/local/bin/expose ./cmd/expose
+sudo mkdir -p /opt/expose/bin
+go build -o /opt/expose/bin/expose ./cmd/expose
 ```
 
-Or download a prebuilt binary from the [releases page](https://github.com/koltyakov/expose/releases).
+Or download a prebuilt binary from the [releases page](https://github.com/koltyakov/expose/releases) into `/opt/expose/bin/`.
 
-Allow the binary to bind to privileged ports (80, 443) without running as root:
+> **Important**: The binary must live inside a directory the `expose` service
+> user can write to (e.g. `/opt/expose/bin/`). Auto-update needs to create a
+> temp file, remove the old binary, and write the new one — all of which
+> require directory write permission. Do **not** place it in `/usr/local/bin/`
+> unless you run the service as root.
+
+If you are **not** using auto-update, you can optionally set file capabilities
+for binding to privileged ports:
 
 ```bash
-sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/expose
+sudo setcap 'cap_net_bind_service=+ep' /opt/expose/bin/expose
 ```
 
 > **Note**: File capabilities set via `setcap` are lost when the binary is
@@ -87,7 +95,7 @@ Type=simple
 User=expose
 Group=expose
 WorkingDirectory=/opt/expose
-ExecStart=/usr/local/bin/expose server
+ExecStart=/opt/expose/bin/expose server
 Restart=always
 RestartSec=5
 
@@ -115,7 +123,7 @@ EOF
 
 ```bash
 sudo useradd -r -s /usr/sbin/nologin expose
-sudo mkdir -p /opt/expose/cert
+sudo mkdir -p /opt/expose/bin /opt/expose/cert
 sudo chown -R expose:expose /opt/expose
 ```
 
@@ -136,7 +144,7 @@ sudo journalctl -u expose -f
 On the VPS:
 
 ```bash
-sudo -u expose /usr/local/bin/expose apikey create --name default
+sudo -u expose /opt/expose/bin/expose apikey create --name default
 ```
 
 On your local machine:

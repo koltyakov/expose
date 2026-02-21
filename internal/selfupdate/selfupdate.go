@@ -300,7 +300,13 @@ func replaceBinary(newBinary []byte) error {
 	if err != nil {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
+	return replaceBinaryAt(exe, newBinary)
+}
 
+// replaceBinaryAt replaces the binary at the given path with newBinary.
+// It first tries an atomic rename in the same directory, and falls back
+// to an in-place overwrite when the directory is not writable.
+func replaceBinaryAt(exe string, newBinary []byte) error {
 	// On Linux, capture file capabilities (e.g. cap_net_bind_service)
 	// before the replace so we can re-apply them to the new file.
 	caps := getFileCaps(exe)
@@ -308,6 +314,12 @@ func replaceBinary(newBinary []byte) error {
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, "expose-update-*")
 	if err != nil {
+		// The binary directory may not be writable (e.g. /usr/local/bin when
+		// running as a non-root systemd service). Fall back to the system
+		// temp directory and use copy instead of rename.
+		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
+			return replaceBinaryCopy(exe, newBinary, caps)
+		}
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
@@ -345,6 +357,76 @@ func replaceBinary(newBinary []byte) error {
 	if err := syncDir(dir); err != nil {
 		return err
 	}
+	return nil
+}
+
+// replaceBinaryCopy replaces the executable when the binary's directory is not
+// writable for creating temp files. It writes the new binary to the system temp
+// directory, then removes the old binary and creates a fresh file at the same
+// path. The remove-then-create avoids ETXTBSY on Linux (the kernel forbids
+// writing to a running executable, but unlinking it and creating a new inode
+// at the same path works).
+func replaceBinaryCopy(exe string, newBinary []byte, caps string) error {
+	// Preserve the original file permissions before removing.
+	info, err := os.Stat(exe)
+	if err != nil {
+		return fmt.Errorf("stat binary: %w", err)
+	}
+	mode := info.Mode()
+
+	tmp, err := os.CreateTemp("", "expose-update-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmp.Write(newBinary); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	// Remove the old binary. On Linux this unlinks the directory entry
+	// but the running process keeps its file descriptor — the inode is
+	// only freed when the process exits.
+	if err := os.Remove(exe); err != nil {
+		return fmt.Errorf("remove old binary (the binary must be in a directory writable by the service user, e.g. /opt/expose/bin/): %w", err)
+	}
+
+	// Create a fresh file at the original path (new inode, no ETXTBSY).
+	dst, err := os.OpenFile(exe, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return fmt.Errorf("create new binary: %w", err)
+	}
+	src, err := os.Open(tmpPath)
+	if err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("open temp file: %w", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = src.Close()
+		_ = dst.Close()
+		return fmt.Errorf("copy binary: %w", err)
+	}
+	_ = src.Close()
+	if err := dst.Sync(); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+
+	// Re-apply Linux file capabilities.
+	setFileCaps(exe, caps)
+
 	return nil
 }
 

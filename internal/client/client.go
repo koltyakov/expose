@@ -178,14 +178,14 @@ func (c *Client) Run(ctx context.Context) error {
 			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
 			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID)
-			c.display.ShowVersions(c.version, reg.ServerVersion)
+			c.display.ShowVersions(c.version, ensureVPrefix(reg.ServerVersion))
 		} else {
 			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
 			if reg.ServerTLSMode != "" {
 				c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
 			}
 			if reg.ServerVersion != "" {
-				c.log.Info("versions", "client", c.version, "server", reg.ServerVersion)
+				c.log.Info("versions", "client", c.version, "server", ensureVPrefix(reg.ServerVersion))
 			}
 		}
 
@@ -768,7 +768,7 @@ func (c *Client) checkForUpdates(ctx context.Context) {
 		}
 		return
 	}
-	latest := strings.TrimPrefix(rel.TagName, "v")
+	latest := ensureVPrefix(rel.TagName)
 	if c.display != nil {
 		c.display.ShowUpdateStatus(latest)
 	} else {
@@ -815,9 +815,9 @@ func (c *Client) trySelfUpdate(ctx context.Context) bool {
 		c.log.Debug("auto-update: already up to date")
 		return false
 	}
-	c.log.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", result.LatestVersion, "asset", result.AssetName)
+	c.log.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", ensureVPrefix(result.LatestVersion), "asset", result.AssetName)
 	if c.display != nil {
-		c.display.ShowInfo("Update applied (" + result.LatestVersion + "); restarting...")
+		c.display.ShowInfo("Update applied (" + ensureVPrefix(result.LatestVersion) + "); restarting...")
 	}
 	return true
 }
@@ -901,4 +901,12 @@ func isTLSProvisioningInProgressError(err error) bool {
 	return strings.Contains(msg, "failed to verify certificate") ||
 		strings.Contains(msg, "certificate is not standards compliant") ||
 		strings.Contains(msg, "x509:")
+}
+
+// ensureVPrefix returns s with a leading "v" if it doesn't already have one.
+func ensureVPrefix(s string) string {
+	if s != "" && !strings.HasPrefix(s, "v") {
+		return "v" + s
+	}
+	return s
 }

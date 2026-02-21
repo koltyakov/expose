@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -180,5 +182,80 @@ func TestReadAllWithLimitTooLarge(t *testing.T) {
 	_, err := readAllWithLimit(strings.NewReader("hello!"), 5)
 	if err == nil {
 		t.Fatal("expected limit error")
+	}
+}
+
+func TestReplaceBinary(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake "binary" in a temp directory.
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "expose")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	newContent := []byte("new-binary-content")
+	if err := replaceBinaryAt(exe, newContent); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, newContent) {
+		t.Fatalf("binary content = %q, want %q", got, newContent)
+	}
+}
+
+func TestReplaceBinaryCopy(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake binary that is writable, simulating the fallback path.
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "expose")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	newContent := []byte("updated-via-copy")
+	if err := replaceBinaryCopy(exe, newContent, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, newContent) {
+		t.Fatalf("binary content = %q, want %q", got, newContent)
+	}
+}
+
+func TestReplaceBinaryFailsWhenDirNotWritable(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory and make it read-only so CreateTemp in
+	// that directory fails with EACCES, triggering the fallback path.
+	// Since the dir is also not writable for unlinking, the fallback
+	// should fail with a helpful error.
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "expose")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	err := replaceBinaryAt(exe, []byte("new"))
+	if err == nil {
+		t.Fatal("expected error when directory is not writable")
+	}
+	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("expected permission-related error, got: %v", err)
 	}
 }

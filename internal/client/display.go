@@ -319,7 +319,7 @@ func (d *Display) redraw() {
 	}
 	if d.updateVersion != "" {
 		d.writeField(&b, "Update",
-			d.styled(ansiYellow, fmt.Sprintf("v%s available", d.updateVersion))+
+			d.styled(ansiYellow, fmt.Sprintf("%s available", d.updateVersion))+
 				d.styled(ansiDim, " — run ")+
 				d.styled(ansiBold, "expose update"))
 	}

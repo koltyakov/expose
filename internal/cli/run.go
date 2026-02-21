@@ -512,10 +512,23 @@ func init() {
 			}
 		}
 	}
+	// Normalize: ensure non-dev versions start with "v" (GoReleaser
+	// template {{.Version}} strips the prefix while git-describe keeps it).
+	if Version != "dev" && !strings.HasPrefix(Version, "v") {
+		Version = "v" + Version
+	}
 }
 
 func printVersion() {
 	fmt.Println("expose", Version)
+}
+
+// ensureVPrefix returns s with a leading "v" if it doesn't already have one.
+func ensureVPrefix(s string) string {
+	if s != "" && !strings.HasPrefix(s, "v") {
+		return "v" + s
+	}
+	return s
 }
 
 func runUpdate(ctx context.Context) int {
@@ -532,7 +545,7 @@ func runUpdate(ctx context.Context) int {
 		return 0
 	}
 
-	fmt.Printf("New version available: %s\n", strings.TrimPrefix(rel.TagName, "v"))
+	fmt.Printf("New version available: %s\n", ensureVPrefix(rel.TagName))
 
 	if isInteractiveInput() {
 		reader := bufio.NewReader(os.Stdin)
@@ -555,7 +568,7 @@ func runUpdate(ctx context.Context) int {
 		return 1
 	}
 
-	fmt.Printf("Updated to %s (%s)\n", res.LatestVersion, res.AssetName)
+	fmt.Printf("Updated to %s (%s)\n", ensureVPrefix(res.LatestVersion), res.AssetName)
 	return 0
 }
 

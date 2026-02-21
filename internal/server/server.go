@@ -1901,6 +1901,7 @@ func isLikelyScannerTLSReason(reason string) bool {
 		strings.Contains(reason, "host not allowed") ||
 		strings.Contains(reason, "connection reset by peer") ||
 		strings.Contains(reason, "i/o timeout") ||
+		strings.Contains(reason, "first record does not look like a tls handshake") ||
 		strings.Contains(reason, "http request to an https server")
 }
 

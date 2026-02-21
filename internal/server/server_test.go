@@ -11,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/koltyakov/expose/internal/auth"
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -482,4 +485,478 @@ func TestQueueDomainTouchReleasesDedupOnOverflow(t *testing.T) {
 		t.Fatal("expected dropped domain touch to be released from dedupe tracking")
 	}
 	srv.completeDomainTouch("domain-2")
+}
+
+func TestHandlePublicRejectsTooLargeBody(t *testing.T) {
+	t.Parallel()
+
+	host := "big.example.com"
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{ID: "domain-1", Hostname: host},
+		Tunnel: domain.Tunnel{
+			ID:          "tunnel-1",
+			State:       domain.TunnelStateConnected,
+			IsTemporary: false,
+		},
+	}
+	sess := &session{
+		tunnelID: route.Tunnel.ID,
+		pending:  make(map[string]chan tunnelproto.Message),
+	}
+
+	srv := &Server{
+		cfg: config.ServerConfig{
+			MaxBodyBytes: 4,
+		},
+		hub: &hub{
+			sessions: map[string]*session{
+				route.Tunnel.ID: sess,
+			},
+		},
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+	}
+	srv.routes.set(host, route)
+
+	req := httptest.NewRequest(http.MethodPost, "https://"+host+"/upload", strings.NewReader("12345"))
+	req.Host = host
+	rr := httptest.NewRecorder()
+
+	srv.handlePublic(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rr.Code)
+	}
+
+	if got := sess.pendingCount.Load(); got != 0 {
+		t.Fatalf("expected pending count 0, got %d", got)
+	}
+	sess.pendingMu.Lock()
+	defer sess.pendingMu.Unlock()
+	if len(sess.pending) != 0 {
+		t.Fatalf("expected no pending requests, got %d", len(sess.pending))
+	}
+}
+
+func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{MaxBodyBytes: 10 * 1024 * 1024}}
+
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var msg tunnelproto.Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
+		}
+		if msg.Kind != tunnelproto.KindRequest {
+			t.Errorf("expected kind %q, got %q", tunnelproto.KindRequest, msg.Kind)
+		}
+		if msg.Request.Streamed {
+			t.Error("expected inline (non-streamed) request for small body")
+		}
+		decoded, _ := tunnelproto.DecodeBody(msg.Request.BodyB64)
+		if string(decoded) != "hello" {
+			t.Errorf("expected body %q, got %q", "hello", string(decoded))
+		}
+
+		_ = conn.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPong})
+	}))
+	defer srvHTTP.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srvHTTP.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	sess := &session{
+		tunnelID: "test",
+		conn:     conn,
+		pending:  make(map[string]chan tunnelproto.Message),
+	}
+
+	body := strings.NewReader("hello")
+	req := httptest.NewRequest(http.MethodPost, "/test", body)
+	headers := map[string][]string{"Content-Type": {"text/plain"}}
+
+	streamed, err := s.sendRequestBody(sess, "req_1", req, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamed {
+		t.Fatal("expected small body to be sent inline, not streamed")
+	}
+
+	var ack tunnelproto.Message
+	_ = conn.ReadJSON(&ack)
+}
+
+func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{MaxBodyBytes: 10 * 1024 * 1024}}
+
+	receivedMsgs := make(chan tunnelproto.Message, 100)
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetReadLimit(64 * 1024 * 1024)
+
+		for {
+			var msg tunnelproto.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			receivedMsgs <- msg
+			if msg.Kind == tunnelproto.KindReqBodyEnd {
+				return
+			}
+		}
+	}))
+	defer srvHTTP.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srvHTTP.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadLimit(64 * 1024 * 1024)
+	defer conn.Close()
+
+	sess := &session{
+		tunnelID: "test",
+		conn:     conn,
+		pending:  make(map[string]chan tunnelproto.Message),
+	}
+
+	largeBody := make([]byte, streamingThreshold+100)
+	for i := range largeBody {
+		largeBody[i] = byte(i % 256)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(largeBody))
+	headers := map[string][]string{"Content-Type": {"application/octet-stream"}}
+
+	streamed, err := s.sendRequestBody(sess, "req_2", req, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !streamed {
+		t.Fatal("expected large body to be streamed")
+	}
+
+	var msgs []tunnelproto.Message
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-receivedMsgs:
+			msgs = append(msgs, msg)
+			if msg.Kind == tunnelproto.KindReqBodyEnd {
+				goto done
+			}
+		case <-timeout:
+			t.Fatal("timeout waiting for streamed messages")
+		}
+	}
+done:
+
+	if len(msgs) < 3 {
+		t.Fatalf("expected at least 3 messages (request + body chunk(s) + end), got %d", len(msgs))
+	}
+	if msgs[0].Kind != tunnelproto.KindRequest {
+		t.Fatalf("expected first message kind %q, got %q", tunnelproto.KindRequest, msgs[0].Kind)
+	}
+	if !msgs[0].Request.Streamed {
+		t.Fatal("expected first message to have Streamed=true")
+	}
+	if msgs[0].Request.BodyB64 != "" {
+		t.Fatal("expected first message to have empty BodyB64")
+	}
+
+	var reassembled []byte
+	for _, msg := range msgs[1 : len(msgs)-1] {
+		if msg.Kind != tunnelproto.KindReqBody {
+			t.Fatalf("expected body chunk message kind %q, got %q", tunnelproto.KindReqBody, msg.Kind)
+		}
+		if msg.BodyChunk == nil {
+			t.Fatal("expected non-nil BodyChunk")
+		}
+		chunk, _ := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+		reassembled = append(reassembled, chunk...)
+	}
+
+	last := msgs[len(msgs)-1]
+	if last.Kind != tunnelproto.KindReqBodyEnd {
+		t.Fatalf("expected last message kind %q, got %q", tunnelproto.KindReqBodyEnd, last.Kind)
+	}
+
+	if !bytes.Equal(reassembled, largeBody) {
+		t.Fatalf("reassembled body length %d != original %d", len(reassembled), len(largeBody))
+	}
+}
+
+func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{MaxBodyBytes: 10 * 1024 * 1024}}
+
+	receivedMsgs := make(chan tunnelproto.Message, 128)
+	readDone := make(chan struct{})
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			close(readDone)
+			return
+		}
+		defer conn.Close()
+		defer close(readDone)
+		conn.SetReadLimit(64 * 1024 * 1024)
+
+		for {
+			var msg tunnelproto.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			receivedMsgs <- msg
+		}
+	}))
+	defer srvHTTP.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srvHTTP.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	sess := &session{
+		tunnelID: "test",
+		conn:     conn,
+		pending:  make(map[string]chan tunnelproto.Message),
+	}
+
+	limit := int64(streamingThreshold + 8*1024)
+	body := make([]byte, int(limit)+8*1024)
+	for i := range body {
+		body[i] = byte(i % 256)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	req.Body = http.MaxBytesReader(rr, req.Body, limit)
+	headers := map[string][]string{"Content-Type": {"application/octet-stream"}}
+
+	streamed, err := s.sendRequestBody(sess, "req_limit", req, headers)
+	if !streamed {
+		t.Fatal("expected streamed=true when body exceeds streaming threshold")
+	}
+	if !isBodyTooLargeError(err) {
+		t.Fatalf("expected body too large error, got %v", err)
+	}
+
+	_ = conn.Close()
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for websocket reader shutdown")
+	}
+
+	hasRequest := false
+	hasReqBody := false
+	hasReqBodyEnd := false
+	for {
+		select {
+		case msg := <-receivedMsgs:
+			switch msg.Kind {
+			case tunnelproto.KindRequest:
+				hasRequest = true
+			case tunnelproto.KindReqBody:
+				hasReqBody = true
+			case tunnelproto.KindReqBodyEnd:
+				hasReqBodyEnd = true
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	if !hasRequest {
+		t.Fatal("expected request envelope to be sent before limit error")
+	}
+	if !hasReqBody {
+		t.Fatal("expected at least one req_body chunk before limit error")
+	}
+	if hasReqBodyEnd {
+		t.Fatal("did not expect req_body_end when request stream aborted by limit")
+	}
+}
+
+func TestSendRequestBodyEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{MaxBodyBytes: 10 * 1024 * 1024}}
+
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var msg tunnelproto.Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
+		}
+		if msg.Kind != tunnelproto.KindRequest {
+			t.Errorf("expected kind %q, got %q", tunnelproto.KindRequest, msg.Kind)
+		}
+		if msg.Request.Streamed {
+			t.Error("expected inline (non-streamed) for empty body")
+		}
+		if msg.Request.BodyB64 != "" {
+			t.Error("expected empty BodyB64 for empty body")
+		}
+	}))
+	defer srvHTTP.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srvHTTP.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	sess := &session{tunnelID: "test", conn: conn, pending: make(map[string]chan tunnelproto.Message)}
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	headers := map[string][]string{}
+
+	streamed, err := s.sendRequestBody(sess, "req_3", req, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamed {
+		t.Fatal("expected empty body to be sent inline")
+	}
+}
+
+func TestWriteStreamedResponseBody(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
+	respCh := make(chan tunnelproto.Message, 8)
+
+	chunk1 := []byte("hello ")
+	chunk2 := []byte("world")
+	respCh <- tunnelproto.Message{
+		Kind:      tunnelproto.KindRespBody,
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: tunnelproto.EncodeBody(chunk1)},
+	}
+	respCh <- tunnelproto.Message{
+		Kind:      tunnelproto.KindRespBody,
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: tunnelproto.EncodeBody(chunk2)},
+	}
+	respCh <- tunnelproto.Message{
+		Kind:      tunnelproto.KindRespBodyEnd,
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1"},
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	s.writeStreamedResponseBody(w, req, respCh, 5*time.Second)
+
+	if got := w.Body.String(); got != "hello world" {
+		t.Fatalf("expected %q, got %q", "hello world", got)
+	}
+}
+
+func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{RequestTimeout: 100 * time.Millisecond}}
+	respCh := make(chan tunnelproto.Message, 8)
+
+	respCh <- tunnelproto.Message{
+		Kind:      tunnelproto.KindRespBody,
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: tunnelproto.EncodeBody([]byte("partial"))},
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	start := time.Now()
+	s.writeStreamedResponseBody(w, req, respCh, 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if elapsed < 80*time.Millisecond {
+		t.Fatalf("expected timeout wait, elapsed=%s", elapsed)
+	}
+	if got := w.Body.String(); got != "partial" {
+		t.Fatalf("expected partial body %q, got %q", "partial", got)
+	}
+}
+
+func TestSessionStreamSend(t *testing.T) {
+	ch := make(chan tunnelproto.Message, 1)
+	sess := &session{pending: make(map[string]chan tunnelproto.Message)}
+	msg := tunnelproto.Message{Kind: tunnelproto.KindRespBody}
+
+	if ok := sess.streamSend(ch, msg, 0); !ok {
+		t.Fatal("expected streamSend to succeed for buffered channel")
+	}
+	got := <-ch
+	if got.Kind != tunnelproto.KindRespBody {
+		t.Fatalf("expected resp_body message, got %q", got.Kind)
+	}
+}
+
+func TestSessionStreamSendTimeout(t *testing.T) {
+	ch := make(chan tunnelproto.Message)
+	sess := &session{pending: make(map[string]chan tunnelproto.Message)}
+
+	start := time.Now()
+	ok := sess.streamSend(ch, tunnelproto.Message{Kind: tunnelproto.KindRespBody}, 15*time.Millisecond)
+	if ok {
+		t.Fatal("expected streamSend to fail on timeout")
+	}
+	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+		t.Fatalf("expected streamSend to wait before timing out, elapsed=%s", elapsed)
+	}
+}
+
+func TestSessionPendingLoad(t *testing.T) {
+	sess := &session{pending: make(map[string]chan tunnelproto.Message)}
+
+	ch := make(chan tunnelproto.Message, 1)
+	sess.pendingStore("req_1", ch)
+
+	got, ok := sess.pendingLoad("req_1")
+	if !ok || got != ch {
+		t.Fatal("expected pendingLoad to find the channel")
+	}
+
+	got2, ok2 := sess.pendingLoad("req_1")
+	if !ok2 || got2 != ch {
+		t.Fatal("expected channel to remain after pendingLoad")
+	}
+
+	got3, ok3 := sess.pendingLoadAndDelete("req_1")
+	if !ok3 || got3 != ch {
+		t.Fatal("expected pendingLoadAndDelete to find the channel")
+	}
+
+	_, ok4 := sess.pendingLoad("req_1")
+	if ok4 {
+		t.Fatal("expected channel to be gone after pendingLoadAndDelete")
+	}
 }

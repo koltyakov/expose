@@ -482,3 +482,243 @@ func TestIsNonReleaseVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardAndSendSmallResponseInline(t *testing.T) {
+	t.Parallel()
+
+	responseBody := "small response"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Test", "yes")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, responseBody)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		},
+	}
+
+	var msgs []tunnelproto.Message
+	writeMsg := func(msg tunnelproto.Message) error {
+		msgs = append(msgs, msg)
+		return nil
+	}
+
+	req := &tunnelproto.HTTPRequest{
+		ID:     "req_1",
+		Method: http.MethodGet,
+		Path:   "/hello",
+	}
+	c.forwardAndSend(context.Background(), base, req, nil, writeMsg)
+
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for small inline response, got %d", len(msgs))
+	}
+	if msgs[0].Kind != tunnelproto.KindResponse {
+		t.Fatalf("expected kind %q, got %q", tunnelproto.KindResponse, msgs[0].Kind)
+	}
+	if msgs[0].Response.Streamed {
+		t.Fatal("expected non-streamed response for small body")
+	}
+	decoded, _ := tunnelproto.DecodeBody(msgs[0].Response.BodyB64)
+	if string(decoded) != responseBody {
+		t.Fatalf("expected body %q, got %q", responseBody, string(decoded))
+	}
+	if firstHeaderValue(msgs[0].Response.Headers, "X-Test") != "yes" {
+		t.Fatal("expected X-Test header to be preserved")
+	}
+}
+
+func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
+	t.Parallel()
+
+	largeBody := make([]byte, streamingThreshold+500)
+	for i := range largeBody {
+		largeBody[i] = byte(i % 256)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(largeBody)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		},
+	}
+
+	var msgs []tunnelproto.Message
+	writeMsg := func(msg tunnelproto.Message) error {
+		msgs = append(msgs, msg)
+		return nil
+	}
+
+	req := &tunnelproto.HTTPRequest{
+		ID:     "req_2",
+		Method: http.MethodGet,
+		Path:   "/download",
+	}
+	c.forwardAndSend(context.Background(), base, req, nil, writeMsg)
+
+	if len(msgs) < 3 {
+		t.Fatalf("expected at least 3 messages (response header + body chunk(s) + end), got %d", len(msgs))
+	}
+
+	// First message: response headers with Streamed=true
+	if msgs[0].Kind != tunnelproto.KindResponse {
+		t.Fatalf("expected first kind %q, got %q", tunnelproto.KindResponse, msgs[0].Kind)
+	}
+	if !msgs[0].Response.Streamed {
+		t.Fatal("expected response to be streamed")
+	}
+	if msgs[0].Response.BodyB64 != "" {
+		t.Fatal("expected empty BodyB64 in streamed response header")
+	}
+	if msgs[0].Response.Status != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", msgs[0].Response.Status)
+	}
+
+	// Middle messages: body chunks
+	var reassembled []byte
+	for _, msg := range msgs[1 : len(msgs)-1] {
+		if msg.Kind != tunnelproto.KindRespBody {
+			t.Fatalf("expected body chunk kind %q, got %q", tunnelproto.KindRespBody, msg.Kind)
+		}
+		chunk, _ := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+		reassembled = append(reassembled, chunk...)
+	}
+
+	// Last message: end signal
+	last := msgs[len(msgs)-1]
+	if last.Kind != tunnelproto.KindRespBodyEnd {
+		t.Fatalf("expected last kind %q, got %q", tunnelproto.KindRespBodyEnd, last.Kind)
+	}
+
+	if len(reassembled) != len(largeBody) {
+		t.Fatalf("reassembled body length %d != original %d", len(reassembled), len(largeBody))
+	}
+	for i := range reassembled {
+		if reassembled[i] != largeBody[i] {
+			t.Fatalf("body mismatch at byte %d", i)
+		}
+	}
+}
+
+func TestForwardAndSendStreamedRequestBody(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "received")
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		},
+	}
+
+	var msgs []tunnelproto.Message
+	writeMsg := func(msg tunnelproto.Message) error {
+		msgs = append(msgs, msg)
+		return nil
+	}
+
+	bodyCh := make(chan []byte, 4)
+	bodyCh <- []byte("chunk1-")
+	bodyCh <- []byte("chunk2-")
+	bodyCh <- []byte("chunk3")
+	close(bodyCh)
+
+	req := &tunnelproto.HTTPRequest{
+		ID:       "req_3",
+		Method:   http.MethodPost,
+		Path:     "/upload",
+		Streamed: true,
+	}
+	c.forwardAndSend(context.Background(), base, req, bodyCh, writeMsg)
+
+	expected := "chunk1-chunk2-chunk3"
+	if string(gotBody) != expected {
+		t.Fatalf("expected local upstream to receive %q, got %q", expected, string(gotBody))
+	}
+
+	if len(msgs) < 1 {
+		t.Fatal("expected at least 1 response message")
+	}
+	if msgs[0].Kind != tunnelproto.KindResponse {
+		t.Fatalf("expected response kind, got %q", msgs[0].Kind)
+	}
+	if msgs[0].Response.Status != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", msgs[0].Response.Status)
+	}
+}
+
+func TestForwardAndSendUpstreamUnavailable(t *testing.T) {
+	t.Parallel()
+
+	// Use a port that definitely isn't listening
+	base, _ := url.Parse("http://127.0.0.1:1")
+
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 1 * time.Second,
+			},
+		},
+	}
+
+	var msgs []tunnelproto.Message
+	writeMsg := func(msg tunnelproto.Message) error {
+		msgs = append(msgs, msg)
+		return nil
+	}
+
+	req := &tunnelproto.HTTPRequest{
+		ID:     "req_err",
+		Method: http.MethodGet,
+		Path:   "/fail",
+	}
+	c.forwardAndSend(context.Background(), base, req, nil, writeMsg)
+
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 error response, got %d", len(msgs))
+	}
+	if msgs[0].Response.Status != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", msgs[0].Response.Status)
+	}
+}

@@ -93,10 +93,13 @@ const (
 	maxConcurrentForwards      = 32
 	wsMessageBufferSize        = 64
 	clientWSWriteTimeout       = 15 * time.Second
-	clientWSReadLimit          = 32 * 1024 * 1024
+	clientWSReadLimit          = 64 * 1024 * 1024
 	localForwardResponseMaxB64 = 10 * 1024 * 1024
 	wsHandshakeTimeout         = 10 * time.Second
 	tlsProvisioningInfoRetries = 3
+	streamingThreshold         = 256 * 1024
+	streamingChunkSize         = 256 * 1024
+	streamingReqBodyBufSize    = 64
 )
 
 // New creates a Client with the given configuration and logger.
@@ -108,11 +111,11 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 			Timeout: cfg.Timeout,
 		},
 		fwdClient: &http.Client{
-			Timeout: 2 * time.Minute,
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   100,
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: 2 * time.Minute,
 			},
 		},
 	}
@@ -257,8 +260,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 	}()
 
 	var requestWG sync.WaitGroup
-	var wsMu sync.Mutex
+	var wsMu sync.RWMutex
 	wsConns := make(map[string]*websocket.Conn)
+	streamedReqChunks := make(map[string]chan []byte)
 	defer func() {
 		cancelSession()
 		close(stopClose)
@@ -269,6 +273,10 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 			_ = streamConn.Close()
 		}
 		wsMu.Unlock()
+		for id, ch := range streamedReqChunks {
+			close(ch)
+			delete(streamedReqChunks, id)
+		}
 		requestWG.Wait()
 	}()
 
@@ -350,9 +358,9 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 		wsMu.Unlock()
 	}
 	getWSConn := func(id string) (*websocket.Conn, bool) {
-		wsMu.Lock()
+		wsMu.RLock()
 		streamConn, ok := wsConns[id]
-		wsMu.Unlock()
+		wsMu.RUnlock()
 		return streamConn, ok
 	}
 	deleteWSConn := func(id string) {
@@ -421,33 +429,43 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				}
 				requestWG.Add(1)
 				reqCopy := *msg.Request
-				go func(req tunnelproto.HTTPRequest) {
+				var bodyCh chan []byte
+				if reqCopy.Streamed {
+					bodyCh = make(chan []byte, streamingReqBodyBufSize)
+					streamedReqChunks[reqCopy.ID] = bodyCh
+				}
+				go func(req tunnelproto.HTTPRequest, bodyCh <-chan []byte) {
 					defer requestWG.Done()
 					defer func() { <-requestSem }()
-
-					started := time.Now()
-					resp := c.forwardLocal(sessionCtx, localBase, &req)
-					path := req.Path
-					if strings.TrimSpace(req.Query) != "" {
-						path = path + "?" + req.Query
-					}
-					elapsed := time.Since(started)
-					if c.display != nil {
-						c.display.LogRequest(req.Method, path, resp.Status, elapsed, req.Headers)
-					} else {
-						c.log.Info("forwarded request", "method", req.Method, "path", path, "status", resp.Status, "duration", elapsed.String())
-					}
-					if err := writeJSON(tunnelproto.Message{
-						Kind:     tunnelproto.KindResponse,
-						Response: resp,
-					}); err != nil && sessionCtx.Err() == nil {
-						if c.display != nil {
-							c.display.ShowWarning(fmt.Sprintf("failed to send response to server: req_id=%s err=%v", req.ID, err))
-						} else {
-							c.log.Warn("failed to send response to server", "req_id", req.ID, "err", err)
-						}
-					}
-				}(reqCopy)
+					c.forwardAndSend(sessionCtx, localBase, &req, bodyCh, writeJSON)
+				}(reqCopy, bodyCh)
+			case tunnelproto.KindReqBody:
+				if msg.BodyChunk == nil {
+					continue
+				}
+				ch, ok := streamedReqChunks[msg.BodyChunk.ID]
+				if !ok {
+					continue
+				}
+				data, err := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+				if err != nil {
+					continue
+				}
+				select {
+				case ch <- data:
+				case <-sessionCtx.Done():
+					return sessionCtx.Err()
+				}
+			case tunnelproto.KindReqBodyEnd:
+				if msg.BodyChunk == nil {
+					continue
+				}
+				ch, ok := streamedReqChunks[msg.BodyChunk.ID]
+				if !ok {
+					continue
+				}
+				close(ch)
+				delete(streamedReqChunks, msg.BodyChunk.ID)
 			case tunnelproto.KindWSOpen:
 				if msg.WSOpen == nil {
 					continue
@@ -697,11 +715,23 @@ func resolveClientMachineID(hostname string) string {
 	return strings.TrimSpace(hostname)
 }
 
-var bufferPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
-}
+var (
+	bufferPool = sync.Pool{
+		New: func() any {
+			return new(bytes.Buffer)
+		},
+	}
+	responseFirstChunkPool = sync.Pool{
+		New: func() any {
+			return make([]byte, streamingThreshold+1)
+		},
+	}
+	responseStreamChunkPool = sync.Pool{
+		New: func() any {
+			return make([]byte, streamingChunkSize)
+		},
+	}
+)
 
 func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelproto.HTTPRequest) *tunnelproto.HTTPResponse {
 	target := *base
@@ -776,6 +806,222 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		Status:  resp.StatusCode,
 		Headers: respHeaders,
 		BodyB64: tunnelproto.EncodeBody(buf.Bytes()),
+	}
+}
+
+// forwardAndSend handles a tunnelled HTTP request, optionally with a streamed
+// request body (bodyCh != nil), forwards it to the local upstream, and sends
+// the response back through writeMsg. Large response bodies (exceeding
+// streamingThreshold) are streamed as multiple messages instead of being
+// buffered entirely in memory.
+func (c *Client) forwardAndSend(
+	ctx context.Context,
+	base *url.URL,
+	req *tunnelproto.HTTPRequest,
+	bodyCh <-chan []byte,
+	writeMsg func(tunnelproto.Message) error,
+) {
+	started := time.Now()
+	target := *base
+	target.Path = strings.TrimSuffix(base.Path, "/") + req.Path
+	target.RawQuery = req.Query
+
+	// Build request body reader.
+	var body io.Reader
+	if bodyCh != nil {
+		pr, pw := io.Pipe()
+		go func() {
+			defer pw.Close()
+			for {
+				select {
+				case chunk, ok := <-bodyCh:
+					if !ok {
+						return
+					}
+					if _, err := pw.Write(chunk); err != nil {
+						return
+					}
+				case <-ctx.Done():
+					pw.CloseWithError(ctx.Err())
+					return
+				}
+			}
+		}()
+		body = pr
+	} else {
+		data, err := tunnelproto.DecodeBody(req.BodyB64)
+		if err != nil {
+			_ = writeMsg(tunnelproto.Message{
+				Kind:     tunnelproto.KindResponse,
+				Response: &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway},
+			})
+			c.logForwardResult(req, http.StatusBadGateway, started)
+			return
+		}
+		body = bytes.NewReader(data)
+	}
+
+	localReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), body)
+	if err != nil {
+		_ = writeMsg(tunnelproto.Message{
+			Kind:     tunnelproto.KindResponse,
+			Response: &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway},
+		})
+		c.logForwardResult(req, http.StatusBadGateway, started)
+		return
+	}
+
+	headers := tunnelproto.CloneHeaders(req.Headers)
+	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
+	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
+	for k, vals := range headers {
+		for _, v := range vals {
+			localReq.Header.Add(k, v)
+		}
+	}
+	localReq.Header.Del("Host")
+	if forwardedHost != "" {
+		localReq.Host = forwardedHost
+	} else {
+		localReq.Host = base.Host
+	}
+
+	resp, err := c.fwdClient.Do(localReq)
+	if err != nil {
+		_ = writeMsg(tunnelproto.Message{
+			Kind: tunnelproto.KindResponse,
+			Response: &tunnelproto.HTTPResponse{
+				ID:      req.ID,
+				Status:  http.StatusBadGateway,
+				Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
+				BodyB64: tunnelproto.EncodeBody([]byte("local upstream unavailable")),
+			},
+		})
+		c.logForwardResult(req, http.StatusBadGateway, started)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respHeaders := tunnelproto.CloneHeaders(resp.Header)
+	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
+
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		_ = writeMsg(tunnelproto.Message{
+			Kind: tunnelproto.KindResponse,
+			Response: &tunnelproto.HTTPResponse{
+				ID:      req.ID,
+				Status:  resp.StatusCode,
+				Headers: respHeaders,
+			},
+		})
+		return
+	}
+
+	// Try to read the first chunk to decide inline vs streamed response.
+	firstBuf := responseFirstChunkPool.Get().([]byte)
+	if cap(firstBuf) < streamingThreshold+1 {
+		firstBuf = make([]byte, streamingThreshold+1)
+	} else {
+		firstBuf = firstBuf[:streamingThreshold+1]
+	}
+	defer responseFirstChunkPool.Put(firstBuf)
+	n, readErr := io.ReadFull(resp.Body, firstBuf)
+
+	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+		// Small response — send inline.
+		_ = writeMsg(tunnelproto.Message{
+			Kind: tunnelproto.KindResponse,
+			Response: &tunnelproto.HTTPResponse{
+				ID:      req.ID,
+				Status:  resp.StatusCode,
+				Headers: respHeaders,
+				BodyB64: tunnelproto.EncodeBody(firstBuf[:n]),
+			},
+		})
+		c.logForwardResult(req, resp.StatusCode, started)
+		return
+	}
+
+	if readErr != nil {
+		_ = writeMsg(tunnelproto.Message{
+			Kind: tunnelproto.KindResponse,
+			Response: &tunnelproto.HTTPResponse{
+				ID:      req.ID,
+				Status:  http.StatusBadGateway,
+				Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
+				BodyB64: tunnelproto.EncodeBody([]byte("failed to read local upstream response")),
+			},
+		})
+		c.logForwardResult(req, http.StatusBadGateway, started)
+		return
+	}
+
+	// Large response — stream it.
+	if err := writeMsg(tunnelproto.Message{
+		Kind: tunnelproto.KindResponse,
+		Response: &tunnelproto.HTTPResponse{
+			ID:       req.ID,
+			Status:   resp.StatusCode,
+			Headers:  respHeaders,
+			Streamed: true,
+		},
+	}); err != nil {
+		c.logForwardResult(req, resp.StatusCode, started)
+		return
+	}
+
+	// Send the already-read data as the first body chunk.
+	if err := writeMsg(tunnelproto.Message{
+		Kind:      tunnelproto.KindRespBody,
+		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, DataB64: tunnelproto.EncodeBody(firstBuf[:n])},
+	}); err != nil {
+		c.logForwardResult(req, resp.StatusCode, started)
+		return
+	}
+
+	// Read remaining body in chunks.
+	chunkBuf := responseStreamChunkPool.Get().([]byte)
+	if cap(chunkBuf) < streamingChunkSize {
+		chunkBuf = make([]byte, streamingChunkSize)
+	} else {
+		chunkBuf = chunkBuf[:streamingChunkSize]
+	}
+	defer responseStreamChunkPool.Put(chunkBuf)
+	for {
+		cn, err := resp.Body.Read(chunkBuf)
+		if cn > 0 {
+			if wErr := writeMsg(tunnelproto.Message{
+				Kind:      tunnelproto.KindRespBody,
+				BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, DataB64: tunnelproto.EncodeBody(chunkBuf[:cn])},
+			}); wErr != nil {
+				c.logForwardResult(req, resp.StatusCode, started)
+				return
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	// Signal end of response body.
+	_ = writeMsg(tunnelproto.Message{
+		Kind:      tunnelproto.KindRespBodyEnd,
+		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID},
+	})
+	c.logForwardResult(req, resp.StatusCode, started)
+}
+
+// logForwardResult logs the forwarded request result via display or logger.
+func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, started time.Time) {
+	path := req.Path
+	if strings.TrimSpace(req.Query) != "" {
+		path = path + "?" + req.Query
+	}
+	elapsed := time.Since(started)
+	if c.display != nil {
+		c.display.LogRequest(req.Method, path, status, elapsed, req.Headers)
+	} else if c.log != nil {
+		c.log.Info("forwarded request", "method", req.Method, "path", path, "status", status, "duration", elapsed.String())
 	}
 }
 

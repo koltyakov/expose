@@ -119,8 +119,8 @@ type session struct {
 	tunnelID         string
 	conn             *websocket.Conn
 	writeMu          sync.Mutex
-	pendingMu        sync.Mutex
-	pending          map[string]chan *tunnelproto.HTTPResponse
+	pendingMu        sync.RWMutex
+	pending          map[string]chan tunnelproto.Message
 	wsMu             sync.RWMutex
 	wsPending        map[string]chan tunnelproto.Message
 	pendingCount     atomic.Int64
@@ -243,6 +243,10 @@ const (
 	maxRegisterBodyBytes  = 64 * 1024
 	minWSReadLimit        = 32 * 1024 * 1024
 	maxPendingPerSession  = 32
+	streamingThreshold    = 256 * 1024
+	streamingChunkSize    = 256 * 1024
+	streamingChanSize     = 16
+	streamBodySendTimeout = 5 * time.Second
 	wsWriteTimeout        = 15 * time.Second
 	httpsReadTimeout      = 30 * time.Second
 	httpsWriteTimeout     = 60 * time.Second
@@ -612,7 +616,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	sess := &session{
 		tunnelID:  tunnelID,
 		conn:      conn,
-		pending:   make(map[string]chan *tunnelproto.HTTPResponse),
+		pending:   make(map[string]chan tunnelproto.Message),
 		wsPending: make(map[string]chan tunnelproto.Message),
 	}
 	wsReadLimit := s.cfg.MaxBodyBytes * 2
@@ -665,10 +669,47 @@ func (s *Server) readLoop(sess *session) {
 			if msg.Response == nil {
 				continue
 			}
-			if v, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
+			if msg.Response.Streamed {
+				// Streamed: send header message but keep pending entry open
+				// for subsequent body chunks.
+				if ch, ok := sess.pendingLoad(msg.Response.ID); ok {
+					select {
+					case ch <- msg:
+					default:
+					}
+				}
+			} else {
+				if v, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
+					sess.releasePending()
+					select {
+					case v <- msg:
+					default:
+					}
+					close(v)
+				}
+			}
+		case tunnelproto.KindRespBody:
+			if msg.BodyChunk == nil {
+				continue
+			}
+			if ch, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
+				if !sess.streamSend(ch, msg, streamBodySendTimeout) {
+					s.log.Warn("stream consumer too slow, aborting",
+						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID)
+					if sess.pendingDelete(msg.BodyChunk.ID) {
+						sess.releasePending()
+						close(ch)
+					}
+				}
+			}
+		case tunnelproto.KindRespBodyEnd:
+			if msg.BodyChunk == nil {
+				continue
+			}
+			if v, ok := sess.pendingLoadAndDelete(msg.BodyChunk.ID); ok {
 				sess.releasePending()
 				select {
-				case v <- msg.Response:
+				case v <- msg:
 				default:
 				}
 				close(v)
@@ -748,47 +789,39 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		s.handlePublicWebSocket(w, r, route, sess)
 		return
 	}
-
-	buf, cleanup, err := readLimitedBody(w, r, s.cfg.MaxBodyBytes)
-	if err != nil {
-		if isBodyTooLargeError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
-		return
+	if s.cfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
+		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
 	}
-	defer cleanup()
+
 	reqID := s.nextRequestID()
 	if !sess.tryAcquirePending(maxPendingPerSession) {
 		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
 		return
 	}
+
 	requestHeaders := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
-	msg := tunnelproto.Message{
-		Kind: tunnelproto.KindRequest,
-		Request: &tunnelproto.HTTPRequest{
-			ID:      reqID,
-			Method:  r.Method,
-			Path:    r.URL.Path,
-			Query:   r.URL.RawQuery,
-			Headers: requestHeaders,
-			BodyB64: tunnelproto.EncodeBody(buf.Bytes()),
-		},
-	}
 
-	respCh := make(chan *tunnelproto.HTTPResponse, 1)
+	respCh := make(chan tunnelproto.Message, streamingChanSize)
 	sess.pendingStore(reqID, respCh)
-	if err := sess.writeJSON(msg); err != nil {
+
+	// Determine whether to stream the request body or send it inline.
+	streamed, err := s.sendRequestBody(sess, reqID, r, requestHeaders)
+	if err != nil {
 		if sess.pendingDelete(reqID) {
 			sess.releasePending()
+			close(respCh)
 		}
-		http.Error(w, "tunnel write failed", http.StatusBadGateway)
+		if isBodyTooLargeError(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "tunnel write failed", http.StatusBadGateway)
+		}
 		return
 	}
+	_ = streamed
 
 	timer := time.NewTimer(s.cfg.RequestTimeout)
 	stopTimer := func() {
@@ -802,11 +835,12 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	defer stopTimer()
 
 	select {
-	case resp := <-respCh:
-		if resp == nil {
+	case msg, ok := <-respCh:
+		if !ok || msg.Kind != tunnelproto.KindResponse || msg.Response == nil {
 			http.Error(w, "tunnel closed", http.StatusBadGateway)
 			return
 		}
+		resp := msg.Response
 		respHeaders := tunnelproto.CloneHeaders(resp.Headers)
 		netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 		for k, vals := range respHeaders {
@@ -815,19 +849,25 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		w.WriteHeader(resp.Status)
-		b, err := tunnelproto.DecodeBody(resp.BodyB64)
-		if err == nil && len(b) > 0 {
-			_, _ = w.Write(b)
+		if resp.Streamed {
+			s.writeStreamedResponseBody(w, r, respCh, s.cfg.RequestTimeout)
+		} else {
+			b, err := tunnelproto.DecodeBody(resp.BodyB64)
+			if err == nil && len(b) > 0 {
+				_, _ = w.Write(b)
+			}
 		}
 		s.queueDomainTouch(route.Domain.ID)
 	case <-timer.C:
 		if sess.pendingDelete(reqID) {
 			sess.releasePending()
+			close(respCh)
 		}
 		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
 	case <-r.Context().Done():
 		if sess.pendingDelete(reqID) {
 			sess.releasePending()
+			close(respCh)
 		}
 	}
 }
@@ -1057,13 +1097,20 @@ func (s *session) closePending() {
 	s.pendingMu.Unlock()
 }
 
-func (s *session) pendingStore(id string, ch chan *tunnelproto.HTTPResponse) {
+func (s *session) pendingStore(id string, ch chan tunnelproto.Message) {
 	s.pendingMu.Lock()
 	s.pending[id] = ch
 	s.pendingMu.Unlock()
 }
 
-func (s *session) pendingLoadAndDelete(id string) (chan *tunnelproto.HTTPResponse, bool) {
+func (s *session) pendingLoad(id string) (chan tunnelproto.Message, bool) {
+	s.pendingMu.RLock()
+	ch, ok := s.pending[id]
+	s.pendingMu.RUnlock()
+	return ch, ok
+}
+
+func (s *session) pendingLoadAndDelete(id string) (chan tunnelproto.Message, bool) {
 	s.pendingMu.Lock()
 	ch, ok := s.pending[id]
 	if ok {
@@ -1284,10 +1331,200 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst 
 	return nil
 }
 
-var bufferPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
+var (
+	bufferPool = sync.Pool{
+		New: func() any {
+			return new(bytes.Buffer)
+		},
+	}
+	requestFirstChunkPool = sync.Pool{
+		New: func() any {
+			return make([]byte, streamingThreshold+1)
+		},
+	}
+	requestStreamChunkPool = sync.Pool{
+		New: func() any {
+			return make([]byte, streamingChunkSize)
+		},
+	}
+)
+
+// sendRequestBody reads the public HTTP request body and sends it to the
+// tunnel client. For small bodies (<= streamingThreshold) the body is inlined
+// in the KindRequest message. For large bodies it sends a KindRequest with
+// Streamed=true followed by KindReqBody chunks and a KindReqBodyEnd.
+// Returns whether the request was streamed and any write error.
+func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, headers map[string][]string) (bool, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return false, sess.writeJSON(tunnelproto.Message{
+			Kind: tunnelproto.KindRequest,
+			Request: &tunnelproto.HTTPRequest{
+				ID:      reqID,
+				Method:  r.Method,
+				Path:    r.URL.Path,
+				Query:   r.URL.RawQuery,
+				Headers: headers,
+			},
+		})
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	// Read the first chunk plus one byte to decide inline vs streamed.
+	firstBuf := requestFirstChunkPool.Get().([]byte)
+	if cap(firstBuf) < streamingThreshold+1 {
+		firstBuf = make([]byte, streamingThreshold+1)
+	} else {
+		firstBuf = firstBuf[:streamingThreshold+1]
+	}
+	defer requestFirstChunkPool.Put(firstBuf)
+	n, readErr := io.ReadFull(r.Body, firstBuf)
+
+	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+		// The entire body fits within the threshold — send inline.
+		return false, sess.writeJSON(tunnelproto.Message{
+			Kind: tunnelproto.KindRequest,
+			Request: &tunnelproto.HTTPRequest{
+				ID:      reqID,
+				Method:  r.Method,
+				Path:    r.URL.Path,
+				Query:   r.URL.RawQuery,
+				Headers: headers,
+				BodyB64: tunnelproto.EncodeBody(firstBuf[:n]),
+			},
+		})
+	}
+	if readErr != nil {
+		return false, readErr
+	}
+
+	// Body exceeds threshold — stream it.
+	if err := sess.writeJSON(tunnelproto.Message{
+		Kind: tunnelproto.KindRequest,
+		Request: &tunnelproto.HTTPRequest{
+			ID:       reqID,
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Query:    r.URL.RawQuery,
+			Headers:  headers,
+			Streamed: true,
+		},
+	}); err != nil {
+		return true, err
+	}
+
+	// Send the already-read data as the first body chunk.
+	if err := sess.writeJSON(tunnelproto.Message{
+		Kind:      tunnelproto.KindReqBody,
+		BodyChunk: &tunnelproto.BodyChunk{ID: reqID, DataB64: tunnelproto.EncodeBody(firstBuf[:n])},
+	}); err != nil {
+		return true, err
+	}
+
+	// Read remaining body in chunks.
+	chunkBuf := requestStreamChunkPool.Get().([]byte)
+	if cap(chunkBuf) < streamingChunkSize {
+		chunkBuf = make([]byte, streamingChunkSize)
+	} else {
+		chunkBuf = chunkBuf[:streamingChunkSize]
+	}
+	defer requestStreamChunkPool.Put(chunkBuf)
+	for {
+		cn, err := r.Body.Read(chunkBuf)
+		if cn > 0 {
+			if wErr := sess.writeJSON(tunnelproto.Message{
+				Kind:      tunnelproto.KindReqBody,
+				BodyChunk: &tunnelproto.BodyChunk{ID: reqID, DataB64: tunnelproto.EncodeBody(chunkBuf[:cn])},
+			}); wErr != nil {
+				return true, wErr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
+			return true, err
+		}
+	}
+
+	// Signal end of request body.
+	return true, sess.writeJSON(tunnelproto.Message{
+		Kind:      tunnelproto.KindReqBodyEnd,
+		BodyChunk: &tunnelproto.BodyChunk{ID: reqID},
+	})
+}
+
+// writeStreamedResponseBody reads body chunks from the pending channel and
+// writes them to the HTTP response writer, flushing after each chunk.
+func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, respCh <-chan tunnelproto.Message, chunkTimeout time.Duration) {
+	flusher, canFlush := w.(http.Flusher)
+	timer := time.NewTimer(chunkTimeout)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	for {
+		select {
+		case msg, ok := <-respCh:
+			if !ok {
+				return // tunnel closed
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(chunkTimeout)
+
+			switch msg.Kind {
+			case tunnelproto.KindRespBody:
+				if msg.BodyChunk == nil {
+					continue
+				}
+				b, err := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+				if err == nil && len(b) > 0 {
+					if _, wErr := w.Write(b); wErr != nil {
+						return
+					}
+					if canFlush {
+						flusher.Flush()
+					}
+				}
+			case tunnelproto.KindRespBodyEnd:
+				return
+			}
+		case <-timer.C:
+			return // chunk timeout
+		case <-r.Context().Done():
+			return // client disconnected
+		}
+	}
+}
+
+// streamSend attempts to write msg to ch without blocking the read loop for
+// too long. Mirrors wsPendingSend but for HTTP body streaming channels.
+func (s *session) streamSend(ch chan tunnelproto.Message, msg tunnelproto.Message, wait time.Duration) bool {
+	select {
+	case ch <- msg:
+		return true
+	default:
+	}
+	if wait <= 0 {
+		return false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case ch <- msg:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func readLimitedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (*bytes.Buffer, func(), error) {

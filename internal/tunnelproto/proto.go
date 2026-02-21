@@ -8,16 +8,20 @@ import (
 
 // Message kinds identify the type of payload carried by a [Message].
 const (
-	KindRequest   = "request"
-	KindResponse  = "response"
-	KindWSOpen    = "ws_open"
-	KindWSOpenAck = "ws_open_ack"
-	KindWSData    = "ws_data"
-	KindWSClose   = "ws_close"
-	KindPing      = "ping"
-	KindPong      = "pong"
-	KindError     = "error"
-	KindClose     = "close"
+	KindRequest     = "request"
+	KindResponse    = "response"
+	KindReqBody     = "req_body"
+	KindReqBodyEnd  = "req_body_end"
+	KindRespBody    = "resp_body"
+	KindRespBodyEnd = "resp_body_end"
+	KindWSOpen      = "ws_open"
+	KindWSOpenAck   = "ws_open_ack"
+	KindWSData      = "ws_data"
+	KindWSClose     = "ws_close"
+	KindPing        = "ping"
+	KindPong        = "pong"
+	KindError       = "error"
+	KindClose       = "close"
 )
 
 // Message is the top-level envelope exchanged on the tunnel WebSocket.
@@ -25,6 +29,7 @@ type Message struct {
 	Kind      string        `json:"kind"`
 	Request   *HTTPRequest  `json:"request,omitempty"`
 	Response  *HTTPResponse `json:"response,omitempty"`
+	BodyChunk *BodyChunk    `json:"body_chunk,omitempty"`
 	WSOpen    *WSOpen       `json:"ws_open,omitempty"`
 	WSOpenAck *WSOpenAck    `json:"ws_open_ack,omitempty"`
 	WSData    *WSData       `json:"ws_data,omitempty"`
@@ -34,20 +39,30 @@ type Message struct {
 
 // HTTPRequest represents an inbound public HTTP request forwarded to the client.
 type HTTPRequest struct {
-	ID      string              `json:"id"`
-	Method  string              `json:"method"`
-	Path    string              `json:"path"`
-	Query   string              `json:"query,omitempty"`
-	Headers map[string][]string `json:"headers,omitempty"`
-	BodyB64 string              `json:"body_b64,omitempty"`
+	ID       string              `json:"id"`
+	Method   string              `json:"method"`
+	Path     string              `json:"path"`
+	Query    string              `json:"query,omitempty"`
+	Headers  map[string][]string `json:"headers,omitempty"`
+	BodyB64  string              `json:"body_b64,omitempty"`
+	Streamed bool                `json:"streamed,omitempty"`
 }
 
 // HTTPResponse is the client's reply to a forwarded [HTTPRequest].
 type HTTPResponse struct {
-	ID      string              `json:"id"`
-	Status  int                 `json:"status"`
-	Headers map[string][]string `json:"headers,omitempty"`
-	BodyB64 string              `json:"body_b64,omitempty"`
+	ID       string              `json:"id"`
+	Status   int                 `json:"status"`
+	Headers  map[string][]string `json:"headers,omitempty"`
+	BodyB64  string              `json:"body_b64,omitempty"`
+	Streamed bool                `json:"streamed,omitempty"`
+}
+
+// BodyChunk carries a chunk of request or response body data for streamed
+// transfers. Used with [KindReqBody], [KindReqBodyEnd], [KindRespBody],
+// and [KindRespBodyEnd] message kinds.
+type BodyChunk struct {
+	ID      string `json:"id"`
+	DataB64 string `json:"data_b64,omitempty"`
 }
 
 // WSOpen requests opening a local websocket stream on the client.

@@ -66,8 +66,7 @@ type Display struct {
 	updateVersion string // non-empty when an update is available
 
 	// counters
-	activeHTTP int // in-flight HTTP forwards
-	totalHTTP  int // total HTTP requests forwarded
+	totalHTTP int // total HTTP requests forwarded
 
 	// unique visitor tracking (IP + User-Agent fingerprint)
 	visitors map[string]struct{}
@@ -163,24 +162,6 @@ func (d *Display) LogRequest(method, path string, status int, duration time.Dura
 		status:   status,
 		duration: duration,
 	})
-	d.redraw()
-}
-
-// TrackHTTPStart increments the active HTTP counter and redraws.
-func (d *Display) TrackHTTPStart() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.activeHTTP++
-	d.redraw()
-}
-
-// TrackHTTPDone decrements the active HTTP counter and redraws.
-func (d *Display) TrackHTTPDone() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.activeHTTP > 0 {
-		d.activeHTTP--
-	}
 	d.redraw()
 }
 
@@ -354,13 +335,8 @@ func (d *Display) redraw() {
 	// ── Connections counter ─────────────────────────────────────
 	wsCount := len(d.wsConns)
 	clientCount := len(d.visitors)
-	visitorLabel := "visitors"
-	if clientCount == 1 {
-		visitorLabel = "visitor"
-	}
-	d.writeField(&b, "Clients", fmt.Sprintf("%d unique %s", clientCount, visitorLabel))
+	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", wsCount, clientCount))
 	httpParts := []string{
-		fmt.Sprintf("%d in-flight", d.activeHTTP),
 		fmt.Sprintf("%d total", d.totalHTTP),
 	}
 	if wsCount > 0 {

@@ -185,26 +185,6 @@ func TestDisplayWarningAndInfo(t *testing.T) {
 	}
 }
 
-func TestDisplayHTTPActiveCounter(t *testing.T) {
-	t.Parallel()
-	d, buf := newTestDisplay(false)
-	d.ShowBanner("dev")
-
-	d.TrackHTTPStart()
-	d.TrackHTTPStart()
-	out := buf.String()
-	if !strings.Contains(out, "2 in-flight") {
-		t.Fatal("expected 2 in-flight HTTP requests")
-	}
-
-	buf.Reset()
-	d.TrackHTTPDone()
-	out = buf.String()
-	if !strings.Contains(out, "1 in-flight") {
-		t.Fatal("expected 1 in-flight HTTP request after done")
-	}
-}
-
 func TestDisplayWSTracking(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
@@ -349,8 +329,8 @@ func TestDisplayUniqueClients(t *testing.T) {
 	d.LogRequest("GET", "/d", 200, time.Millisecond, nil) // no headers
 	out := buf.String()
 
-	if !strings.Contains(out, "2 unique visitors") {
-		t.Fatal("expected 2 unique visitors")
+	if !strings.Contains(out, "2 total") {
+		t.Fatal("expected 2 total clients")
 	}
 }
 
@@ -367,8 +347,8 @@ func TestDisplayUniqueClientsSameIPDifferentUA(t *testing.T) {
 	d.LogRequest("GET", "/b", 200, time.Millisecond, h2) // same IP, different UA
 	out := buf.String()
 
-	if !strings.Contains(out, "2 unique visitors") {
-		t.Fatal("expected 2 unique visitors for same IP with different User-Agents")
+	if !strings.Contains(out, "2 total") {
+		t.Fatal("expected 2 total clients for same IP with different User-Agents")
 	}
 }
 
@@ -384,7 +364,7 @@ func TestDisplayUniqueClientsFromWS(t *testing.T) {
 	d.LogRequest("GET", "/api", 200, time.Millisecond, nil)
 	out := buf.String()
 
-	if !strings.Contains(out, "1 unique visitor") {
-		t.Fatal("expected 1 unique visitor from WebSocket")
+	if !strings.Contains(out, "1 total") {
+		t.Fatal("expected 1 total client from WebSocket")
 	}
 }

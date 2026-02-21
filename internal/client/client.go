@@ -409,9 +409,6 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 				}
 				requestWG.Add(1)
 				reqCopy := *msg.Request
-				if c.display != nil {
-					c.display.TrackHTTPStart()
-				}
 				go func(req tunnelproto.HTTPRequest) {
 					defer requestWG.Done()
 					defer func() { <-requestSem }()
@@ -437,9 +434,6 @@ func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registe
 						} else {
 							c.log.Warn("failed to send response to server", "req_id", req.ID, "err", err)
 						}
-					}
-					if c.display != nil {
-						c.display.TrackHTTPDone()
 					}
 				}(reqCopy)
 			case tunnelproto.KindWSOpen:

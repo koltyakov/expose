@@ -47,14 +47,19 @@ type registerResponse struct {
 	ServerVersion string `json:"server_version,omitempty"`
 }
 
+// ErrAutoUpdated is returned from [Client.Run] when the binary was replaced
+// by the auto-updater and the caller should restart the process.
+var ErrAutoUpdated = errors.New("binary updated; restart required")
+
 // Client connects to the expose server and proxies public traffic to a local port.
 type Client struct {
-	cfg       config.ClientConfig
-	log       *slog.Logger
-	version   string       // client version, set via SetVersion
-	display   *Display     // optional interactive terminal display
-	apiClient *http.Client // for registration API calls
-	fwdClient *http.Client // for local upstream forwarding
+	cfg        config.ClientConfig
+	log        *slog.Logger
+	version    string       // client version, set via SetVersion
+	display    *Display     // optional interactive terminal display
+	apiClient  *http.Client // for registration API calls
+	fwdClient  *http.Client // for local upstream forwarding
+	autoUpdate bool         // when true, periodically self-update and restart
 }
 
 // SetDisplay configures the interactive terminal display.
@@ -72,6 +77,14 @@ func (c *Client) SetLogger(l *slog.Logger) {
 // SetVersion sets the client version string for server exchange.
 func (c *Client) SetVersion(v string) {
 	c.version = v
+}
+
+// SetAutoUpdate enables background self-update. When enabled the client
+// periodically checks for new releases and also reacts to server version
+// changes detected during reconnection. If an update is applied the Run
+// method returns [ErrAutoUpdated].
+func (c *Client) SetAutoUpdate(enabled bool) {
+	c.autoUpdate = enabled
 }
 
 const (
@@ -111,6 +124,13 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("invalid local URL: %w", err)
 	}
 
+	// Auto-update: periodic background check + server-version-change trigger.
+	autoUpdateCh := make(chan struct{}, 1) // signals that the binary was replaced
+	var lastServerVersion string
+	if c.autoUpdate && c.version != "" && c.version != "dev" && !strings.HasSuffix(c.version, "-dev") {
+		go c.runAutoUpdateLoop(ctx, autoUpdateCh)
+	}
+
 	backoff := reconnectInitialDelay
 	tlsProvisioningRetries := 0
 	for {
@@ -145,6 +165,8 @@ func (c *Client) Run(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return nil
+			case <-autoUpdateCh:
+				return ErrAutoUpdated
 			case <-time.After(backoff):
 			}
 			backoff = nextBackoff(backoff)
@@ -169,7 +191,24 @@ func (c *Client) Run(ctx context.Context) error {
 
 		// Check for updates in the background (non-blocking).
 		if c.version != "" && c.version != "dev" {
+			// If server version changed since last registration and auto-update
+			// is on, immediately try to self-update.
+			if c.autoUpdate && lastServerVersion != "" && reg.ServerVersion != "" &&
+				reg.ServerVersion != lastServerVersion {
+				c.log.Info("server version changed", "from", lastServerVersion, "to", reg.ServerVersion)
+				if c.trySelfUpdate(ctx) {
+					return ErrAutoUpdated
+				}
+			}
+			lastServerVersion = reg.ServerVersion
 			go c.checkForUpdates(ctx)
+		}
+
+		// Check if the background auto-update loop applied an update.
+		select {
+		case <-autoUpdateCh:
+			return ErrAutoUpdated
+		default:
 		}
 
 		err = c.runSession(ctx, localBase, reg)
@@ -188,6 +227,8 @@ func (c *Client) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-autoUpdateCh:
+			return ErrAutoUpdated
 		case <-time.After(reconnectInitialDelay):
 		}
 	}
@@ -739,6 +780,52 @@ func (c *Client) checkForUpdates(ctx context.Context) {
 	} else {
 		c.log.Info("update available", "latest", latest, "current", c.version, "run", "expose update")
 	}
+}
+
+const clientAutoUpdateInterval = 30 * time.Minute
+
+// runAutoUpdateLoop periodically checks for a newer release. When an update
+// is downloaded and the binary replaced it sends on the channel and returns.
+func (c *Client) runAutoUpdateLoop(ctx context.Context, updated chan<- struct{}) {
+	c.log.Info("auto-update: periodic checks enabled", "interval", clientAutoUpdateInterval)
+	ticker := time.NewTicker(clientAutoUpdateInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if c.trySelfUpdate(ctx) {
+				select {
+				case updated <- struct{}{}:
+				default:
+				}
+				return
+			}
+		}
+	}
+}
+
+// trySelfUpdate checks for a newer release and applies it. Returns true
+// when the binary was replaced and the process should restart.
+func (c *Client) trySelfUpdate(ctx context.Context) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	result, err := selfupdate.CheckAndApply(checkCtx, c.version)
+	if err != nil {
+		c.log.Warn("auto-update: check failed", "err", err)
+		return false
+	}
+	if !result.Updated {
+		c.log.Debug("auto-update: already up to date")
+		return false
+	}
+	c.log.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", result.LatestVersion, "asset", result.AssetName)
+	if c.display != nil {
+		c.display.ShowInfo("Update applied (" + result.LatestVersion + "); restarting...")
+	}
+	return true
 }
 
 func nextBackoff(current time.Duration) time.Duration {

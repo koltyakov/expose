@@ -143,6 +143,9 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		return cfg, err
 	}
 
+	cfg.ListenHTTPS = normalizeListenAddr(cfg.ListenHTTPS)
+	cfg.ListenHTTP = normalizeListenAddr(cfg.ListenHTTP)
+
 	cfg.BaseDomain = normalizeDomainHost(cfg.BaseDomain)
 	if cfg.BaseDomain == "" {
 		return cfg, errors.New("missing --domain or EXPOSE_DOMAIN")
@@ -211,6 +214,39 @@ func normalizeLowerOrDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// normalizeListenAddr accepts a listen address in several forms and returns
+// a canonical "host:port" (or ":port") string suitable for net.Listen:
+//
+//	"10443"           → ":10443"
+//	":10443"          → ":10443"
+//	"0.0.0.0:10443"   → "0.0.0.0:10443"
+//	"[::1]:10443"     → "[::1]:10443"
+func normalizeListenAddr(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return v
+	}
+	// Already contains a colon that is part of host:port — leave as-is,
+	// but if the entire value is digits-only it's a bare port number.
+	if isAllDigits(v) {
+		return ":" + v
+	}
+	if strings.HasPrefix(v, ":") {
+		return v // e.g. ":10443"
+	}
+	// Could be "host:port" or an IPv6 bracketed address — pass through.
+	return v
+}
+
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 func normalizeDomainHost(v string) string {

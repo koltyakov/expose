@@ -68,6 +68,10 @@ build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP) ./cmd/expose
 
+build-linux:
+	@mkdir -p $(BIN_DIR)
+	GOOS=linux GOARCH=amd64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP) ./cmd/expose
+
 build-all:
 	@mkdir -p $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP)-linux-amd64 ./cmd/expose

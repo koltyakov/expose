@@ -46,6 +46,11 @@ Allow the binary to bind to privileged ports (80, 443) without running as root:
 sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/expose
 ```
 
+> **Note**: File capabilities set via `setcap` are lost when the binary is
+> replaced (e.g. by `EXPOSE_AUTOUPDATE`). If you use auto-update, rely on
+> systemd `AmbientCapabilities` instead (see the service unit below) — they
+> survive binary replacement and process restarts.
+
 ## 3 - Configure DNS
 
 Point your domain to the VPS public IP. See provider-specific guides:
@@ -86,6 +91,12 @@ ExecStart=/usr/local/bin/expose server
 Restart=always
 RestartSec=5
 
+# Allow binding to privileged ports (80, 443) without root.
+# AmbientCapabilities survives self-update binary replacement and
+# syscall.Exec restarts, unlike file capabilities set via setcap.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 Environment=EXPOSE_DOMAIN=example.com
 Environment=EXPOSE_TLS_MODE=auto
 Environment=EXPOSE_LISTEN_HTTPS=:443
@@ -93,6 +104,7 @@ Environment=EXPOSE_LISTEN_HTTP_CHALLENGE=:80
 Environment=EXPOSE_DB_PATH=/opt/expose/expose.db
 Environment=EXPOSE_CERT_CACHE_DIR=/opt/expose/cert
 Environment=EXPOSE_API_KEY_PEPPER=<your-secret-pepper>
+Environment=EXPOSE_AUTOUPDATE=true
 
 [Install]
 WantedBy=multi-user.target

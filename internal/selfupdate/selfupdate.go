@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -110,6 +111,39 @@ func Apply(ctx context.Context, rel *Release) (*Result, error) {
 		Updated:       true,
 		AssetName:     assetName,
 	}, nil
+}
+
+// CheckAndApply is a convenience wrapper that checks for a newer release and,
+// if one is available, downloads and applies it in a single step.
+func CheckAndApply(ctx context.Context, currentVersion string) (*Result, error) {
+	rel, err := Check(ctx, currentVersion)
+	if err != nil {
+		return nil, err
+	}
+	if rel == nil {
+		return &Result{CurrentVersion: currentVersion, Updated: false}, nil
+	}
+	result, err := Apply(ctx, rel)
+	if err != nil {
+		return nil, err
+	}
+	result.CurrentVersion = currentVersion
+	return result, nil
+}
+
+// Restart re-executes the current binary with the original arguments and
+// environment. On success this function does not return (the process image
+// is replaced). On failure it returns an error.
+func Restart() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("determine executable: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+	return syscall.Exec(exe, os.Args, os.Environ())
 }
 
 // fetchLatestRelease calls the GitHub releases API.
@@ -267,6 +301,10 @@ func replaceBinary(newBinary []byte) error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 
+	// On Linux, capture file capabilities (e.g. cap_net_bind_service)
+	// before the replace so we can re-apply them to the new file.
+	caps := getFileCaps(exe)
+
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, "expose-update-*")
 	if err != nil {
@@ -300,6 +338,10 @@ func replaceBinary(newBinary []byte) error {
 	if err := os.Rename(tmpPath, exe); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
+
+	// Re-apply Linux file capabilities after the rename.
+	setFileCaps(exe, caps)
+
 	if err := syncDir(dir); err != nil {
 		return err
 	}
@@ -377,4 +419,34 @@ func parseSemver(v string) []int {
 		nums[i] = n
 	}
 	return nums
+}
+
+// getFileCaps reads Linux file capabilities (e.g. "cap_net_bind_service=ep")
+// from the given path using the getcap command. Returns an empty string on
+// non-Linux systems or when getcap is unavailable.
+func getFileCaps(path string) string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	out, err := exec.Command("getcap", path).Output()
+	if err != nil {
+		return ""
+	}
+	// getcap output format: "/usr/local/bin/expose cap_net_bind_service=ep"
+	line := strings.TrimSpace(string(out))
+	if idx := strings.Index(line, " "); idx >= 0 {
+		return strings.TrimSpace(line[idx+1:])
+	}
+	return ""
+}
+
+// setFileCaps re-applies previously captured Linux file capabilities.
+// It is a best-effort operation — errors are silently ignored (the caller
+// may not be root, in which case setcap will fail and the administrator
+// must re-run setcap manually).
+func setFileCaps(path, caps string) {
+	if caps == "" || runtime.GOOS != "linux" {
+		return
+	}
+	_ = exec.Command("setcap", caps, path).Run()
 }

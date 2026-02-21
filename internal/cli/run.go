@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/koltyakov/expose/internal/auth"
@@ -214,7 +215,18 @@ func runClient(ctx context.Context, args []string) int {
 	}
 	c.SetLogger(logger)
 
+	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
+	if isAutoUpdateEnabled() {
+		if autoUpdateOnStart(ctx, Version, logger) {
+			return restartProcess(logger)
+		}
+		c.SetAutoUpdate(true)
+	}
+
 	if err := c.Run(ctx); err != nil {
+		if errors.Is(err, client.ErrAutoUpdated) {
+			return restartProcess(logger)
+		}
 		fmt.Fprintln(os.Stderr, "client error:", err)
 		return 1
 	}
@@ -265,6 +277,13 @@ func runServer(ctx context.Context, args []string) int {
 	}
 	logger := ilog.New(cfg.LogLevel)
 
+	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
+	if isAutoUpdateEnabled() {
+		if autoUpdateOnStart(ctx, Version, logger) {
+			return restartProcess(logger)
+		}
+	}
+
 	store, err := sqlite.OpenWithOptions(cfg.DBPath, sqlite.OpenOptions{
 		MaxOpenConns: cfg.DBMaxOpenConns,
 		MaxIdleConns: cfg.DBMaxIdleConns,
@@ -282,10 +301,29 @@ func runServer(ctx context.Context, args []string) int {
 	}
 	cfg.APIKeyPepper = pepper
 
+	// Create child context so the auto-update loop can trigger graceful shutdown.
+	serverCtx, serverCancel := context.WithCancel(ctx)
+	defer serverCancel()
+
+	var needsRestart atomic.Bool
+	if isAutoUpdateEnabled() {
+		go startAutoUpdateLoop(serverCtx, Version, logger, func() {
+			needsRestart.Store(true)
+			serverCancel()
+		})
+	}
+
 	s := server.New(cfg, store, logger, Version)
-	if err := s.Run(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "server error:", err)
-		return 1
+	if err := s.Run(serverCtx); err != nil {
+		if !needsRestart.Load() {
+			fmt.Fprintln(os.Stderr, "server error:", err)
+			return 1
+		}
+	}
+
+	if needsRestart.Load() {
+		_ = store.Close()
+		return restartProcess(logger)
 	}
 	return 0
 }
@@ -458,6 +496,7 @@ Environment Variables:
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
   EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
   EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
+  EXPOSE_AUTOUPDATE       Enable automatic self-update (true|1|yes)
 
 For detailed documentation, see: https://github.com/koltyakov/expose`)
 }

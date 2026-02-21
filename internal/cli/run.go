@@ -206,7 +206,6 @@ func runClient(ctx context.Context, args []string) int {
 
 	if isInteractiveOutput() {
 		display := client.NewDisplay(true)
-		display.ShowBanner(Version)
 		defer display.Cleanup()
 		c.SetDisplay(display)
 		logger = ilog.NewStderr("warn")

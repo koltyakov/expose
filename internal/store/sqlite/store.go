@@ -397,6 +397,16 @@ SELECT id FROM domains
 WHERE hostname = ? AND api_key_id = ? AND type = ?`,
 			hostname, keyID, domain.DomainTypePermanentSubdomain).Scan(&existingID)
 		if err == nil {
+			// Reject if there is already a connected tunnel for this domain.
+			var connectedCount int
+			if err = tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM tunnels
+WHERE domain_id = ? AND state = ?`, existingID, domain.TunnelStateConnected).Scan(&connectedCount); err != nil {
+				return domain.Domain{}, domain.Tunnel{}, err
+			}
+			if connectedCount > 0 {
+				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
+			}
 			d.ID = existingID
 			_, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID)
 			if err != nil {
@@ -422,6 +432,16 @@ FROM domains
 WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingType)
 		if err == nil {
 			if existingAPIKeyID != keyID || existingType != domain.DomainTypeTemporarySubdomain {
+				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
+			}
+			// Reject if there is already a connected tunnel for this domain.
+			var connectedCount int
+			if err = tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM tunnels
+WHERE domain_id = ? AND state = ?`, existingID, domain.TunnelStateConnected).Scan(&connectedCount); err != nil {
+				return domain.Domain{}, domain.Tunnel{}, err
+			}
+			if connectedCount > 0 {
 				return domain.Domain{}, domain.Tunnel{}, ErrHostnameInUse
 			}
 			d.ID = existingID

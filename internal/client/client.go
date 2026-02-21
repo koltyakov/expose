@@ -123,23 +123,23 @@ func (c *Client) Run(ctx context.Context) error {
 				tlsProvisioningRetries++
 				if tlsProvisioningRetries <= tlsProvisioningInfoRetries {
 					if c.display != nil {
-						c.display.ShowInfo(fmt.Sprintf("TLS certificate provisioning in progress; retrying in %s", backoff.String()))
+						c.display.ShowInfo(fmt.Sprintf("TLS certificate provisioning in progress; retrying in %s", backoff.Round(time.Second)))
 					} else {
-						c.log.Info("server TLS certificate provisioning in progress; retrying", "err", err, "retry_in", backoff.String())
+						c.log.Info("server TLS certificate provisioning in progress; retrying", "err", err, "retry_in", backoff.Round(time.Second).String())
 					}
 				} else {
 					if c.display != nil {
-						c.display.ShowWarning(fmt.Sprintf("tunnel register failed (TLS provisioning): %v; retrying in %s", err, backoff.String()))
+						c.display.ShowWarning(fmt.Sprintf("tunnel register failed, %s; retrying in %s", shortenError(err), backoff.Round(time.Second)))
 					} else {
-						c.log.Warn("tunnel register failed while waiting for TLS certificate provisioning", "err", err, "retry_in", backoff.String())
+						c.log.Warn("tunnel register failed while waiting for TLS certificate provisioning", "err", err, "retry_in", backoff.Round(time.Second).String())
 					}
 				}
 			} else {
 				tlsProvisioningRetries = 0
 				if c.display != nil {
-					c.display.ShowWarning(fmt.Sprintf("tunnel register failed: %v; retrying in %s", err, backoff.String()))
+					c.display.ShowWarning(fmt.Sprintf("tunnel register failed, %s; retrying in %s", shortenError(err), backoff.Round(time.Second)))
 				} else {
-					c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.String())
+					c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.Round(time.Second).String())
 				}
 			}
 			select {
@@ -153,6 +153,7 @@ func (c *Client) Run(ctx context.Context) error {
 		backoff = reconnectInitialDelay
 		tlsProvisioningRetries = 0
 		if c.display != nil {
+			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
 			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID)
 			c.display.ShowVersions(c.version, reg.ServerVersion)
@@ -182,7 +183,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			c.display.ShowReconnecting(reason)
 		} else {
-			c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", reconnectInitialDelay.String())
+			c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", reconnectInitialDelay.Round(time.Second).String())
 		}
 		select {
 		case <-ctx.Done():
@@ -791,6 +792,21 @@ func isNonRetriableRegisterError(err error) bool {
 		strings.Contains(msg, "invalid mode") ||
 		strings.Contains(msg, "invalid json") ||
 		strings.Contains(msg, "requires subdomain")
+}
+
+// shortenError extracts the innermost meaningful message from nested network
+// errors (e.g. *url.Error → *net.OpError → syscall) so that display messages
+// stay concise (e.g. "connection refused" instead of the full dial trace).
+func shortenError(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) && oe.Err != nil {
+		return oe.Err.Error()
+	}
+	return err.Error()
 }
 
 func isTLSProvisioningInProgressError(err error) bool {

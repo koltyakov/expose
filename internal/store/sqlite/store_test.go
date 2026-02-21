@@ -733,6 +733,87 @@ func TestResolveServerPepperAllowsEmptyInitialization(t *testing.T) {
 	}
 }
 
+func TestAllocateRejectsConnectedDuplicateTemporary(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_dup_temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First allocation succeeds.
+	d, tunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "dup-sub", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second allocation with same subdomain while first is connected should fail.
+	_, _, err = store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "dup-sub", "example.com")
+	if !errors.Is(err, ErrHostnameInUse) {
+		t.Fatalf("expected ErrHostnameInUse for duplicate connected tunnel, got %v", err)
+	}
+
+	// After disconnecting, the same subdomain should be allocatable again.
+	if err := store.SetTunnelDisconnected(ctx, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	d2, tunnel2, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "dup-sub", "example.com")
+	if err != nil {
+		t.Fatalf("expected allocation to succeed after disconnect, got %v", err)
+	}
+	if d2.ID != d.ID {
+		t.Fatalf("expected reused domain id %s, got %s", d.ID, d2.ID)
+	}
+	if tunnel2.ID == tunnel.ID {
+		t.Fatal("expected a new tunnel id")
+	}
+}
+
+func TestAllocateRejectsConnectedDuplicatePermanent(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_dup_perm")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, tunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "permanent", "dup-perm", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second allocation with same subdomain while first is connected should fail.
+	_, _, err = store.AllocateDomainAndTunnel(ctx, k.ID, "permanent", "dup-perm", "example.com")
+	if !errors.Is(err, ErrHostnameInUse) {
+		t.Fatalf("expected ErrHostnameInUse for duplicate connected permanent tunnel, got %v", err)
+	}
+
+	// After disconnecting, the same subdomain should be allocatable again.
+	if err := store.SetTunnelDisconnected(ctx, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.AllocateDomainAndTunnel(ctx, k.ID, "permanent", "dup-perm", "example.com")
+	if err != nil {
+		t.Fatalf("expected allocation to succeed after disconnect, got %v", err)
+	}
+}
+
 func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {

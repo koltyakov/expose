@@ -534,7 +534,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if autoStableSubdomain && isHostnameInUseError(err) {
-		domainRec, tunnelRec, err = s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, "", s.cfg.BaseDomain, clientMachineID)
+		// Only fall back to a random subdomain for cross-key hash collisions.
+		// If the same API key already owns this subdomain with an active
+		// tunnel, the client is trying to duplicate an existing session from
+		// the same machine+port — block it instead of silently assigning a
+		// new random subdomain.
+		host := req.Subdomain + "." + normalizeHost(s.cfg.BaseDomain)
+		if route, routeErr := s.store.FindRouteByHost(r.Context(), host); routeErr != nil || route.Domain.APIKeyID != keyID {
+			domainRec, tunnelRec, err = s.store.AllocateDomainAndTunnelWithClientMeta(r.Context(), keyID, req.Mode, "", s.cfg.BaseDomain, clientMachineID)
+		}
 	}
 	if err != nil {
 		if isHostnameInUseError(err) {

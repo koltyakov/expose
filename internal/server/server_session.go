@@ -53,9 +53,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.conn.SetReadLimit(wsReadLimit)
 	sess.touch(time.Now())
-	s.hub.mu.Lock()
-	s.hub.sessions[tunnelID] = sess
-	s.hub.mu.Unlock()
+	prev := s.replaceSession(tunnelID, sess)
+	if prev != nil && prev != sess {
+		s.log.Warn("replacing existing tunnel session", "tunnel_id", tunnelID)
+		if prev.conn != nil {
+			_ = prev.conn.Close()
+		}
+	}
 	s.log.Info("tunnel connected", "tunnel_id", tunnelID)
 
 	s.hub.wg.Add(1)
@@ -70,16 +74,17 @@ func (s *Server) readLoop(sess *session) {
 		_ = sess.conn.Close()
 		sess.closePending()
 		sess.closeWSPending()
-		s.hub.mu.Lock()
-		delete(s.hub.sessions, sess.tunnelID)
-		s.hub.mu.Unlock()
-		s.routes.deleteByTunnelID(sess.tunnelID)
-		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := s.store.SetTunnelDisconnected(disconnectCtx, sess.tunnelID); err != nil {
-			s.log.Error("failed to mark tunnel disconnected", "tunnel_id", sess.tunnelID, "err", err)
+		if s.removeSessionIfCurrent(sess) {
+			s.routes.deleteByTunnelID(sess.tunnelID)
+			disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := s.store.SetTunnelDisconnected(disconnectCtx, sess.tunnelID); err != nil {
+				s.log.Error("failed to mark tunnel disconnected", "tunnel_id", sess.tunnelID, "err", err)
+			}
+			disconnectCancel()
+			s.log.Info("tunnel disconnected", "tunnel_id", sess.tunnelID)
+		} else {
+			s.log.Debug("stale tunnel session closed", "tunnel_id", sess.tunnelID)
 		}
-		disconnectCancel()
-		s.log.Info("tunnel disconnected", "tunnel_id", sess.tunnelID)
 	}()
 
 	for {
@@ -472,4 +477,24 @@ func (s *session) tryAcquirePending(limit int64) bool {
 
 func (s *session) releasePending() {
 	s.pendingCount.Add(-1)
+}
+
+func (s *Server) replaceSession(tunnelID string, next *session) *session {
+	s.hub.mu.Lock()
+	prev := s.hub.sessions[tunnelID]
+	s.hub.sessions[tunnelID] = next
+	s.hub.mu.Unlock()
+	return prev
+}
+
+func (s *Server) removeSessionIfCurrent(sess *session) bool {
+	s.hub.mu.Lock()
+	current, ok := s.hub.sessions[sess.tunnelID]
+	if !ok || current != sess {
+		s.hub.mu.Unlock()
+		return false
+	}
+	delete(s.hub.sessions, sess.tunnelID)
+	s.hub.mu.Unlock()
+	return true
 }

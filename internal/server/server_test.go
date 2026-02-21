@@ -412,6 +412,44 @@ func TestSessionWSPendingSendTimeout(t *testing.T) {
 	}
 }
 
+func TestSessionReplacementPreventsStaleEviction(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{
+		hub: &hub{sessions: map[string]*session{}},
+	}
+	first := &session{tunnelID: "tunnel-1"}
+	second := &session{tunnelID: "tunnel-1"}
+
+	if prev := srv.replaceSession("tunnel-1", first); prev != nil {
+		t.Fatal("expected no previous session on first attach")
+	}
+	if prev := srv.replaceSession("tunnel-1", second); prev != first {
+		t.Fatal("expected second attach to return first session as previous")
+	}
+	if removed := srv.removeSessionIfCurrent(first); removed {
+		t.Fatal("expected stale session removal to be ignored")
+	}
+
+	srv.hub.mu.RLock()
+	current := srv.hub.sessions["tunnel-1"]
+	srv.hub.mu.RUnlock()
+	if current != second {
+		t.Fatal("expected second session to remain active after stale removal")
+	}
+
+	if removed := srv.removeSessionIfCurrent(second); !removed {
+		t.Fatal("expected active session removal to succeed")
+	}
+
+	srv.hub.mu.RLock()
+	_, exists := srv.hub.sessions["tunnel-1"]
+	srv.hub.mu.RUnlock()
+	if exists {
+		t.Fatal("expected tunnel session map entry to be removed")
+	}
+}
+
 func TestInjectForwardedFor(t *testing.T) {
 	headers := map[string][]string{
 		"X-Forwarded-For": {"1.2.3.4"},

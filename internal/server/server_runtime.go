@@ -96,9 +96,9 @@ func (s *Server) Run(ctx context.Context) error {
 		Addr:              s.cfg.ListenHTTPS,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       httpsReadTimeout,
-		WriteTimeout:      httpsWriteTimeout,
-		IdleTimeout:       httpsIdleTimeout,
+		ReadTimeout:       durationOr(s.cfg.HTTPSReadTimeout, httpsReadTimeout),
+		WriteTimeout:      durationOr(s.cfg.HTTPSWriteTimeout, httpsWriteTimeout),
+		IdleTimeout:       durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
 		MaxHeaderBytes:    httpsMaxHeaderBytes,
 		TLSConfig:         tlsConfig,
 		ErrorLog:          log.New(newHTTPSErrorLogWriter(s.log, useDynamicACME), "", 0),
@@ -140,30 +140,48 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		s.closeAllSessions()
-		var firstErr error
-		if err := shutdownServer(httpsServer, 5*time.Second); err != nil {
-			firstErr = err
-		}
-		if challengeServer != nil {
-			if err := shutdownServer(challengeServer, 5*time.Second); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		waitGroupWait(&s.hub.wg, 15*time.Second)
-		return firstErr
+		return s.gracefulShutdown(httpsServer, challengeServer)
 	case err := <-errCh:
-		s.closeAllSessions()
-		_ = shutdownServer(httpsServer, 5*time.Second)
+		s.closeAllSessions("fatal error")
+		_ = shutdownServer(httpsServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
 		if challengeServer != nil {
-			_ = shutdownServer(challengeServer, 5*time.Second)
+			_ = shutdownServer(challengeServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
 		}
-		waitGroupWait(&s.hub.wg, 15*time.Second)
+		waitGroupWait(&s.hub.wg, durationOr(s.cfg.ShutdownWaitTime, 15*time.Second))
 		return err
 	}
 }
 
-func (s *Server) closeAllSessions() {
+// gracefulShutdown performs an orderly multi-phase shutdown:
+//  1. Drain — stop accepting new connections (http.Server.Shutdown).
+//  2. Close — terminate all active tunnel sessions.
+//  3. Wait  — allow read loops to finish within a timeout.
+func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *http.Server) error {
+	drainTimeout := durationOr(s.cfg.ShutdownDrainTime, 5*time.Second)
+	waitTimeout := durationOr(s.cfg.ShutdownWaitTime, 15*time.Second)
+
+	s.log.Info("shutdown: draining connections", "timeout", drainTimeout)
+	var firstErr error
+	if err := shutdownServer(httpsServer, drainTimeout); err != nil {
+		firstErr = err
+	}
+	if challengeServer != nil {
+		if err := shutdownServer(challengeServer, drainTimeout); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	s.closeAllSessions("shutdown")
+
+	s.log.Info("shutdown: waiting for tunnel sessions to finish", "timeout", waitTimeout)
+	if !waitGroupWait(&s.hub.wg, waitTimeout) {
+		s.log.Warn("shutdown: timed out waiting for tunnel sessions")
+	}
+	s.log.Info("shutdown: complete")
+	return firstErr
+}
+
+func (s *Server) closeAllSessions(reason string) {
 	s.hub.mu.RLock()
 	sessions := make([]*session, 0, len(s.hub.sessions))
 	for _, sess := range s.hub.sessions {
@@ -171,6 +189,9 @@ func (s *Server) closeAllSessions() {
 	}
 	s.hub.mu.RUnlock()
 
+	if len(sessions) > 0 {
+		s.log.Info("closing active tunnel sessions", "count", len(sessions), "reason", reason)
+	}
 	for _, sess := range sessions {
 		_ = sess.conn.Close()
 	}

@@ -11,12 +11,13 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"log/slog"
+
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/waf"
-	"log/slog"
 )
 
 type serverStore interface {
@@ -50,7 +51,7 @@ type Server struct {
 	version       string
 	wildcardTLSOn bool
 	requestSeq    atomic.Uint64
-	regLimiter    rateLimiter
+	regLimiter    *rateLimiter
 	routes        routeCache
 	domainTouches chan string
 	domainTouchMu sync.Mutex
@@ -110,30 +111,10 @@ const (
 	wsControlDispatchWait = 2 * time.Second
 )
 
-type registerRequest struct {
-	Mode            string `json:"mode"`
-	Subdomain       string `json:"subdomain,omitempty"`
-	User            string `json:"user,omitempty"`
-	Password        string `json:"password,omitempty"`
-	ClientHostname  string `json:"client_hostname,omitempty"`
-	ClientMachineID string `json:"client_machine_id,omitempty"`
-	LocalPort       string `json:"local_port,omitempty"`
-	ClientVersion   string `json:"client_version,omitempty"`
-}
-
-type registerResponse struct {
-	TunnelID      string `json:"tunnel_id"`
-	PublicURL     string `json:"public_url"`
-	WSURL         string `json:"ws_url"`
-	ServerTLSMode string `json:"server_tls_mode"`
-	ServerVersion string `json:"server_version,omitempty"`
-	WAFEnabled    bool   `json:"waf_enabled,omitempty"`
-}
-
-type errorResponse struct {
-	Error     string `json:"error"`
-	ErrorCode string `json:"error_code,omitempty"`
-}
+// Type aliases for the shared domain request/response types.
+type registerRequest = domain.RegisterRequest
+type registerResponse = domain.RegisterResponse
+type errorResponse = domain.ErrorResponse
 
 const (
 	errCodeHostnameInUse = "hostname_in_use"
@@ -153,10 +134,18 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		log:           logger,
 		hub:           &hub{sessions: map[string]*session{}},
 		version:       version,
-		regLimiter:    rateLimiter{buckets: make(map[string]*bucket)},
+		regLimiter:    newRateLimiter(),
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{})},
 		domainTouches: make(chan string, domainTouchQueueSize),
 		domainTouched: make(map[string]struct{}),
 		wafAuditQueue: make(chan wafAuditEvent, wafAuditQueueSize),
 	}
+}
+
+// durationOr returns d if positive, otherwise the fallback.
+func durationOr(d, fallback time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return fallback
 }

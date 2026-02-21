@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -126,12 +127,34 @@ type Stats struct {
 	WAFBlocked int64 `json:"waf_blocked,omitempty"`
 }
 
+// base64BufPool recycles byte slices used by [EncodeBody] so that hot-path
+// body encoding avoids per-call heap allocations.
+var base64BufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
+}
+
 // EncodeBody base64-encodes a byte slice for JSON transport.
+// It uses a pooled buffer to reduce GC pressure on the hot path.
 func EncodeBody(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	return base64.StdEncoding.EncodeToString(b)
+	needed := base64.StdEncoding.EncodedLen(len(b))
+	bufPtr := base64BufPool.Get().(*[]byte)
+	buf := *bufPtr
+	if cap(buf) < needed {
+		buf = make([]byte, needed)
+	} else {
+		buf = buf[:needed]
+	}
+	base64.StdEncoding.Encode(buf, b)
+	s := string(buf)
+	*bufPtr = buf
+	base64BufPool.Put(bufPtr)
+	return s
 }
 
 // DecodeBody decodes a base64-encoded body string.

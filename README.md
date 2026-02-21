@@ -3,6 +3,8 @@
 **expose** is a BYOI (Bring Your Own Infrastructure) HTTP tunnel.
 Run your own server, then expose local HTTP ports from any client machine - no third-party services required.
 
+![expose client](./assets/client-tunnel.png)
+
 ## Features
 
 - **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certs.

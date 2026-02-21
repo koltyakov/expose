@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/koltyakov/expose/internal/client"
-	"github.com/koltyakov/expose/internal/clientsettings"
+	"github.com/koltyakov/expose/internal/client/settings"
 	"github.com/koltyakov/expose/internal/config"
 	ilog "github.com/koltyakov/expose/internal/log"
 )
@@ -110,14 +110,14 @@ func runClientLogin(args []string) int {
 		fmt.Fprintln(os.Stderr, "client login error:", err)
 		return 2
 	}
-	if err := clientsettings.Save(clientsettings.Settings{
+	if err := settings.Save(settings.Credentials{
 		ServerURL: normalizedServerURL,
 		APIKey:    apiKey,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "client login error:", err)
 		return 1
 	}
-	fmt.Println("saved:", clientsettings.Path())
+	fmt.Println("saved:", settings.Path())
 	return 0
 }
 
@@ -173,7 +173,7 @@ func runClient(ctx context.Context, args []string) int {
 func mergeClientSettings(cfg *config.ClientConfig) error {
 	hasInlineCreds := hasNonEmpty(cfg.ServerURL) && hasNonEmpty(cfg.APIKey)
 	if !hasInlineCreds {
-		stored, err := clientsettings.Load()
+		stored, err := settings.Load()
 		if err != nil {
 			return missingClientCredentialsError(err)
 		}

@@ -7,27 +7,12 @@ import (
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/domain"
 )
 
-type registerRequest struct {
-	Mode            string `json:"mode"`
-	Subdomain       string `json:"subdomain,omitempty"`
-	User            string `json:"user,omitempty"`
-	Password        string `json:"password,omitempty"`
-	ClientHostname  string `json:"client_hostname,omitempty"`
-	ClientMachineID string `json:"client_machine_id,omitempty"`
-	LocalPort       string `json:"local_port,omitempty"`
-	ClientVersion   string `json:"client_version,omitempty"`
-}
-
-type registerResponse struct {
-	TunnelID      string `json:"tunnel_id"`
-	PublicURL     string `json:"public_url"`
-	WSURL         string `json:"ws_url"`
-	ServerTLSMode string `json:"server_tls_mode"`
-	ServerVersion string `json:"server_version,omitempty"`
-	WAFEnabled    bool   `json:"waf_enabled,omitempty"`
-}
+// Type aliases for the shared domain request/response types.
+type registerRequest = domain.RegisterRequest
+type registerResponse = domain.RegisterResponse
 
 // ErrAutoUpdated is returned from [Client.Run] when the binary was replaced
 // by the auto-updater and the caller should restart the process.

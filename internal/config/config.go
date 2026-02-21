@@ -50,6 +50,14 @@ type ServerConfig struct {
 	CleanupInterval        time.Duration
 	TempRetention          time.Duration
 	WAFEnabled             bool
+
+	// Timeout and pool tuning (optional — zero values fall back to sane
+	// defaults defined in the server package).
+	HTTPSReadTimeout  time.Duration
+	HTTPSWriteTimeout time.Duration
+	HTTPSIdleTimeout  time.Duration
+	ShutdownDrainTime time.Duration
+	ShutdownWaitTime  time.Duration
 }
 
 const defaultClientPingInterval = 30 * time.Second

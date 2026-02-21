@@ -1,6 +1,6 @@
-// Package clientsettings persists and loads client credentials (server URL
-// and API key) in a JSON file under the user's cache directory.
-package clientsettings
+// Package settings persists and loads client credentials (server URL
+// and API key) in a JSON file under the user's home directory.
+package settings
 
 import (
 	"encoding/json"
@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// Settings contains the persisted client credentials.
-type Settings struct {
+// Credentials contains the persisted client credentials.
+type Credentials struct {
 	ServerURL string `json:"server"`
 	APIKey    string `json:"apiKey"`
 }
@@ -28,26 +28,26 @@ func Path() string {
 
 // Load reads and validates the settings file. Returns an error if the file
 // is missing or contains empty credentials.
-func Load() (Settings, error) {
+func Load() (Credentials, error) {
 	path := Path()
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return Settings{}, err
+		return Credentials{}, err
 	}
-	var s Settings
+	var s Credentials
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return Settings{}, err
+		return Credentials{}, err
 	}
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	if s.ServerURL == "" || s.APIKey == "" {
-		return Settings{}, errors.New("settings file is missing `server` or `apiKey`")
+		return Credentials{}, errors.New("settings file is missing `server` or `apiKey`")
 	}
 	return s, nil
 }
 
 // Save writes validated credentials to the settings file with 0600 permissions.
-func Save(s Settings) error {
+func Save(s Credentials) error {
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	if s.ServerURL == "" || s.APIKey == "" {

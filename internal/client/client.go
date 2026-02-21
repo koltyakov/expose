@@ -89,7 +89,7 @@ func (c *Client) SetAutoUpdate(enabled bool) {
 
 const (
 	reconnectInitialDelay      = 2 * time.Second
-	reconnectMaxDelay          = 1 * time.Minute
+	reconnectMaxDelay          = 30 * time.Second
 	maxConcurrentForwards      = 32
 	wsMessageBufferSize        = 64
 	clientWSWriteTimeout       = 15 * time.Second
@@ -718,13 +718,18 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	}
 	headers := tunnelproto.CloneHeaders(req.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
+	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
 	for k, vals := range headers {
 		for _, v := range vals {
 			localReq.Header.Add(k, v)
 		}
 	}
 	localReq.Header.Del("Host")
-	localReq.Host = base.Host
+	if forwardedHost != "" {
+		localReq.Host = forwardedHost
+	} else {
+		localReq.Host = base.Host
+	}
 
 	resp, err := c.fwdClient.Do(localReq)
 	if err != nil {

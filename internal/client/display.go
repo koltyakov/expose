@@ -81,6 +81,10 @@ type Display struct {
 	// counters
 	totalHTTP int // total HTTP requests forwarded
 
+	// session timing
+	sessionStart  time.Time // when the first successful connection happened
+	lastReconnect time.Time // when the most recent reconnection happened (zero if none)
+
 	// latency from most recent ping/pong round-trip
 	latency time.Duration
 
@@ -146,6 +150,12 @@ func (d *Display) Cleanup() {
 func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	now := d.now()
+	if d.sessionStart.IsZero() {
+		d.sessionStart = now
+	} else {
+		d.lastReconnect = now
+	}
 	d.status = "online"
 	d.publicURL = publicURL
 	d.localAddr = localAddr
@@ -435,6 +445,16 @@ func (d *Display) redraw() {
 	} else {
 		d.writeField(&b, "Session Status", placeholder)
 	}
+	if !d.sessionStart.IsZero() {
+		now := d.now()
+		total := now.Sub(d.sessionStart)
+		uptime := displayFormatUptime(total)
+		if !d.lastReconnect.IsZero() {
+			sinceLast := now.Sub(d.lastReconnect)
+			uptime += d.styled(ansiDim, fmt.Sprintf(" (since reconnect: %s)", displayFormatUptime(sinceLast)))
+		}
+		d.writeField(&b, "Session Uptime", uptime)
+	}
 	if d.tunnelID != "" {
 		d.writeField(&b, "Tunnel ID", d.styled(ansiDim, d.tunnelID))
 	} else {
@@ -589,4 +609,37 @@ func displayFormatDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%.2fs", d.Seconds())
 	}
+}
+
+// displayFormatUptime formats a duration as a human-readable uptime string.
+// The minimum displayed value is "1 minute". Components are days, hours, and
+// minutes (e.g. "2 hours, 15 minutes" or "1 day, 3 hours").
+func displayFormatUptime(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+
+	var parts []string
+	if days > 0 {
+		if days == 1 {
+			parts = append(parts, "1 day")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d days", days))
+		}
+	}
+	if hours > 0 {
+		if hours == 1 {
+			parts = append(parts, "1 hour")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d hours", hours))
+		}
+	}
+	if minutes > 0 || len(parts) == 0 {
+		if minutes == 1 {
+			parts = append(parts, "1 minute")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d minutes", minutes))
+		}
+	}
+	return strings.Join(parts, ", ")
 }

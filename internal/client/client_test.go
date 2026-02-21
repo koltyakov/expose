@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -153,6 +154,125 @@ func TestForwardLocalPreservesWebSocketUpgradeHeaders(t *testing.T) {
 	}
 	if got := firstHeaderValue(resp.Headers, "Upgrade"); !strings.EqualFold(got, "websocket") {
 		t.Fatalf("expected Upgrade response header preserved, got %q", got)
+	}
+}
+
+func TestForwardLocalUsesForwardedHostWhenProvided(t *testing.T) {
+	t.Parallel()
+
+	var gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	resp := c.forwardLocal(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID:     "req_host",
+		Method: http.MethodGet,
+		Path:   "/hello",
+		Headers: map[string][]string{
+			"Host": {"myapp.example.com"},
+		},
+	})
+
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, resp.Status)
+	}
+	if gotHost != "myapp.example.com" {
+		t.Fatalf("expected forwarded Host myapp.example.com, got %q", gotHost)
+	}
+}
+
+func TestOpenLocalWebSocketOriginCheckRejectsWithoutForwardedHost(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := &Client{}
+	conn, status, _, err := c.openLocalWebSocket(ctx, base, &tunnelproto.WSOpen{
+		ID:     "stream-1",
+		Method: http.MethodGet,
+		Path:   "/ws",
+		Headers: map[string][]string{
+			"Origin": {"https://myapp.example.com"},
+		},
+	})
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected websocket dial to fail due to origin/host mismatch")
+	}
+	if status != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d (err=%v)", http.StatusForbidden, status, err)
+	}
+}
+
+func TestOpenLocalWebSocketOriginCheckAcceptsWithForwardedHost(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := &Client{}
+	conn, status, _, err := c.openLocalWebSocket(ctx, base, &tunnelproto.WSOpen{
+		ID:     "stream-2",
+		Method: http.MethodGet,
+		Path:   "/ws",
+		Headers: map[string][]string{
+			"Origin": {"https://myapp.example.com"},
+			"Host":   {"myapp.example.com"},
+		},
+	})
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err != nil {
+		t.Fatalf("expected websocket dial to succeed, got err=%v", err)
+	}
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("expected %d, got %d", http.StatusSwitchingProtocols, status)
 	}
 }
 

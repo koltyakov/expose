@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -382,6 +383,65 @@ func TestInjectForwardedForCanonicalizesHeaderKey(t *testing.T) {
 	}
 	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "9.9.9.9, 8.8.8.8" {
 		t.Fatalf("expected canonicalized appended header, got %v", got)
+	}
+}
+
+func TestInjectForwardedProxyHeadersOverwritesSpoofedValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://myapp.example.com:10443/ws", nil)
+	req.TLS = &tls.ConnectionState{}
+
+	headers := map[string][]string{
+		"host":              {"evil.example.com"},
+		"X-Forwarded-Proto": {"http"},
+		"x-forwarded-host":  {"evil.example.com"},
+		"X-Forwarded-Port":  {"123"},
+		"X-Forwarded-For":   {"1.2.3.4"},
+	}
+
+	injectForwardedProxyHeaders(headers, req)
+
+	if _, ok := headers["host"]; ok {
+		t.Fatal("expected non-canonical host header key to be removed")
+	}
+	if got := headers["Host"]; len(got) != 1 || got[0] != "myapp.example.com:10443" {
+		t.Fatalf("expected Host to be set to request host, got %v", got)
+	}
+	if got := headers["X-Forwarded-Proto"]; len(got) != 1 || got[0] != "https" {
+		t.Fatalf("expected X-Forwarded-Proto https, got %v", got)
+	}
+	if got := headers["X-Forwarded-Host"]; len(got) != 1 || got[0] != "myapp.example.com:10443" {
+		t.Fatalf("expected X-Forwarded-Host to match request host, got %v", got)
+	}
+	if got := headers["X-Forwarded-Port"]; len(got) != 1 || got[0] != "10443" {
+		t.Fatalf("expected X-Forwarded-Port 10443, got %v", got)
+	}
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4" {
+		t.Fatalf("expected X-Forwarded-For to remain unchanged, got %v", got)
+	}
+}
+
+func TestInjectForwardedProxyHeadersDefaultsHTTPValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://myapp.example.com/ws", nil)
+
+	headers := map[string][]string{
+		"X-Forwarded-Proto": {"https"},
+		"X-Forwarded-Host":  {"evil.example.com"},
+		"X-Forwarded-Port":  {"443"},
+	}
+
+	injectForwardedProxyHeaders(headers, req)
+
+	if got := headers["Host"]; len(got) != 1 || got[0] != "myapp.example.com" {
+		t.Fatalf("expected Host myapp.example.com, got %v", got)
+	}
+	if got := headers["X-Forwarded-Proto"]; len(got) != 1 || got[0] != "http" {
+		t.Fatalf("expected X-Forwarded-Proto http, got %v", got)
+	}
+	if got := headers["X-Forwarded-Host"]; len(got) != 1 || got[0] != "myapp.example.com" {
+		t.Fatalf("expected X-Forwarded-Host myapp.example.com, got %v", got)
+	}
+	if got := headers["X-Forwarded-Port"]; len(got) != 1 || got[0] != "80" {
+		t.Fatalf("expected X-Forwarded-Port 80, got %v", got)
 	}
 }
 

@@ -631,3 +631,109 @@ func TestDisplayLatencyHiddenWhenZero(t *testing.T) {
 	}
 	buf.Reset()
 }
+
+func TestDisplayFormatUptime(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0 minutes"},
+		{30 * time.Second, "0 minutes"},
+		{59 * time.Second, "0 minutes"},
+		{1 * time.Minute, "1 minute"},
+		{2 * time.Minute, "2 minutes"},
+		{62 * time.Minute, "1 hour, 2 minutes"},
+		{1 * time.Hour, "1 hour"},
+		{2 * time.Hour, "2 hours"},
+		{25 * time.Hour, "1 day, 1 hour"},
+		{49*time.Hour + 30*time.Minute, "2 days, 1 hour, 30 minutes"},
+		{24 * time.Hour, "1 day"},
+	}
+	for _, tt := range tests {
+		if got := displayFormatUptime(tt.d); got != tt.want {
+			t.Errorf("displayFormatUptime(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
+func TestDisplaySessionUptime(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+
+	// First connection sets session start.
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1")
+
+	// Advance 5 minutes and trigger redraw.
+	now = now.Add(5 * time.Minute)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "Session Uptime") {
+		t.Fatal("expected Session Uptime field")
+	}
+	if !strings.Contains(out, "5 minutes") {
+		t.Fatalf("expected '5 minutes' uptime, got: %s", out)
+	}
+	// No reconnect yet — should not show "since reconnect".
+	if strings.Contains(out, "since reconnect") {
+		t.Fatal("expected no reconnect info on first connection")
+	}
+}
+
+func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+
+	// First connection.
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1")
+
+	// Advance 10 minutes, simulate reconnect.
+	now = now.Add(10 * time.Minute)
+	d.ShowReconnecting("connection lost")
+
+	// Advance another minute and reconnect.
+	now = now.Add(1 * time.Minute)
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1")
+
+	// Advance 3 more minutes and check display.
+	now = now.Add(3 * time.Minute)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+
+	if !strings.Contains(out, "Session Uptime") {
+		t.Fatal("expected Session Uptime field")
+	}
+	// Total uptime: 14 minutes.
+	if !strings.Contains(out, "14 minutes") {
+		t.Fatalf("expected '14 minutes' total uptime, got: %s", out)
+	}
+	// Since last reconnect: 3 minutes.
+	if !strings.Contains(out, "since reconnect") {
+		t.Fatal("expected 'since reconnect' after reconnection")
+	}
+	if !strings.Contains(out, "3 minutes") {
+		t.Fatalf("expected '3 minutes' since reconnect, got: %s", out)
+	}
+}
+
+func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowBanner("dev")
+	out := buf.String()
+	if strings.Contains(out, "Session Uptime") {
+		t.Fatal("expected no Session Uptime before first connection")
+	}
+}

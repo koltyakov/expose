@@ -766,6 +766,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 	requestHeaders := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
+	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 	msg := tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
@@ -839,6 +840,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 
 	headers := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
+	injectForwardedProxyHeaders(headers, r)
 	injectForwardedFor(headers, r.RemoteAddr)
 	openMsg := tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpen,
@@ -1210,6 +1212,57 @@ func getAndNormalizeForwardedFor(h map[string][]string) string {
 		delete(h, k)
 	}
 	return existing
+}
+
+// injectForwardedProxyHeaders overwrites reverse-proxy headers to reflect the
+// public request. Public callers can spoof these headers, so we remove any
+// case-insensitive variants before setting canonical keys.
+func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
+	if h == nil || r == nil {
+		return
+	}
+
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return
+	}
+
+	deleteHeaderCI(h, "Host")
+	deleteHeaderCI(h, "X-Forwarded-Proto")
+	deleteHeaderCI(h, "X-Forwarded-Host")
+	deleteHeaderCI(h, "X-Forwarded-Port")
+
+	h["Host"] = []string{host}
+
+	proto := "http"
+	defaultPort := "80"
+	if r.TLS != nil {
+		proto = "https"
+		defaultPort = "443"
+	}
+
+	h["X-Forwarded-Proto"] = []string{proto}
+	h["X-Forwarded-Host"] = []string{host}
+
+	port := ""
+	if _, p, err := net.SplitHostPort(host); err == nil {
+		port = strings.TrimSpace(p)
+	}
+	if port == "" {
+		port = defaultPort
+	}
+	h["X-Forwarded-Port"] = []string{port}
+}
+
+func deleteHeaderCI(h map[string][]string, key string) {
+	if h == nil || key == "" {
+		return
+	}
+	for k := range h {
+		if strings.EqualFold(k, key) {
+			delete(h, k)
+		}
+	}
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {

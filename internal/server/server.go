@@ -1470,7 +1470,9 @@ func isLikelyScannerTLSReason(reason string) bool {
 		strings.Contains(reason, "offered only unsupported versions") ||
 		strings.Contains(reason, "no cipher suite supported by both client and server") ||
 		strings.Contains(reason, "unsupported sslv2 handshake received") ||
-		strings.Contains(reason, "host not allowed")
+		strings.Contains(reason, "host not allowed") ||
+		strings.Contains(reason, "connection reset by peer") ||
+		strings.Contains(reason, "http request to an https server")
 }
 
 func (s *Server) wildcardSetupGuide(defaultCertFile, defaultKeyFile string) string {

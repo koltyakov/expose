@@ -650,7 +650,7 @@ func (s *Server) readLoop(sess *session) {
 	for {
 		var msg tunnelproto.Message
 		if err := sess.conn.ReadJSON(&msg); err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
 				s.log.Warn("tunnel read error", "tunnel_id", sess.tunnelID, "err", err)
 			}
 			return

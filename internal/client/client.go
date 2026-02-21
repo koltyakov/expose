@@ -24,6 +24,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/selfupdate"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -35,6 +36,7 @@ type registerRequest struct {
 	ClientHostname  string `json:"client_hostname,omitempty"`
 	ClientMachineID string `json:"client_machine_id,omitempty"`
 	LocalPort       string `json:"local_port,omitempty"`
+	ClientVersion   string `json:"client_version,omitempty"`
 }
 
 type registerResponse struct {
@@ -42,12 +44,14 @@ type registerResponse struct {
 	PublicURL     string `json:"public_url"`
 	WSURL         string `json:"ws_url"`
 	ServerTLSMode string `json:"server_tls_mode"`
+	ServerVersion string `json:"server_version,omitempty"`
 }
 
 // Client connects to the expose server and proxies public traffic to a local port.
 type Client struct {
 	cfg       config.ClientConfig
 	log       *slog.Logger
+	version   string       // client version, set via SetVersion
 	display   *Display     // optional interactive terminal display
 	apiClient *http.Client // for registration API calls
 	fwdClient *http.Client // for local upstream forwarding
@@ -63,6 +67,11 @@ func (c *Client) SetDisplay(d *Display) {
 // SetLogger replaces the client's logger.
 func (c *Client) SetLogger(l *slog.Logger) {
 	c.log = l
+}
+
+// SetVersion sets the client version string for server exchange.
+func (c *Client) SetVersion(v string) {
+	c.version = v
 }
 
 const (
@@ -146,11 +155,20 @@ func (c *Client) Run(ctx context.Context) error {
 		if c.display != nil {
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
 			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID)
+			c.display.ShowVersions(c.version, reg.ServerVersion)
 		} else {
 			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
 			if reg.ServerTLSMode != "" {
 				c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
 			}
+			if reg.ServerVersion != "" {
+				c.log.Info("versions", "client", c.version, "server", reg.ServerVersion)
+			}
+		}
+
+		// Check for updates in the background (non-blocking).
+		if c.version != "" && c.version != "dev" {
+			go c.checkForUpdates(ctx)
 		}
 
 		err = c.runSession(ctx, localBase, reg)
@@ -519,6 +537,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 		ClientHostname:  strings.TrimSpace(hostname),
 		ClientMachineID: machineID,
 		LocalPort:       fmt.Sprintf("%d", c.cfg.LocalPort),
+		ClientVersion:   c.version,
 	})
 	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
@@ -693,6 +712,31 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		Status:  resp.StatusCode,
 		Headers: respHeaders,
 		BodyB64: tunnelproto.EncodeBody(buf.Bytes()),
+	}
+}
+
+// checkForUpdates queries GitHub for a newer release and displays the result.
+func (c *Client) checkForUpdates(ctx context.Context) {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rel, err := selfupdate.Check(checkCtx, c.version)
+	if err != nil {
+		c.log.Debug("update check failed\", \"err\", err")
+		return
+	}
+	if rel == nil {
+		// Already up to date.
+		if c.display != nil {
+			c.display.ShowUpdateStatus("")
+		}
+		return
+	}
+	latest := strings.TrimPrefix(rel.TagName, "v")
+	if c.display != nil {
+		c.display.ShowUpdateStatus(latest)
+	} else {
+		c.log.Info("update available", "latest", latest, "current", c.version, "run", "expose update")
 	}
 }
 

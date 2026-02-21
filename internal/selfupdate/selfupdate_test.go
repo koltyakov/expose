@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"strings"
 	"testing"
 )
 
@@ -162,5 +163,22 @@ func TestExtractFromTarGz_NotFound(t *testing.T) {
 	_, err := extractFromTarGz(buf.Bytes(), "expose")
 	if err == nil {
 		t.Fatal("expected error for missing binary")
+	}
+}
+
+func TestReadAllWithLimit(t *testing.T) {
+	got, err := readAllWithLimit(strings.NewReader("hello"), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("expected hello, got %q", string(got))
+	}
+}
+
+func TestReadAllWithLimitTooLarge(t *testing.T) {
+	_, err := readAllWithLimit(strings.NewReader("hello!"), 5)
+	if err == nil {
+		t.Fatal("expected limit error")
 	}
 }

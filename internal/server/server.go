@@ -44,10 +44,12 @@ type Server struct {
 	store         *sqlite.Store
 	log           *slog.Logger
 	hub           *hub
+	version       string
 	wildcardTLSOn bool
 	requestSeq    atomic.Uint64
 	regLimiter    rateLimiter
 	routes        routeCache
+	domainTouches chan string
 }
 
 // rateLimiter implements a simple per-key token-bucket rate limiter.
@@ -128,8 +130,9 @@ type session struct {
 // short TTL. Entries are explicitly invalidated on connect/disconnect to keep
 // the data fresh; the TTL is a safety-net for any missed invalidation.
 type routeCache struct {
-	mu      sync.RWMutex
-	entries map[string]routeCacheEntry
+	mu            sync.RWMutex
+	entries       map[string]routeCacheEntry
+	hostsByTunnel map[string]map[string]struct{}
 }
 
 type routeCacheEntry struct {
@@ -140,10 +143,20 @@ type routeCacheEntry struct {
 const routeCacheTTL = 5 * time.Second
 
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
+	now := time.Now()
 	c.mu.RLock()
 	e, ok := c.entries[host]
 	c.mu.RUnlock()
-	if !ok || time.Now().After(e.expiresAt) {
+	if !ok {
+		return domain.TunnelRoute{}, false
+	}
+	if now.After(e.expiresAt) {
+		c.mu.Lock()
+		if stale, exists := c.entries[host]; exists && now.After(stale.expiresAt) {
+			delete(c.entries, host)
+			c.untrackHostLocked(stale.route.Tunnel.ID, host)
+		}
+		c.mu.Unlock()
 		return domain.TunnelRoute{}, false
 	}
 	return e.route, true
@@ -151,7 +164,11 @@ func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
 
 func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	c.mu.Lock()
+	if prev, exists := c.entries[host]; exists {
+		c.untrackHostLocked(prev.route.Tunnel.ID, host)
+	}
 	c.entries[host] = routeCacheEntry{route: route, expiresAt: time.Now().Add(routeCacheTTL)}
+	c.trackHostLocked(route.Tunnel.ID, host)
 	c.mu.Unlock()
 }
 
@@ -162,6 +179,7 @@ func (c *routeCache) cleanup() {
 	for host, e := range c.entries {
 		if now.After(e.expiresAt) {
 			delete(c.entries, host)
+			c.untrackHostLocked(e.route.Tunnel.ID, host)
 		}
 	}
 }
@@ -170,10 +188,39 @@ func (c *routeCache) cleanup() {
 func (c *routeCache) deleteByTunnelID(tunnelID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for host, e := range c.entries {
-		if e.route.Tunnel.ID == tunnelID {
-			delete(c.entries, host)
-		}
+	hosts := c.hostsByTunnel[tunnelID]
+	for host := range hosts {
+		delete(c.entries, host)
+	}
+	delete(c.hostsByTunnel, tunnelID)
+}
+
+func (c *routeCache) trackHostLocked(tunnelID, host string) {
+	if tunnelID == "" || host == "" {
+		return
+	}
+	if c.hostsByTunnel == nil {
+		c.hostsByTunnel = make(map[string]map[string]struct{})
+	}
+	hosts := c.hostsByTunnel[tunnelID]
+	if hosts == nil {
+		hosts = make(map[string]struct{})
+		c.hostsByTunnel[tunnelID] = hosts
+	}
+	hosts[host] = struct{}{}
+}
+
+func (c *routeCache) untrackHostLocked(tunnelID, host string) {
+	if tunnelID == "" || host == "" {
+		return
+	}
+	hosts := c.hostsByTunnel[tunnelID]
+	if hosts == nil {
+		return
+	}
+	delete(hosts, host)
+	if len(hosts) == 0 {
+		delete(c.hostsByTunnel, tunnelID)
 	}
 }
 
@@ -199,6 +246,8 @@ const (
 	httpIdleTimeout      = 60 * time.Second
 	usedTokenRetention   = 1 * time.Hour
 	tokenPurgeBatchLimit = 1000
+	domainTouchQueueSize = 2048
+	domainTouchTimeout   = 3 * time.Second
 )
 
 type registerRequest struct {
@@ -209,6 +258,7 @@ type registerRequest struct {
 	ClientHostname  string `json:"client_hostname,omitempty"`
 	ClientMachineID string `json:"client_machine_id,omitempty"`
 	LocalPort       string `json:"local_port,omitempty"`
+	ClientVersion   string `json:"client_version,omitempty"`
 }
 
 type registerResponse struct {
@@ -216,6 +266,7 @@ type registerResponse struct {
 	PublicURL     string `json:"public_url"`
 	WSURL         string `json:"ws_url"`
 	ServerTLSMode string `json:"server_tls_mode"`
+	ServerVersion string `json:"server_version,omitempty"`
 }
 
 type errorResponse struct {
@@ -234,14 +285,16 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 // New creates a Server with the given configuration, store, and logger.
-func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger) *Server {
+func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, version string) *Server {
 	return &Server{
-		cfg:        cfg,
-		store:      store,
-		log:        logger,
-		hub:        &hub{sessions: map[string]*session{}},
-		regLimiter: rateLimiter{buckets: make(map[string]*bucket)},
-		routes:     routeCache{entries: make(map[string]routeCacheEntry)},
+		cfg:           cfg,
+		store:         store,
+		log:           logger,
+		hub:           &hub{sessions: map[string]*session{}},
+		version:       version,
+		regLimiter:    rateLimiter{buckets: make(map[string]*bucket)},
+		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{})},
+		domainTouches: make(chan string, domainTouchQueueSize),
 	}
 }
 
@@ -257,6 +310,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	go s.runJanitor(ctx)
+	go s.runDomainTouchWorker(ctx)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/tunnels/register", s.handleRegister)
@@ -507,6 +561,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		PublicURL:     publicURL,
 		WSURL:         wsURL,
 		ServerTLSMode: s.serverTLSMode(),
+		ServerVersion: s.version,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -738,8 +793,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		if err == nil && len(b) > 0 {
 			_, _ = w.Write(b)
 		}
-		domainID := route.Domain.ID
-		go func() { _ = s.store.TouchDomain(context.Background(), domainID) }()
+		s.queueDomainTouch(route.Domain.ID)
 	case <-timer.C:
 		if sess.pendingDelete(reqID) {
 			sess.releasePending()
@@ -825,8 +879,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	}()
 	defer func() { _ = publicConn.Close() }()
 
-	domainID := route.Domain.ID
-	go func() { _ = s.store.TouchDomain(context.Background(), domainID) }()
+	s.queueDomainTouch(route.Domain.ID)
 
 	readDone := make(chan struct{})
 	writeDone := make(chan struct{})
@@ -1436,6 +1489,33 @@ func stableTemporarySubdomain(hostname, port string) string {
 		enc = enc[:subdomainLen]
 	}
 	return enc
+}
+
+func (s *Server) queueDomainTouch(domainID string) {
+	domainID = strings.TrimSpace(domainID)
+	if domainID == "" || s.domainTouches == nil {
+		return
+	}
+	select {
+	case s.domainTouches <- domainID:
+	default:
+	}
+}
+
+func (s *Server) runDomainTouchWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case domainID := <-s.domainTouches:
+			touchCtx, cancel := context.WithTimeout(ctx, domainTouchTimeout)
+			err := s.store.TouchDomain(touchCtx, domainID)
+			cancel()
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.log.Warn("failed to update domain last seen", "domain_id", domainID, "err", err)
+			}
+		}
+	}
 }
 
 func (s *Server) runJanitor(ctx context.Context) {

@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/koltyakov/expose/internal/auth"
+	"github.com/koltyakov/expose/internal/domain"
 )
 
 func TestStableTemporarySubdomain(t *testing.T) {
@@ -252,5 +254,76 @@ func TestIsLikelyScannerTLSReason(t *testing.T) {
 				t.Fatalf("got %v, want %v for reason %q", got, tc.want, tc.reason)
 			}
 		})
+	}
+}
+
+func TestRouteCacheDeleteByTunnelID(t *testing.T) {
+	cache := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+	}
+
+	cache.set("a.example.com", domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t1"}})
+	cache.set("b.example.com", domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t1"}})
+	cache.set("c.example.com", domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t2"}})
+
+	cache.deleteByTunnelID("t1")
+
+	if _, ok := cache.get("a.example.com"); ok {
+		t.Fatal("expected a.example.com cache entry to be deleted")
+	}
+	if _, ok := cache.get("b.example.com"); ok {
+		t.Fatal("expected b.example.com cache entry to be deleted")
+	}
+	if _, ok := cache.get("c.example.com"); !ok {
+		t.Fatal("expected c.example.com cache entry to remain")
+	}
+}
+
+func TestRouteCacheSetReindexesTunnelLookup(t *testing.T) {
+	cache := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+	}
+
+	cache.set("same.example.com", domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "old"}})
+	cache.set("same.example.com", domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "new"}})
+
+	cache.deleteByTunnelID("old")
+	if _, ok := cache.get("same.example.com"); !ok {
+		t.Fatal("expected host to remain after deleting old tunnel index")
+	}
+
+	cache.deleteByTunnelID("new")
+	if _, ok := cache.get("same.example.com"); ok {
+		t.Fatal("expected host to be deleted with new tunnel index")
+	}
+}
+
+func TestRouteCacheGetEvictsExpiredEntry(t *testing.T) {
+	cache := routeCache{
+		entries: make(map[string]routeCacheEntry),
+		hostsByTunnel: map[string]map[string]struct{}{
+			"t1": {"expired.example.com": {}},
+		},
+	}
+	cache.entries["expired.example.com"] = routeCacheEntry{
+		route:     domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t1"}},
+		expiresAt: time.Now().Add(-time.Second),
+	}
+
+	if _, ok := cache.get("expired.example.com"); ok {
+		t.Fatal("expected expired entry to miss")
+	}
+
+	cache.mu.RLock()
+	_, entryExists := cache.entries["expired.example.com"]
+	_, indexExists := cache.hostsByTunnel["t1"]
+	cache.mu.RUnlock()
+	if entryExists {
+		t.Fatal("expected expired entry to be evicted")
+	}
+	if indexExists {
+		t.Fatal("expected tunnel index to be evicted for expired entry")
 	}
 }

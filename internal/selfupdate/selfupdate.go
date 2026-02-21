@@ -17,14 +17,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 )
 
 const (
 	// GitHubRepo is the owner/repo path used to query the GitHub API.
 	GitHubRepo = "koltyakov/expose"
 	// releasesURL is the GitHub API endpoint for the latest release.
-	releasesURL = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
+	releasesURL      = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
+	maxDownloadBytes = 100 << 20 // 100 MiB
+	maxBinaryBytes   = 100 << 20 // 100 MiB
 )
+
+var releaseHTTPClient = &http.Client{Timeout: 20 * time.Second}
+var downloadHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
 // Release holds the subset of GitHub release metadata we care about.
 type Release struct {
@@ -112,8 +119,9 @@ func fetchLatestRelease(ctx context.Context) (*Release, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "expose-selfupdate")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := releaseHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest release: %w", err)
 	}
@@ -178,7 +186,8 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("User-Agent", "expose-selfupdate")
+	resp, err := downloadHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -187,9 +196,11 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download returned %s", resp.Status)
 	}
+	if resp.ContentLength > maxDownloadBytes {
+		return nil, fmt.Errorf("download too large: %d bytes exceeds limit %d", resp.ContentLength, maxDownloadBytes)
+	}
 
-	// Limit to 100 MB to be safe.
-	return io.ReadAll(io.LimitReader(resp.Body, 100<<20))
+	return readAllWithLimit(resp.Body, maxDownloadBytes)
 }
 
 // extractBinary pulls the "expose" (or "expose.exe") binary out of the
@@ -220,7 +231,7 @@ func extractFromTarGz(data []byte, name string) ([]byte, error) {
 			return nil, err
 		}
 		if filepath.Base(hdr.Name) == name && hdr.Typeflag == tar.TypeReg {
-			return io.ReadAll(tr)
+			return readAllWithLimit(tr, maxBinaryBytes)
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in archive", name)
@@ -238,7 +249,7 @@ func extractFromZip(data []byte, name string) ([]byte, error) {
 				return nil, err
 			}
 			defer func() { _ = rc.Close() }()
-			return io.ReadAll(rc)
+			return readAllWithLimit(rc, maxBinaryBytes)
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in archive", name)
@@ -268,6 +279,10 @@ func replaceBinary(newBinary []byte) error {
 		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
@@ -285,11 +300,48 @@ func replaceBinary(newBinary []byte) error {
 	if err := os.Rename(tmpPath, exe); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func readAllWithLimit(r io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return nil, errors.New("invalid read limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("content exceeds limit of %d bytes", limit)
+	}
+	return data, nil
+}
+
+func syncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = dir.Close() }()
+	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
 	return nil
 }
 
 // isNewer returns true when latest > current using simple semver comparison.
 // Both strings should already have the "v" prefix stripped.
+// IsNewer reports whether latest is a newer semver than current.
+func IsNewer(current, latest string) bool {
+	return isNewer(current, latest)
+}
+
 func isNewer(current, latest string) bool {
 	cp := parseSemver(current)
 	lp := parseSemver(latest)

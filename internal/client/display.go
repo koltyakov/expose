@@ -56,12 +56,14 @@ type Display struct {
 	color bool
 
 	// banner / header state
-	version   string
-	status    string // "online", "reconnecting", …
-	tunnelID  string
-	publicURL string
-	localAddr string
-	tlsMode   string
+	version       string
+	status        string // "online", "reconnecting", …
+	tunnelID      string
+	publicURL     string
+	localAddr     string
+	tlsMode       string
+	serverVersion string
+	updateVersion string // non-empty when an update is available
 
 	// counters
 	activeHTTP int // in-flight HTTP forwards
@@ -117,6 +119,24 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string)
 	d.localAddr = localAddr
 	d.tlsMode = tlsMode
 	d.tunnelID = tunnelID
+	d.redraw()
+}
+
+// ShowVersions sets the client and server version strings and redraws.
+func (d *Display) ShowVersions(clientVersion, serverVersion string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.version = clientVersion
+	d.serverVersion = serverVersion
+	d.redraw()
+}
+
+// ShowUpdateStatus sets the available update version and redraws.
+// Pass an empty string to indicate the client is up to date.
+func (d *Display) ShowUpdateStatus(latestVersion string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.updateVersion = latestVersion
 	d.redraw()
 }
 
@@ -308,6 +328,23 @@ func (d *Display) redraw() {
 	}
 	if d.tunnelID != "" {
 		d.writeField(&b, "Tunnel ID", d.styled(ansiDim, d.tunnelID))
+	}
+	if d.version != "" || d.serverVersion != "" {
+		cv := d.version
+		if cv == "" {
+			cv = "unknown"
+		}
+		sv := d.serverVersion
+		if sv == "" {
+			sv = "unknown"
+		}
+		d.writeField(&b, "Version", fmt.Sprintf("client: %s / server: %s", d.styled(ansiDim, cv), d.styled(ansiDim, sv)))
+	}
+	if d.updateVersion != "" {
+		d.writeField(&b, "Update",
+			d.styled(ansiYellow, fmt.Sprintf("v%s available", d.updateVersion))+
+				d.styled(ansiDim, " — run ")+
+				d.styled(ansiBold, "expose update"))
 	}
 	if d.publicURL != "" {
 		arrow := d.styled(ansiDim, "→")

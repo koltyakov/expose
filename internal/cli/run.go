@@ -202,6 +202,7 @@ func runClient(ctx context.Context, args []string) int {
 
 	var logger *slog.Logger
 	c := client.New(cfg, nil) // logger set below
+	c.SetVersion(Version)
 
 	if isInteractiveOutput() {
 		display := client.NewDisplay(true)
@@ -282,7 +283,7 @@ func runServer(ctx context.Context, args []string) int {
 	}
 	cfg.APIKeyPepper = pepper
 
-	s := server.New(cfg, store, logger)
+	s := server.New(cfg, store, logger, Version)
 	if err := s.Run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "server error:", err)
 		return 1

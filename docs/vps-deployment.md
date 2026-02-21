@@ -40,6 +40,12 @@ go build -o /usr/local/bin/expose ./cmd/expose
 
 Or download a prebuilt binary from the [releases page](https://github.com/koltyakov/expose/releases).
 
+Allow the binary to bind to privileged ports (80, 443) without running as root:
+
+```bash
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/expose
+```
+
 ## 3 - Configure DNS
 
 Point your domain to the VPS public IP. See provider-specific guides:

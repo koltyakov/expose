@@ -465,6 +465,16 @@ For detailed documentation, see: https://github.com/koltyakov/expose`)
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+func init() {
+	if Version == "dev" {
+		if desc, err := exec.Command("git", "describe", "--tags", "--always").Output(); err == nil {
+			if v := strings.TrimSpace(string(desc)); v != "" {
+				Version = v + "-dev"
+			}
+		}
+	}
+}
+
 func printVersion() {
 	fmt.Println("expose", Version)
 }

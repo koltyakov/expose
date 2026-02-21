@@ -894,7 +894,7 @@ func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (strin
 	const attempts = 16
 	slugs := make([]string, 0, attempts)
 	hostnames := make([]any, 0, attempts)
-	slugByHostname := make(map[string]string, attempts)
+	slugByHostname := make(map[string]struct{}, attempts)
 	for i := 0; i < attempts; i++ {
 		slug, err := randomSlug(6)
 		if err != nil {
@@ -906,7 +906,10 @@ func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (strin
 		}
 		slugs = append(slugs, slug)
 		hostnames = append(hostnames, hostname)
-		slugByHostname[hostname] = slug
+		slugByHostname[hostname] = struct{}{}
+	}
+	if len(hostnames) == 0 {
+		return "", errors.New("failed to generate subdomain candidates")
 	}
 
 	placeholders := strings.Repeat("?,", len(hostnames))

@@ -12,6 +12,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
 func TestStableTemporarySubdomain(t *testing.T) {
@@ -326,4 +327,76 @@ func TestRouteCacheGetEvictsExpiredEntry(t *testing.T) {
 	if indexExists {
 		t.Fatal("expected tunnel index to be evicted for expired entry")
 	}
+}
+
+func TestSessionWSPendingSend(t *testing.T) {
+	ch := make(chan tunnelproto.Message, 1)
+	sess := &session{wsPending: map[string]chan tunnelproto.Message{"stream-1": ch}}
+	msg := tunnelproto.Message{Kind: tunnelproto.KindWSData}
+
+	if ok := sess.wsPendingSend("stream-1", msg, 0); !ok {
+		t.Fatal("expected wsPendingSend to succeed for buffered channel")
+	}
+
+	select {
+	case got := <-ch:
+		if got.Kind != tunnelproto.KindWSData {
+			t.Fatalf("expected ws data message, got %q", got.Kind)
+		}
+	default:
+		t.Fatal("expected message in ws pending channel")
+	}
+}
+
+func TestSessionWSPendingSendTimeout(t *testing.T) {
+	ch := make(chan tunnelproto.Message)
+	sess := &session{wsPending: map[string]chan tunnelproto.Message{"stream-1": ch}}
+
+	start := time.Now()
+	ok := sess.wsPendingSend("stream-1", tunnelproto.Message{Kind: tunnelproto.KindWSData}, 15*time.Millisecond)
+	if ok {
+		t.Fatal("expected wsPendingSend to fail on timeout")
+	}
+	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+		t.Fatalf("expected wsPendingSend to wait before timing out, elapsed=%s", elapsed)
+	}
+}
+
+func TestQueueDomainTouchDeduplicates(t *testing.T) {
+	srv := &Server{
+		domainTouches: make(chan string, 4),
+		domainTouched: make(map[string]struct{}),
+	}
+
+	srv.queueDomainTouch("domain-1")
+	srv.queueDomainTouch("domain-1")
+	if got := len(srv.domainTouches); got != 1 {
+		t.Fatalf("expected deduplicated queue length 1, got %d", got)
+	}
+
+	id := <-srv.domainTouches
+	srv.completeDomainTouch(id)
+
+	srv.queueDomainTouch("domain-1")
+	if got := len(srv.domainTouches); got != 1 {
+		t.Fatalf("expected requeue after completion, got %d", got)
+	}
+}
+
+func TestQueueDomainTouchReleasesDedupOnOverflow(t *testing.T) {
+	srv := &Server{
+		domainTouches: make(chan string, 1),
+		domainTouched: make(map[string]struct{}),
+	}
+
+	srv.queueDomainTouch("domain-1")
+	srv.queueDomainTouch("domain-2") // dropped because queue is full
+
+	if got := len(srv.domainTouches); got != 1 {
+		t.Fatalf("expected queue length 1, got %d", got)
+	}
+	if ok := srv.reserveDomainTouch("domain-2"); !ok {
+		t.Fatal("expected dropped domain touch to be released from dedupe tracking")
+	}
+	srv.completeDomainTouch("domain-2")
 }

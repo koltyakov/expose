@@ -50,6 +50,8 @@ type Server struct {
 	regLimiter    rateLimiter
 	routes        routeCache
 	domainTouches chan string
+	domainTouchMu sync.Mutex
+	domainTouched map[string]struct{}
 }
 
 // rateLimiter implements a simple per-key token-bucket rate limiter.
@@ -119,7 +121,7 @@ type session struct {
 	writeMu          sync.Mutex
 	pendingMu        sync.Mutex
 	pending          map[string]chan *tunnelproto.HTTPResponse
-	wsMu             sync.Mutex
+	wsMu             sync.RWMutex
 	wsPending        map[string]chan tunnelproto.Message
 	pendingCount     atomic.Int64
 	lastSeenUnixNano atomic.Int64
@@ -232,22 +234,24 @@ type staticCertificate struct {
 }
 
 const (
-	tlsModeAuto          = "auto"
-	tlsModeDynamic       = "dynamic"
-	tlsModeWildcard      = "wildcard"
-	maxRegisterBodyBytes = 64 * 1024
-	minWSReadLimit       = 32 * 1024 * 1024
-	maxPendingPerSession = 32
-	wsWriteTimeout       = 15 * time.Second
-	httpsReadTimeout     = 30 * time.Second
-	httpsWriteTimeout    = 60 * time.Second
-	httpsIdleTimeout     = 120 * time.Second
-	httpsMaxHeaderBytes  = 1 << 20
-	httpIdleTimeout      = 60 * time.Second
-	usedTokenRetention   = 1 * time.Hour
-	tokenPurgeBatchLimit = 1000
-	domainTouchQueueSize = 2048
-	domainTouchTimeout   = 3 * time.Second
+	tlsModeAuto           = "auto"
+	tlsModeDynamic        = "dynamic"
+	tlsModeWildcard       = "wildcard"
+	maxRegisterBodyBytes  = 64 * 1024
+	minWSReadLimit        = 32 * 1024 * 1024
+	maxPendingPerSession  = 32
+	wsWriteTimeout        = 15 * time.Second
+	httpsReadTimeout      = 30 * time.Second
+	httpsWriteTimeout     = 60 * time.Second
+	httpsIdleTimeout      = 120 * time.Second
+	httpsMaxHeaderBytes   = 1 << 20
+	httpIdleTimeout       = 60 * time.Second
+	usedTokenRetention    = 1 * time.Hour
+	tokenPurgeBatchLimit  = 1000
+	domainTouchQueueSize  = 2048
+	domainTouchTimeout    = 3 * time.Second
+	wsDataDispatchWait    = 250 * time.Millisecond
+	wsControlDispatchWait = 2 * time.Second
 )
 
 type registerRequest struct {
@@ -295,6 +299,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		regLimiter:    rateLimiter{buckets: make(map[string]*bucket)},
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{})},
 		domainTouches: make(chan string, domainTouchQueueSize),
+		domainTouched: make(map[string]struct{}),
 	}
 }
 
@@ -661,22 +666,23 @@ func (s *Server) readLoop(sess *session) {
 			if msg.WSOpenAck == nil {
 				continue
 			}
-			if ch, ok := sess.wsPendingLoad(msg.WSOpenAck.ID); ok {
-				ch <- msg
+			if !sess.wsPendingSend(msg.WSOpenAck.ID, msg, wsControlDispatchWait) {
+				s.log.Debug("dropped websocket open ack due stalled stream consumer", "tunnel_id", sess.tunnelID, "stream_id", msg.WSOpenAck.ID)
 			}
 		case tunnelproto.KindWSData:
 			if msg.WSData == nil {
 				continue
 			}
-			if ch, ok := sess.wsPendingLoad(msg.WSData.ID); ok {
-				ch <- msg
+			if !sess.wsPendingSend(msg.WSData.ID, msg, wsDataDispatchWait) {
+				s.log.Warn("closing tunnel due websocket stream backpressure", "tunnel_id", sess.tunnelID, "stream_id", msg.WSData.ID)
+				return
 			}
 		case tunnelproto.KindWSClose:
 			if msg.WSClose == nil {
 				continue
 			}
-			if ch, ok := sess.wsPendingLoad(msg.WSClose.ID); ok {
-				ch <- msg
+			if !sess.wsPendingSend(msg.WSClose.ID, msg, wsControlDispatchWait) {
+				s.log.Debug("dropped websocket close signal due stalled stream consumer", "tunnel_id", sess.tunnelID, "stream_id", msg.WSClose.ID)
 			}
 		case tunnelproto.KindPing:
 			_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong})
@@ -1054,10 +1060,36 @@ func (s *session) wsPendingStore(id string, ch chan tunnelproto.Message) {
 }
 
 func (s *session) wsPendingLoad(id string) (chan tunnelproto.Message, bool) {
-	s.wsMu.Lock()
+	s.wsMu.RLock()
 	ch, ok := s.wsPending[id]
-	s.wsMu.Unlock()
+	s.wsMu.RUnlock()
 	return ch, ok
+}
+
+func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Duration) bool {
+	ch, ok := s.wsPendingLoad(id)
+	if !ok {
+		return true
+	}
+
+	select {
+	case ch <- msg:
+		return true
+	default:
+	}
+
+	if wait <= 0 {
+		return false
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case ch <- msg:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (s *session) wsPendingDelete(id string) {
@@ -1496,9 +1528,13 @@ func (s *Server) queueDomainTouch(domainID string) {
 	if domainID == "" || s.domainTouches == nil {
 		return
 	}
+	if !s.reserveDomainTouch(domainID) {
+		return
+	}
 	select {
 	case s.domainTouches <- domainID:
 	default:
+		s.completeDomainTouch(domainID)
 	}
 }
 
@@ -1511,11 +1547,31 @@ func (s *Server) runDomainTouchWorker(ctx context.Context) {
 			touchCtx, cancel := context.WithTimeout(ctx, domainTouchTimeout)
 			err := s.store.TouchDomain(touchCtx, domainID)
 			cancel()
+			s.completeDomainTouch(domainID)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				s.log.Warn("failed to update domain last seen", "domain_id", domainID, "err", err)
 			}
 		}
 	}
+}
+
+func (s *Server) reserveDomainTouch(domainID string) bool {
+	s.domainTouchMu.Lock()
+	defer s.domainTouchMu.Unlock()
+	if s.domainTouched == nil {
+		s.domainTouched = make(map[string]struct{})
+	}
+	if _, exists := s.domainTouched[domainID]; exists {
+		return false
+	}
+	s.domainTouched[domainID] = struct{}{}
+	return true
+}
+
+func (s *Server) completeDomainTouch(domainID string) {
+	s.domainTouchMu.Lock()
+	delete(s.domainTouched, domainID)
+	s.domainTouchMu.Unlock()
 }
 
 func (s *Server) runJanitor(ctx context.Context) {

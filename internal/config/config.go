@@ -51,8 +51,8 @@ type ServerConfig struct {
 	TempRetention          time.Duration
 }
 
-const defaultClientPingInterval = 5 * time.Minute
-const defaultServerClientPingTimeout = 12 * time.Minute
+const defaultClientPingInterval = 30 * time.Second
+const defaultServerClientPingTimeout = 3 * time.Minute
 const defaultServerHeartbeatCheckInterval = 30 * time.Second
 const defaultServerCleanupInterval = 10 * time.Minute
 const defaultServerTempRetention = 24 * time.Hour

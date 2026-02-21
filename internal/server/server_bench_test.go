@@ -16,8 +16,8 @@ func BenchmarkRouteCacheGetHit(b *testing.B) {
 	}
 	host := "bench.example.com"
 	cache.entries[host] = routeCacheEntry{
-		route:     domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t-bench"}},
-		expiresAt: time.Now().Add(24 * time.Hour),
+		route:             domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t-bench"}},
+		expiresAtUnixNano: time.Now().Add(24 * time.Hour).UnixNano(),
 	}
 	cache.hostsByTunnel["t-bench"] = map[string]struct{}{host: {}}
 
@@ -41,12 +41,12 @@ func BenchmarkRouteCacheDeleteByTunnelID(b *testing.B) {
 			hostsByTunnel: make(map[string]map[string]struct{}, 1),
 		}
 		cache.hostsByTunnel["t-bench"] = make(map[string]struct{}, hostsPerTunnel)
-		expiresAt := time.Now().Add(24 * time.Hour)
+		expiresAt := time.Now().Add(24 * time.Hour).UnixNano()
 		for n := 0; n < hostsPerTunnel; n++ {
 			host := fmt.Sprintf("h-%d.example.com", n)
 			cache.entries[host] = routeCacheEntry{
-				route:     domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t-bench"}},
-				expiresAt: expiresAt,
+				route:             domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t-bench"}},
+				expiresAtUnixNano: expiresAt,
 			}
 			cache.hostsByTunnel["t-bench"][host] = struct{}{}
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/textproto"
 	"os"
 	"strings"
 	"sync"
@@ -101,6 +102,7 @@ type Display struct {
 	// displayed value never dips below it until the debounce expires.
 	wsDisplayMin    int
 	wsDebounceTimer *time.Timer
+	wsDebounceGen   uint64
 }
 
 // NewDisplay creates a Display that writes to stdout.
@@ -111,6 +113,7 @@ func NewDisplay(color bool) *Display {
 		color:    color,
 		wsConns:  make(map[string]wsEntry),
 		visitors: make(map[string]time.Time),
+		requests: make([]requestEntry, 0, maxDisplayRequests),
 		nowFunc:  time.Now,
 	}
 }
@@ -130,6 +133,10 @@ func (d *Display) ShowBanner(version string) {
 func (d *Display) Cleanup() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.wsDebounceTimer != nil {
+		d.wsDebounceTimer.Stop()
+		d.wsDebounceTimer = nil
+	}
 	if d.color {
 		_, _ = fmt.Fprint(d.out, ansiShowCur)
 	}
@@ -189,8 +196,9 @@ func (d *Display) LogRequest(method, path string, status int, duration time.Dura
 	defer d.mu.Unlock()
 	d.totalHTTP++
 	d.trackVisitor(headers)
+	now := d.now()
 	d.appendEntry(requestEntry{
-		ts:       time.Now(),
+		ts:       now,
 		method:   method,
 		path:     path,
 		status:   status,
@@ -232,11 +240,18 @@ func (d *Display) TrackWSClose(id string) {
 		d.wsDebounceTimer.Stop()
 	}
 
+	d.wsDebounceGen++
+	gen := d.wsDebounceGen
+
 	// After the debounce window, clear the floor and redraw with the real count.
 	d.wsDebounceTimer = time.AfterFunc(wsCloseDebounce, func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
+		if gen != d.wsDebounceGen {
+			return
+		}
 		d.wsDisplayMin = 0
+		d.wsDebounceTimer = nil
 		d.redraw()
 	})
 
@@ -248,7 +263,7 @@ func (d *Display) ShowWarning(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.appendEntry(requestEntry{
-		ts:     time.Now(),
+		ts:     d.now(),
 		method: "WARN",
 		path:   msg,
 	})
@@ -260,7 +275,7 @@ func (d *Display) ShowInfo(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.appendEntry(requestEntry{
-		ts:     time.Now(),
+		ts:     d.now(),
 		method: "INFO",
 		path:   msg,
 	})
@@ -308,7 +323,7 @@ func (d *Display) now() time.Time {
 func (d *Display) activeClientCount() int {
 	now := d.now()
 	cutoff := now.Add(-activeClientWindow)
-	active := make(map[string]struct{})
+	active := make(map[string]struct{}, len(d.visitors)+len(d.wsConns))
 
 	// Count visitors seen within the window.
 	for fp, lastSeen := range d.visitors {
@@ -335,31 +350,14 @@ func visitorFingerprint(headers map[string][]string) string {
 		return ""
 	}
 
-	var xff, xri, ua string
-	for k, vals := range headers {
-		if len(vals) == 0 {
-			continue
-		}
-		switch strings.ToLower(k) {
-		case "x-forwarded-for":
-			if xff == "" {
-				xff = vals[0]
-			}
-		case "x-real-ip":
-			if xri == "" {
-				xri = vals[0]
-			}
-		case "user-agent":
-			if ua == "" {
-				ua = vals[0]
-			}
-		}
-	}
+	xff := firstHeaderValueCI(headers, "X-Forwarded-For")
+	xri := firstHeaderValueCI(headers, "X-Real-Ip")
+	ua := firstHeaderValueCI(headers, "User-Agent")
 
 	var ip string
 	if xff != "" {
-		parts := strings.Split(xff, ",")
-		ip = strings.TrimSpace(parts[0])
+		first, _, _ := strings.Cut(xff, ",")
+		ip = strings.TrimSpace(first)
 	}
 	if ip == "" {
 		ip = strings.TrimSpace(xri)
@@ -369,6 +367,33 @@ func visitorFingerprint(headers map[string][]string) string {
 	}
 
 	return ip + "|" + ua
+}
+
+// firstHeaderValueCI returns the first value for key from headers.
+// It prefers exact/canonical map lookups, and falls back to case-insensitive
+// matching for non-canonical maps.
+func firstHeaderValueCI(headers map[string][]string, key string) string {
+	if headers == nil || key == "" {
+		return ""
+	}
+	if vals, ok := headers[key]; ok && len(vals) > 0 {
+		return vals[0]
+	}
+	canonical := textproto.CanonicalMIMEHeaderKey(key)
+	if canonical != key {
+		if vals, ok := headers[canonical]; ok && len(vals) > 0 {
+			return vals[0]
+		}
+	}
+	for k, vals := range headers {
+		if len(vals) == 0 {
+			continue
+		}
+		if strings.EqualFold(k, key) {
+			return vals[0]
+		}
+	}
+	return ""
 }
 
 // redraw repaints the entire screen. Caller must hold d.mu.
@@ -454,9 +479,7 @@ func (d *Display) redraw() {
 	activeCount := d.activeClientCount()
 	clientCount := len(d.visitors)
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
-	httpParts := []string{
-		fmt.Sprintf("%d total", d.totalHTTP),
-	}
+	httpSummary := fmt.Sprintf("%d total", d.totalHTTP)
 	if wsCount > 0 {
 		d.writeField(&b, "WebSockets", fmt.Sprintf("%d open", wsCount))
 	} else {
@@ -468,7 +491,7 @@ func (d *Display) redraw() {
 	// ── HTTP Requests (counters) ────────────────────────────────
 	b.WriteString(d.styled(ansiBold, "HTTP Requests"))
 	b.WriteString("  ")
-	b.WriteString(d.styled(ansiDim, strings.Join(httpParts, ", ")))
+	b.WriteString(d.styled(ansiDim, httpSummary))
 	b.WriteString("\n")
 	b.WriteString(d.styled(ansiDim, strings.Repeat("─", 78)))
 	b.WriteString("\n")

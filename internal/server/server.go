@@ -138,23 +138,23 @@ type routeCache struct {
 }
 
 type routeCacheEntry struct {
-	route     domain.TunnelRoute
-	expiresAt time.Time
+	route             domain.TunnelRoute
+	expiresAtUnixNano int64
 }
 
 const routeCacheTTL = 5 * time.Second
 
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
-	now := time.Now()
+	nowUnix := time.Now().UnixNano()
 	c.mu.RLock()
 	e, ok := c.entries[host]
 	c.mu.RUnlock()
 	if !ok {
 		return domain.TunnelRoute{}, false
 	}
-	if now.After(e.expiresAt) {
+	if nowUnix > e.expiresAtUnixNano {
 		c.mu.Lock()
-		if stale, exists := c.entries[host]; exists && now.After(stale.expiresAt) {
+		if stale, exists := c.entries[host]; exists && nowUnix > stale.expiresAtUnixNano {
 			delete(c.entries, host)
 			c.untrackHostLocked(stale.route.Tunnel.ID, host)
 		}
@@ -169,17 +169,20 @@ func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	if prev, exists := c.entries[host]; exists {
 		c.untrackHostLocked(prev.route.Tunnel.ID, host)
 	}
-	c.entries[host] = routeCacheEntry{route: route, expiresAt: time.Now().Add(routeCacheTTL)}
+	c.entries[host] = routeCacheEntry{
+		route:             route,
+		expiresAtUnixNano: time.Now().Add(routeCacheTTL).UnixNano(),
+	}
 	c.trackHostLocked(route.Tunnel.ID, host)
 	c.mu.Unlock()
 }
 
 func (c *routeCache) cleanup() {
-	now := time.Now()
+	nowUnix := time.Now().UnixNano()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for host, e := range c.entries {
-		if now.After(e.expiresAt) {
+		if nowUnix > e.expiresAtUnixNano {
 			delete(c.entries, host)
 			c.untrackHostLocked(e.route.Tunnel.ID, host)
 		}
@@ -787,7 +790,15 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	timer := time.NewTimer(s.cfg.RequestTimeout)
-	defer timer.Stop()
+	stopTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+	defer stopTimer()
 
 	select {
 	case resp := <-respCh:
@@ -845,7 +856,15 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	}
 
 	timer := time.NewTimer(s.cfg.RequestTimeout)
-	defer timer.Stop()
+	stopTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+	defer stopTimer()
 
 	var ack *tunnelproto.WSOpenAck
 	for ack == nil {
@@ -865,6 +884,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 			}
 		}
 	}
+	stopTimer()
 
 	if !ack.OK {
 		status := ack.Status
@@ -1159,23 +1179,37 @@ func injectForwardedFor(h map[string][]string, remoteAddr string) {
 	if ip == "" {
 		return
 	}
-	var existing string
-	var existingKey string
-	for k, vals := range h {
-		if strings.ToLower(k) == "x-forwarded-for" && len(vals) > 0 {
-			existing = strings.TrimSpace(vals[0])
-			existingKey = k
-			break
-		}
-	}
-	if existingKey != "" {
-		delete(h, existingKey)
-	}
+	existing := getAndNormalizeForwardedFor(h)
 	if existing != "" {
 		h["X-Forwarded-For"] = []string{existing + ", " + ip}
 	} else {
 		h["X-Forwarded-For"] = []string{ip}
 	}
+}
+
+// getAndNormalizeForwardedFor returns the first X-Forwarded-For header value
+// and canonicalizes the header key in-place.
+func getAndNormalizeForwardedFor(h map[string][]string) string {
+	if h == nil {
+		return ""
+	}
+	if vals, ok := h["X-Forwarded-For"]; ok {
+		if len(vals) == 0 {
+			return ""
+		}
+		return strings.TrimSpace(vals[0])
+	}
+	var existing string
+	for k, vals := range h {
+		if !strings.EqualFold(k, "X-Forwarded-For") {
+			continue
+		}
+		if existing == "" && len(vals) > 0 {
+			existing = strings.TrimSpace(vals[0])
+		}
+		delete(h, k)
+	}
+	return existing
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {

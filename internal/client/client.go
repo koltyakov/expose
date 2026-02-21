@@ -127,7 +127,7 @@ func (c *Client) Run(ctx context.Context) error {
 	// Auto-update: periodic background check + server-version-change trigger.
 	autoUpdateCh := make(chan struct{}, 1) // signals that the binary was replaced
 	var lastServerVersion string
-	if c.autoUpdate && c.version != "" && c.version != "dev" && !strings.HasSuffix(c.version, "-dev") {
+	if c.autoUpdate && !isNonReleaseVersion(c.version) {
 		go c.runAutoUpdateLoop(ctx, autoUpdateCh)
 	}
 
@@ -190,7 +190,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		// Check for updates in the background (non-blocking).
-		if c.version != "" && c.version != "dev" {
+		if !isNonReleaseVersion(c.version) {
 			// If server version changed since last registration and auto-update
 			// is on, immediately try to self-update.
 			if c.autoUpdate && lastServerVersion != "" && reg.ServerVersion != "" &&
@@ -781,7 +781,7 @@ func (c *Client) checkForUpdates(ctx context.Context) {
 
 	rel, err := selfupdate.Check(checkCtx, c.version)
 	if err != nil {
-		c.log.Debug("update check failed\", \"err\", err")
+		c.log.Debug("update check failed", "err", err)
 		return
 	}
 	if rel == nil {
@@ -932,4 +932,9 @@ func ensureVPrefix(s string) string {
 		return "v" + s
 	}
 	return s
+}
+
+func isNonReleaseVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	return version == "" || version == "dev" || strings.HasSuffix(version, "-dev")
 }

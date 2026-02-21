@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -46,6 +48,7 @@ func TestParseSemver(t *testing.T) {
 		{"1.2.3", []int{1, 2, 3}},
 		{"10.20.30", []int{10, 20, 30}},
 		{"1.0.0-rc1", []int{1, 0, 0}},
+		{"1.0.0+build7", []int{1, 0, 0}},
 		{"bad", nil},
 		{"1.2", nil},
 		{"a.b.c", nil},
@@ -257,5 +260,26 @@ func TestReplaceBinaryFailsWhenDirNotWritable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "not permitted") {
 		t.Fatalf("expected permission-related error, got: %v", err)
+	}
+}
+
+func TestShouldFallbackToCopy(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "permission", err: syscall.EACCES, want: true},
+		{name: "text file busy string", err: errors.New("rename: text file busy"), want: true},
+		{name: "cross device string", err: errors.New("rename: invalid cross-device link"), want: true},
+		{name: "other error", err: errors.New("rename failed"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldFallbackToCopy(tt.err); got != tt.want {
+				t.Fatalf("shouldFallbackToCopy() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -277,6 +277,40 @@ func TestDisplayFormatDuration(t *testing.T) {
 	}
 }
 
+func TestDisplayLogRequestUsesNowFuncTimestamp(t *testing.T) {
+	t.Parallel()
+
+	d, buf := newTestDisplay(false)
+	fixed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	d.nowFunc = func() time.Time { return fixed }
+	d.ShowBanner("dev")
+
+	buf.Reset()
+	d.LogRequest("GET", "/clock", 200, 3*time.Millisecond, nil)
+	out := buf.String()
+	if !strings.Contains(out, "03:04:05") {
+		t.Fatalf("expected request timestamp from nowFunc clock, got: %s", out)
+	}
+}
+
+func TestFirstHeaderValueCI(t *testing.T) {
+	t.Parallel()
+
+	headers := map[string][]string{
+		"X-Forwarded-For": {"1.2.3.4"},
+		"uSeR-aGeNt":      {"Browser/1.0"},
+	}
+	if got := firstHeaderValueCI(headers, "X-Forwarded-For"); got != "1.2.3.4" {
+		t.Fatalf("expected X-Forwarded-For value, got %q", got)
+	}
+	if got := firstHeaderValueCI(headers, "User-Agent"); got != "Browser/1.0" {
+		t.Fatalf("expected case-insensitive User-Agent value, got %q", got)
+	}
+	if got := firstHeaderValueCI(headers, "X-Real-Ip"); got != "" {
+		t.Fatalf("expected empty result for missing header, got %q", got)
+	}
+}
+
 func TestDisplayCleanup(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(true)

@@ -309,8 +309,8 @@ func TestRouteCacheGetEvictsExpiredEntry(t *testing.T) {
 		},
 	}
 	cache.entries["expired.example.com"] = routeCacheEntry{
-		route:     domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t1"}},
-		expiresAt: time.Now().Add(-time.Second),
+		route:             domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t1"}},
+		expiresAtUnixNano: time.Now().Add(-time.Second).UnixNano(),
 	}
 
 	if _, ok := cache.get("expired.example.com"); ok {
@@ -359,6 +359,29 @@ func TestSessionWSPendingSendTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
 		t.Fatalf("expected wsPendingSend to wait before timing out, elapsed=%s", elapsed)
+	}
+}
+
+func TestInjectForwardedFor(t *testing.T) {
+	headers := map[string][]string{
+		"X-Forwarded-For": {"1.2.3.4"},
+	}
+	injectForwardedFor(headers, "5.6.7.8:1234")
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4, 5.6.7.8" {
+		t.Fatalf("expected appended X-Forwarded-For, got %v", got)
+	}
+}
+
+func TestInjectForwardedForCanonicalizesHeaderKey(t *testing.T) {
+	headers := map[string][]string{
+		"x-forwarded-for": {"9.9.9.9"},
+	}
+	injectForwardedFor(headers, "8.8.8.8")
+	if _, ok := headers["x-forwarded-for"]; ok {
+		t.Fatal("expected non-canonical X-Forwarded-For key to be removed")
+	}
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "9.9.9.9, 8.8.8.8" {
+		t.Fatalf("expected canonicalized appended header, got %v", got)
 	}
 }
 

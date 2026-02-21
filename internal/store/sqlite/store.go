@@ -29,6 +29,11 @@ var ErrHostnameInUse = errors.New("hostname already in use")
 type Store struct {
 	db *sql.DB
 
+	resolveAPIKeyIDStmt   *sql.Stmt
+	activeTunnelCountStmt *sql.Stmt
+	isHostnameActiveStmt  *sql.Stmt
+	findRouteByHostStmt   *sql.Stmt
+
 	touchMu              sync.Mutex
 	lastDomainTouch      map[string]time.Time
 	touchMinInterval     time.Duration
@@ -42,6 +47,24 @@ const defaultConnectTokenPurgeLimit = 1000
 
 const defaultMaxOpenConns = 10
 const defaultMaxIdleConns = 10
+
+const resolveAPIKeyIDQuery = `SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL`
+const activeTunnelCountByKeyQuery = `SELECT COUNT(1) FROM tunnels WHERE api_key_id = ? AND state = ?`
+const isHostnameActiveQuery = `SELECT 1 FROM domains WHERE hostname = ? AND status = ? LIMIT 1`
+const findRouteByHostQuery = `
+SELECT
+ d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_password_hash, t.connected_at, t.disconnected_at
+FROM domains d
+JOIN tunnels t ON t.id = (
+	SELECT id
+	FROM tunnels
+	WHERE domain_id = d.id
+	ORDER BY connected_at DESC, id DESC
+	LIMIT 1
+)
+WHERE d.hostname = ?
+LIMIT 1`
 
 // OpenOptions controls SQLite connection pool sizing.
 type OpenOptions struct {
@@ -111,12 +134,55 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.prepareStatements(context.Background()); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
-	return s.db.Close()
+	stmtErr := s.closePreparedStatements()
+	return errors.Join(stmtErr, s.db.Close())
+}
+
+func (s *Store) prepareStatements(ctx context.Context) error {
+	var err error
+	if s.resolveAPIKeyIDStmt, err = s.db.PrepareContext(ctx, resolveAPIKeyIDQuery); err != nil {
+		return fmt.Errorf("prepare resolve api key query: %w", err)
+	}
+	if s.activeTunnelCountStmt, err = s.db.PrepareContext(ctx, activeTunnelCountByKeyQuery); err != nil {
+		closeErr := s.closePreparedStatements()
+		return errors.Join(fmt.Errorf("prepare active tunnel count query: %w", err), closeErr)
+	}
+	if s.isHostnameActiveStmt, err = s.db.PrepareContext(ctx, isHostnameActiveQuery); err != nil {
+		closeErr := s.closePreparedStatements()
+		return errors.Join(fmt.Errorf("prepare hostname active query: %w", err), closeErr)
+	}
+	if s.findRouteByHostStmt, err = s.db.PrepareContext(ctx, findRouteByHostQuery); err != nil {
+		closeErr := s.closePreparedStatements()
+		return errors.Join(fmt.Errorf("prepare find route query: %w", err), closeErr)
+	}
+	return nil
+}
+
+func (s *Store) closePreparedStatements() error {
+	var err error
+	err = errors.Join(err, closeStmt(&s.resolveAPIKeyIDStmt))
+	err = errors.Join(err, closeStmt(&s.activeTunnelCountStmt))
+	err = errors.Join(err, closeStmt(&s.isHostnameActiveStmt))
+	err = errors.Join(err, closeStmt(&s.findRouteByHostStmt))
+	return err
+}
+
+func closeStmt(stmt **sql.Stmt) error {
+	if stmt == nil || *stmt == nil {
+		return nil
+	}
+	err := (*stmt).Close()
+	*stmt = nil
+	return err
 }
 
 // Migrate creates all required tables and indexes if they do not already exist.
@@ -249,7 +315,12 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
 
 func (s *Store) ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error) {
 	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL`, keyHash).Scan(&id)
+	stmt := s.resolveAPIKeyIDStmt
+	if stmt == nil {
+		err := s.db.QueryRowContext(ctx, resolveAPIKeyIDQuery, keyHash).Scan(&id)
+		return id, err
+	}
+	err := stmt.QueryRowContext(ctx, keyHash).Scan(&id)
 	return id, err
 }
 
@@ -287,14 +358,25 @@ func (s *Store) ResolveServerPepper(ctx context.Context, suggested string) (stri
 
 func (s *Store) ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM tunnels WHERE api_key_id = ? AND state = ?`, keyID, domain.TunnelStateConnected).Scan(&count)
+	stmt := s.activeTunnelCountStmt
+	if stmt == nil {
+		err := s.db.QueryRowContext(ctx, activeTunnelCountByKeyQuery, keyID, domain.TunnelStateConnected).Scan(&count)
+		return count, err
+	}
+	err := stmt.QueryRowContext(ctx, keyID, domain.TunnelStateConnected).Scan(&count)
 	return count, err
 }
 
 func (s *Store) IsHostnameActive(ctx context.Context, host string) (bool, error) {
 	host = normalizeHostname(host)
 	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM domains WHERE hostname = ? AND status = ? LIMIT 1`, host, domain.DomainStatusActive).Scan(&one)
+	stmt := s.isHostnameActiveStmt
+	var err error
+	if stmt == nil {
+		err = s.db.QueryRowContext(ctx, isHostnameActiveQuery, host, domain.DomainStatusActive).Scan(&one)
+	} else {
+		err = stmt.QueryRowContext(ctx, host, domain.DomainStatusActive).Scan(&one)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -815,23 +897,19 @@ func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.Tunnel
 	var accessUser sql.NullString
 	var accessPasswordHash sql.NullString
 
-	err := s.db.QueryRowContext(ctx, `
-SELECT
- d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
- t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_password_hash, t.connected_at, t.disconnected_at
-FROM domains d
-JOIN tunnels t ON t.id = (
-	SELECT id
-	FROM tunnels
-	WHERE domain_id = d.id
-	ORDER BY connected_at DESC, id DESC
-	LIMIT 1
-)
-WHERE d.hostname = ?
-LIMIT 1`, host).Scan(
-		&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
-		&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessPasswordHash, &connectedAt, &disconnectedAt,
-	)
+	stmt := s.findRouteByHostStmt
+	var err error
+	if stmt == nil {
+		err = s.db.QueryRowContext(ctx, findRouteByHostQuery, host).Scan(
+			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
+			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessPasswordHash, &connectedAt, &disconnectedAt,
+		)
+	} else {
+		err = stmt.QueryRowContext(ctx, host).Scan(
+			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
+			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessPasswordHash, &connectedAt, &disconnectedAt,
+		)
+	}
 	if err != nil {
 		return domain.TunnelRoute{}, err
 	}

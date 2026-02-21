@@ -27,6 +27,7 @@ const (
 	GitHubRepo = "koltyakov/expose"
 	// releasesURL is the GitHub API endpoint for the latest release.
 	releasesURL      = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
+	maxReleaseJSON   = 2 << 20   // 2 MiB
 	maxDownloadBytes = 100 << 20 // 100 MiB
 	maxBinaryBytes   = 100 << 20 // 100 MiB
 )
@@ -165,9 +166,16 @@ func fetchLatestRelease(ctx context.Context) (*Release, error) {
 		return nil, fmt.Errorf("GitHub API returned %s", resp.Status)
 	}
 
+	body, err := readAllWithLimit(resp.Body, maxReleaseJSON)
+	if err != nil {
+		return nil, fmt.Errorf("read release JSON: %w", err)
+	}
 	var rel Release
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	if err := json.Unmarshal(body, &rel); err != nil {
 		return nil, fmt.Errorf("decode release JSON: %w", err)
+	}
+	if strings.TrimSpace(rel.TagName) == "" {
+		return nil, errors.New("release metadata missing tag_name")
 	}
 	return &rel, nil
 }
@@ -317,7 +325,7 @@ func replaceBinaryAt(exe string, newBinary []byte) error {
 		// The binary directory may not be writable (e.g. /usr/local/bin when
 		// running as a non-root systemd service). Fall back to the system
 		// temp directory and use copy instead of rename.
-		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
+		if isPermissionError(err) {
 			return replaceBinaryCopy(exe, newBinary, caps)
 		}
 		return fmt.Errorf("create temp file: %w", err)
@@ -348,6 +356,9 @@ func replaceBinaryAt(exe string, newBinary []byte) error {
 
 	// On most systems we can rename over the running binary.
 	if err := os.Rename(tmpPath, exe); err != nil {
+		if shouldFallbackToCopy(err) {
+			return replaceBinaryCopy(exe, newBinary, caps)
+		}
 		return fmt.Errorf("rename: %w", err)
 	}
 
@@ -393,29 +404,55 @@ func replaceBinaryCopy(exe string, newBinary []byte, caps string) error {
 		return err
 	}
 
-	// Remove the old binary. On Linux this unlinks the directory entry
-	// but the running process keeps its file descriptor — the inode is
-	// only freed when the process exits.
-	if err := os.Remove(exe); err != nil {
-		return fmt.Errorf("remove old binary (the binary must be in a directory writable by the service user, e.g. /opt/expose/bin/): %w", err)
+	backupPath := fmt.Sprintf("%s.old.%d", exe, time.Now().UnixNano())
+	swappedWithBackup := false
+	if err := os.Rename(exe, backupPath); err == nil {
+		swappedWithBackup = true
+	} else {
+		// If we cannot swap to a backup name, fall back to remove+create.
+		// On Linux this unlinks the directory entry while the running process
+		// keeps its file descriptor.
+		if err := os.Remove(exe); err != nil {
+			return fmt.Errorf("remove old binary (the binary must be in a directory writable by the service user, e.g. /opt/expose/bin/): %w", err)
+		}
 	}
 
-	// Create a fresh file at the original path (new inode, no ETXTBSY).
-	dst, err := os.OpenFile(exe, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
+	if err := copyFilePath(tmpPath, exe, mode); err != nil {
+		if swappedWithBackup {
+			if restoreErr := os.Rename(backupPath, exe); restoreErr != nil {
+				return fmt.Errorf("create new binary: %w (restore old binary failed: %v)", err, restoreErr)
+			}
+		}
 		return fmt.Errorf("create new binary: %w", err)
 	}
-	src, err := os.Open(tmpPath)
+	if swappedWithBackup {
+		_ = os.Remove(backupPath)
+	}
+
+	// Re-apply Linux file capabilities.
+	setFileCaps(exe, caps)
+
+	if err := syncDir(filepath.Dir(exe)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func copyFilePath(srcPath, dstPath string, mode os.FileMode) error {
+	src, err := os.Open(srcPath)
 	if err != nil {
-		_ = dst.Close()
 		return fmt.Errorf("open temp file: %w", err)
 	}
+	defer func() { _ = src.Close() }()
+
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
 	if _, err := io.Copy(dst, src); err != nil {
-		_ = src.Close()
 		_ = dst.Close()
 		return fmt.Errorf("copy binary: %w", err)
 	}
-	_ = src.Close()
 	if err := dst.Sync(); err != nil {
 		_ = dst.Close()
 		return err
@@ -423,10 +460,6 @@ func replaceBinaryCopy(exe string, newBinary []byte, caps string) error {
 	if err := dst.Close(); err != nil {
 		return err
 	}
-
-	// Re-apply Linux file capabilities.
-	setFileCaps(exe, caps)
-
 	return nil
 }
 
@@ -491,6 +524,10 @@ func parseSemver(v string) []int {
 	for i, p := range parts {
 		// Strip pre-release suffix (e.g. "0-rc1") for comparison.
 		p = strings.SplitN(p, "-", 2)[0]
+		p = strings.SplitN(p, "+", 2)[0]
+		if p == "" {
+			return nil
+		}
 		n := 0
 		for _, ch := range p {
 			if ch < '0' || ch > '9' {
@@ -531,4 +568,21 @@ func setFileCaps(path, caps string) {
 		return
 	}
 	_ = exec.Command("setcap", caps, path).Run()
+}
+
+func isPermissionError(err error) bool {
+	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)
+}
+
+func shouldFallbackToCopy(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isPermissionError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "text file busy") ||
+		strings.Contains(msg, "cross-device link") ||
+		strings.Contains(msg, "device or resource busy")
 }

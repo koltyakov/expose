@@ -550,7 +550,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		var msg tunnelproto.Message
 		if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
@@ -576,7 +576,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sess := &session{
 		tunnelID: "test",
@@ -611,7 +611,7 @@ func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		conn.SetReadLimit(64 * 1024 * 1024)
 
 		for {
@@ -633,7 +633,7 @@ func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn.SetReadLimit(64 * 1024 * 1024)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sess := &session{
 		tunnelID: "test",
@@ -719,7 +719,7 @@ func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
 			close(readDone)
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		defer close(readDone)
 		conn.SetReadLimit(64 * 1024 * 1024)
 
@@ -738,7 +738,7 @@ func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sess := &session{
 		tunnelID: "test",
@@ -811,7 +811,7 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		var msg tunnelproto.Message
 		if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
@@ -834,7 +834,7 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sess := &session{tunnelID: "test", conn: conn, pending: make(map[string]chan tunnelproto.Message)}
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

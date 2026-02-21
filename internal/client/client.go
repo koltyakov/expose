@@ -750,12 +750,14 @@ var (
 	}
 	responseFirstChunkPool = sync.Pool{
 		New: func() any {
-			return make([]byte, streamingThreshold+1)
+			b := make([]byte, streamingThreshold+1)
+			return &b
 		},
 	}
 	responseStreamChunkPool = sync.Pool{
 		New: func() any {
-			return make([]byte, streamingChunkSize)
+			b := make([]byte, streamingChunkSize)
+			return &b
 		},
 	}
 )
@@ -859,7 +861,7 @@ func (c *Client) forwardAndSend(
 	if bodyCh != nil {
 		pr, pw := io.Pipe()
 		go func() {
-			defer pw.Close()
+			defer func() { _ = pw.Close() }()
 			for {
 				select {
 				case chunk, ok := <-bodyCh:
@@ -946,13 +948,15 @@ func (c *Client) forwardAndSend(
 	}
 
 	// Try to read the first chunk to decide inline vs streamed response.
-	firstBuf := responseFirstChunkPool.Get().([]byte)
+	firstBufRef := responseFirstChunkPool.Get().(*[]byte)
+	firstBuf := *firstBufRef
 	if cap(firstBuf) < streamingThreshold+1 {
 		firstBuf = make([]byte, streamingThreshold+1)
 	} else {
 		firstBuf = firstBuf[:streamingThreshold+1]
 	}
-	defer responseFirstChunkPool.Put(firstBuf)
+	*firstBufRef = firstBuf
+	defer responseFirstChunkPool.Put(firstBufRef)
 	n, readErr := io.ReadFull(resp.Body, firstBuf)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
@@ -1013,13 +1017,15 @@ func (c *Client) forwardAndSend(
 	}
 
 	// Read remaining body in chunks.
-	chunkBuf := responseStreamChunkPool.Get().([]byte)
+	chunkBufRef := responseStreamChunkPool.Get().(*[]byte)
+	chunkBuf := *chunkBufRef
 	if cap(chunkBuf) < streamingChunkSize {
 		chunkBuf = make([]byte, streamingChunkSize)
 	} else {
 		chunkBuf = chunkBuf[:streamingChunkSize]
 	}
-	defer responseStreamChunkPool.Put(chunkBuf)
+	*chunkBufRef = chunkBuf
+	defer responseStreamChunkPool.Put(chunkBufRef)
 	for {
 		cn, err := resp.Body.Read(chunkBuf)
 		if cn > 0 {

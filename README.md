@@ -285,3 +285,7 @@ For the full ruleset and architecture details, see [WAF documentation](docs/waf.
 - Server expires stale sessions and closes stale temporary tunnels.
 - Stale temporary domains and old temporary cert cache files are purged automatically.
 - Server persists a single effective API-key pepper in DB (`server_settings`) so restarts/container moves do not break existing keys.
+
+## License
+
+MIT

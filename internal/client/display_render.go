@@ -27,11 +27,12 @@ func (d *Display) redraw() {
 		name += " " + d.styled(ansiDim, d.version)
 	}
 	hint := d.styled(ansiDim, "(Ctrl+C to quit)")
+	visHint := len("(Ctrl+C to quit)")
 	visName := len("expose")
 	if d.version != "" {
 		visName += 1 + len(d.version)
 	}
-	gap := 60 - visName
+	gap := displayContentWidth - visName - visHint
 	if gap < 4 {
 		gap = 4
 	}
@@ -52,25 +53,39 @@ func (d *Display) redraw() {
 		}
 		if !statusSince.IsZero() {
 			now := d.now()
-			statusText += d.styled(ansiDim, " for "+displayFormatUptime(now.Sub(statusSince)))
+			statusText += d.styled(ansiDim, " for ")
+			statusText += displayFormatUptime(now.Sub(statusSince))
 		}
-		d.writeField(&b, "Session Status", statusText)
+		if d.tunnelID != "" {
+			statusText += d.styled(ansiDim, " (ID: "+d.tunnelID+")")
+		}
+		d.writeField(&b, "Session", statusText)
 	} else {
-		d.writeField(&b, "Session Status", placeholder)
-	}
-	if d.tunnelID != "" {
-		d.writeField(&b, "Tunnel ID", d.styled(ansiDim, d.tunnelID))
-	} else {
-		d.writeField(&b, "Tunnel ID", placeholder)
+		statusText := placeholder
+		if d.tunnelID != "" {
+			statusText += d.styled(ansiDim, " (ID: "+d.tunnelID+")")
+		}
+		d.writeField(&b, "Session", statusText)
 	}
 	sv := d.serverVersion
 	if sv == "" {
 		sv = "--"
 	}
-	if d.wafEnabled {
-		sv += " (+WAF)"
+	serverVersionValue := d.styled(ansiDim, sv)
+	if sv != "--" {
+		serverVersionValue = sv // default terminal color (white in dark themes)
 	}
-	d.writeField(&b, "Server Version", d.styled(ansiDim, sv))
+	meta := make([]string, 0, 2)
+	if d.wafEnabled {
+		meta = append(meta, "WAF: On")
+	}
+	if d.tlsMode != "" {
+		meta = append(meta, "TLS: "+displayCapitalizeCSV(d.tlsMode))
+	}
+	if len(meta) > 0 {
+		serverVersionValue += d.styled(ansiDim, " ("+strings.Join(meta, ", ")+")")
+	}
+	d.writeField(&b, "Server", serverVersionValue)
 	if d.updateVersion != "" {
 		d.writeField(&b, "Update",
 			d.styled(ansiYellow, fmt.Sprintf("%s available", d.updateVersion))+
@@ -91,12 +106,6 @@ func (d *Display) redraw() {
 	} else {
 		d.writeField(&b, "Forwarding", placeholder)
 	}
-	if d.tlsMode != "" {
-		d.writeField(&b, "TLS Mode", d.tlsMode)
-	} else {
-		d.writeField(&b, "TLS Mode", placeholder)
-	}
-
 	// ── Connections counter ─────────────────────────────────────
 	wsCount := len(d.wsConns)
 	// Use the debounced floor so the counter never dips below the
@@ -128,7 +137,7 @@ func (d *Display) redraw() {
 	b.WriteString("  ")
 	b.WriteString(d.styled(ansiDim, httpSummary))
 	b.WriteString("\n")
-	b.WriteString(d.styled(ansiDim, strings.Repeat("─", 78)))
+	b.WriteString(d.styled(ansiDim, strings.Repeat("─", displayContentWidth)))
 	b.WriteString("\n")
 
 	if len(d.requests) == 0 {
@@ -230,6 +239,19 @@ func (d *Display) localTargetWithHealth(raw string) string {
 		return raw + " " + d.styled(ansiGreen, "●")
 	}
 	return raw + " " + d.styled(ansiRed, "●")
+}
+
+func displayCapitalizeCSV(s string) string {
+	parts := strings.Split(s, ",")
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			parts[i] = part
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (d *Display) localTargetHealthy(raw string) bool {

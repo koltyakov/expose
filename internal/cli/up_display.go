@@ -32,6 +32,7 @@ const (
 
 const (
 	upDisplayFieldWidth   = 19
+	upDisplayContentWidth = 78
 	upMaxDisplayReqs      = 10
 	upActiveClientWindow  = 60 * time.Second
 	upWSCloseDebounce     = 500 * time.Millisecond
@@ -422,17 +423,19 @@ func (d *upDashboard) redrawLocked() {
 		name += " " + d.styled(upANSIDim, d.version)
 	}
 	hint := d.styled(upANSIDim, "(Ctrl+C to quit)")
+	visHint := len("(Ctrl+C to quit)")
 	visName := len("expose")
 	if d.version != "" {
 		visName += 1 + len(d.version)
 	}
-	gap := 60 - visName
+	gap := upDisplayContentWidth - visName - visHint
 	if gap < 4 {
 		gap = 4
 	}
 	fmt.Fprintf(&b, "%s%s%s\n\n", name, strings.Repeat(" ", gap), hint)
 
 	placeholder := d.styled(upANSIDim, "--")
+	tunnelIDs := d.tunnelIDsLocked()
 	status := d.aggregateStatusLocked()
 	if status != "" {
 		now := d.now()
@@ -446,27 +449,46 @@ func (d *upDashboard) redrawLocked() {
 		}
 		statusValue := d.styled(statusColor, status)
 		if !d.statusChangedAt.IsZero() {
-			statusValue += d.styled(upANSIDim, " for "+upFormatHeaderUptime(now.Sub(d.statusChangedAt)))
+			statusValue += d.styled(upANSIDim, " for ")
+			statusValue += upFormatHeaderUptime(now.Sub(d.statusChangedAt))
 		}
-		d.writeField(&b, "Session Status", statusValue)
+		if tunnelIDs != "" {
+			statusValue += d.styled(upANSIDim, " (ID: "+tunnelIDs+")")
+		}
+		d.writeField(&b, "Session", statusValue)
 	} else {
 		d.statusText = ""
 		d.statusChangedAt = time.Time{}
-		d.writeField(&b, "Session Status", placeholder)
-	}
-
-	tunnelIDs := d.tunnelIDsLocked()
-	if tunnelIDs != "" {
-		d.writeField(&b, "Tunnel ID", d.styled(upANSIDim, tunnelIDs))
-	} else {
-		d.writeField(&b, "Tunnel ID", placeholder)
+		statusValue := placeholder
+		if tunnelIDs != "" {
+			statusValue += d.styled(upANSIDim, " (ID: "+tunnelIDs+")")
+		}
+		d.writeField(&b, "Session", statusValue)
 	}
 
 	serverVersion := d.serverVersionDisplayLocked()
+	tlsMode := d.joinMapValuesLocked(d.tlsModes)
+	if serverVersion == "" {
+		serverVersion = "--"
+	}
+	serverVersionValue := d.styled(upANSIDim, serverVersion)
+	if serverVersion != "--" {
+		serverVersionValue = serverVersion // default terminal color (white in dark themes)
+	}
+	meta := make([]string, 0, 2)
+	if d.anyWAFEnabledLocked() {
+		meta = append(meta, "WAF: On")
+	}
+	if tlsMode != "" {
+		meta = append(meta, "TLS: "+upCapitalizeCSV(tlsMode))
+	}
+	if len(meta) > 0 {
+		serverVersionValue += d.styled(upANSIDim, " ("+strings.Join(meta, ", ")+")")
+	}
 	if serverVersion != "" {
-		d.writeField(&b, "Server Version", d.styled(upANSIDim, serverVersion))
+		d.writeField(&b, "Server", serverVersionValue)
 	} else {
-		d.writeField(&b, "Server Version", placeholder)
+		d.writeField(&b, "Server", placeholder)
 	}
 	latency := d.joinMapValuesLocked(d.latencies)
 	if latency != "" {
@@ -486,13 +508,6 @@ func (d *upDashboard) redrawLocked() {
 			}
 			d.writeFieldContinuation(&b, line)
 		}
-	}
-
-	tlsMode := d.joinMapValuesLocked(d.tlsModes)
-	if tlsMode != "" {
-		d.writeField(&b, "TLS Mode", tlsMode)
-	} else {
-		d.writeField(&b, "TLS Mode", placeholder)
 	}
 
 	wsCount := len(d.wsConns)
@@ -521,7 +536,7 @@ func (d *upDashboard) redrawLocked() {
 	b.WriteString("  ")
 	b.WriteString(d.styled(upANSIDim, httpSummary))
 	b.WriteString("\n")
-	b.WriteString(d.styled(upANSIDim, strings.Repeat("─", 78)))
+	b.WriteString(d.styled(upANSIDim, strings.Repeat("─", upDisplayContentWidth)))
 	b.WriteString("\n")
 
 	if len(d.reqs) == 0 {
@@ -594,6 +609,19 @@ func (d *upDashboard) writeField(b *strings.Builder, label, value string) {
 
 func (d *upDashboard) writeFieldContinuation(b *strings.Builder, value string) {
 	d.writeField(b, "", value)
+}
+
+func upCapitalizeCSV(s string) string {
+	parts := strings.Split(s, ",")
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			parts[i] = part
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (d *upDashboard) aggregateStatusLocked() string {
@@ -712,9 +740,6 @@ func (d *upDashboard) serverVersionDisplayLocked() string {
 		v := strings.TrimSpace(d.serverVersions[sub])
 		if v == "" {
 			return
-		}
-		if d.wafEnabled[sub] {
-			v += " (+WAF)"
 		}
 		if _, ok := seen[v]; ok {
 			return

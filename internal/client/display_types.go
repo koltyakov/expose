@@ -25,6 +25,9 @@ const (
 // displayFieldWidth is the column width for header field labels.
 const displayFieldWidth = 19
 
+// displayContentWidth is the width used by divider lines and banner alignment.
+const displayContentWidth = 78
+
 // maxDisplayRequests is the number of HTTP request lines kept visible.
 const maxDisplayRequests = 10
 

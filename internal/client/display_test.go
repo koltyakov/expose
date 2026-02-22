@@ -51,17 +51,20 @@ func TestDisplayTunnelInfo(t *testing.T) {
 	if !strings.Contains(out, "online") {
 		t.Fatal("expected 'online' status")
 	}
+	if !strings.Contains(out, "(ID: tun_abc123)") {
+		t.Fatal("expected tunnel ID in Session")
+	}
 	if !strings.Contains(out, "https://myapp.example.com") {
 		t.Fatal("expected public URL")
 	}
 	if !strings.Contains(out, "http://localhost:3000") {
 		t.Fatal("expected local address")
 	}
-	if !strings.Contains(out, "autocert") {
-		t.Fatal("expected TLS mode")
+	if !strings.Contains(out, "(TLS: Autocert)") {
+		t.Fatal("expected capitalized TLS mode in Server metadata")
 	}
-	if !strings.Contains(out, "tun_abc123") {
-		t.Fatal("expected tunnel ID")
+	if strings.Contains(out, "Tunnel ID") {
+		t.Fatal("did not expect separate Tunnel ID field")
 	}
 	if !strings.Contains(out, "HTTP Requests") {
 		t.Fatal("expected HTTP Requests header")
@@ -76,12 +79,20 @@ func TestDisplayTunnelInfoNoTLSMode(t *testing.T) {
 	d, buf := newTestDisplay(false)
 	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz")
 	out := buf.String()
-	// TLS Mode field is always present; when empty it shows "--"
-	if !strings.Contains(out, "TLS Mode") {
-		t.Fatal("expected TLS Mode field to always be present")
+	if strings.Contains(out, "TLS Mode") {
+		t.Fatal("did not expect separate TLS Mode field")
 	}
-	if !strings.Contains(out, "--") {
-		t.Fatal("expected '--' placeholder for empty TLS Mode")
+	if !strings.Contains(out, "(ID: tun_xyz)") {
+		t.Fatal("expected tunnel ID in Session")
+	}
+	if strings.Contains(out, "Tunnel ID") {
+		t.Fatal("did not expect separate Tunnel ID field")
+	}
+	if !strings.Contains(out, "Server") {
+		t.Fatal("expected Server field")
+	}
+	if strings.Contains(out, "(TLS:") || strings.Contains(out, "[TLS:") {
+		t.Fatal("did not expect TLS suffix when TLS mode is empty")
 	}
 }
 
@@ -707,14 +718,14 @@ func TestDisplaySessionUptime(t *testing.T) {
 	d.redraw()
 	d.mu.Unlock()
 	out := buf.String()
-	if !strings.Contains(out, "Session Status") {
-		t.Fatal("expected Session Status field")
+	if !strings.Contains(out, "Session") {
+		t.Fatal("expected Session field")
 	}
 	if !strings.Contains(out, "online") {
 		t.Fatalf("expected status text, got: %s", out)
 	}
 	if !strings.Contains(out, "for 5 minutes") {
-		t.Fatalf("expected status duration in Session Status, got: %s", out)
+		t.Fatalf("expected status duration in Session, got: %s", out)
 	}
 	if strings.Contains(out, "Session Uptime") {
 		t.Fatal("expected no separate Session Uptime field")
@@ -750,8 +761,8 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	d.mu.Unlock()
 	out := buf.String()
 
-	if !strings.Contains(out, "Session Status") {
-		t.Fatal("expected Session Status field")
+	if !strings.Contains(out, "Session") {
+		t.Fatal("expected Session field")
 	}
 	if !strings.Contains(out, "online") {
 		t.Fatalf("expected online status, got: %s", out)

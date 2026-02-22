@@ -78,13 +78,16 @@ This gives you `https://myapp.example.com` every time.
 
 ## What's next?
 
-| Topic              | Guide                                                                                       |
-| ------------------ | ------------------------------------------------------------------------------------------- |
-| DNS records setup  | [GoDaddy](dns-godaddy.md) · [Cloudflare](dns-cloudflare.md) · [Namecheap](dns-namecheap.md) |
-| Router / NAT setup | [Port Forwarding](port-forwarding.md)                                                       |
-| Cloud deployment   | [VPS Deployment](vps-deployment.md)                                                         |
-| TLS options        | [TLS Modes](tls-modes.md)                                                                   |
-| Key management     | [API Keys](api-keys.md)                                                                     |
-| Local machine E2E  | [Local Testing](local-testing.md)                                                           |
-
-For local single-machine testing using `127.0.0.1.sslip.io`, follow [Local Testing](local-testing.md).
+| Topic               | Guide                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| Server configuration | [Server Configuration](server-configuration.md)                                             |
+| Client configuration | [Client Configuration](client-configuration.md)                                             |
+| DNS records setup   | [GoDaddy](dns-godaddy.md) · [Cloudflare](dns-cloudflare.md) · [Namecheap](dns-namecheap.md) |
+| Router / NAT setup  | [Port Forwarding](port-forwarding.md)                                                       |
+| Cloud deployment    | [VPS Deployment](vps-deployment.md)                                                         |
+| Multi-route config  | [expose up](expose-up.md)                                                                   |
+| TLS options         | [TLS Modes](tls-modes.md)                                                                   |
+| Key management      | [API Keys](api-keys.md)                                                                     |
+| Auto-update         | [Auto-Update](auto-update.md)                                                               |
+| Client terminal UI  | [Client Dashboard](client-dashboard.md)                                                     |
+| Local machine E2E   | [Local Testing](local-testing.md)                                                           |

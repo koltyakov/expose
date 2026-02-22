@@ -229,28 +229,31 @@ func resolveUpAccess(access upAccessConfig) (upAccessConfig, error) {
 	}
 	access.Password = strings.TrimSpace(access.Password)
 	access.PasswordEnv = strings.TrimSpace(access.PasswordEnv)
+	explicitPasswordConfigured := access.Password != "" || access.PasswordEnv != ""
 	if access.Password != "" && access.PasswordEnv != "" {
 		return access, errors.New("protect.password and protect.password_env are mutually exclusive")
 	}
 	if access.PasswordEnv != "" {
-		v := strings.TrimSpace(os.Getenv(access.PasswordEnv))
-		if v == "" {
-			return access, fmt.Errorf("environment variable %s is empty or not set", access.PasswordEnv)
+		// Backward-compat: treat protect.password_env as alias for protect.password.
+		access.Password = access.PasswordEnv
+		access.PasswordEnv = ""
+	}
+	if looksLikeEnvVarName(access.Password) {
+		if v, ok := os.LookupEnv(access.Password); ok {
+			access.Password = strings.TrimSpace(v)
 		}
-		access.Password = v
-		access.Protect = true
 	}
 	if access.Password != "" {
 		access.Protect = true
 	}
-	if access.Protect && access.Password == "" {
+	if access.Protect && access.Password == "" && !explicitPasswordConfigured {
 		if v := strings.TrimSpace(os.Getenv("EXPOSE_PASSWORD")); v != "" {
 			access.Password = v
 		}
 	}
 	if access.Protect && access.Password == "" {
 		if !isInteractiveInput() {
-			return access, errors.New("protect is configured but no password is available (set protect.password, protect.password_env, or EXPOSE_PASSWORD)")
+			return access, errors.New("protect is configured but no password is available (set protect.password or EXPOSE_PASSWORD)")
 		}
 		pw, err := promptSecret("Public password for all routes (required): ")
 		if err != nil {
@@ -262,6 +265,24 @@ func resolveUpAccess(access upAccessConfig) (upAccessConfig, error) {
 		}
 	}
 	return access, nil
+}
+
+func looksLikeEnvVarName(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func printUpRouteSummary(out io.Writer, cfg upConfig) {
@@ -384,38 +405,18 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 		}
 		cfg.Access.User = user
 
-		usePasswordEnv, err := askWizardYesNo(ctx, reader, out,
-			"Read password from environment variable",
-			"Recommended to avoid storing secrets in YAML.",
-			true,
+		passwordValue, err := askWizardValue(ctx, reader, out,
+			"Shared password (or env var name)",
+			"Store a literal password or an uppercase env var name (example: EXPOSE_PASSWORD).",
+			"If the value is uppercase and that env var exists at runtime, `expose up` uses the env value.",
+			"EXPOSE_PASSWORD",
+			strings.TrimSpace,
+			validateWizardNonEmpty,
 		)
 		if err != nil {
 			return err
 		}
-		if usePasswordEnv {
-			passwordEnv, err := askWizardValue(ctx, reader, out,
-				"Password env var",
-				"Environment variable read by `expose up` for the shared password.",
-				"Example: EXPOSE_PASSWORD",
-				"EXPOSE_PASSWORD",
-				strings.TrimSpace,
-				validateWizardNonEmpty,
-			)
-			if err != nil {
-				return err
-			}
-			cfg.Access.PasswordEnv = passwordEnv
-		} else {
-			pw, err := promptSecretContext(ctx, "Shared public password (stored in YAML): ")
-			if err != nil {
-				return err
-			}
-			pw = strings.TrimSpace(pw)
-			if pw == "" {
-				return errors.New("password is required when protection is enabled")
-			}
-			cfg.Access.Password = pw
-		}
+		cfg.Access.Password = passwordValue
 	}
 
 	cfg.Tunnels = make([]upTunnelConfig, 0, 2)

@@ -7,7 +7,7 @@ func TestParseUpYAMLAndNormalize(t *testing.T) {
 version: 1
 protect:
   user: admin
-  password_env: EXPOSE_PASSWORD
+  password: EXPOSE_PASSWORD
 tunnels:
   - name: frontend
     subdomain: myapp
@@ -28,7 +28,7 @@ tunnels:
 		t.Fatalf("normalizeAndValidate error: %v", err)
 	}
 	if !cfg.Access.Protect {
-		t.Fatal("expected protect to be implied by password_env")
+		t.Fatal("expected protect to be implied by password")
 	}
 	if got := cfg.Tunnels[1].PathPrefix; got != "/api" {
 		t.Fatalf("expected normalized path_prefix /api, got %q", got)
@@ -55,6 +55,12 @@ tunnels:
 	}
 	if !cfg.Access.Protect {
 		t.Fatal("expected legacy access alias to set protect")
+	}
+	if got := cfg.Access.Password; got != "EXPOSE_PASSWORD" {
+		t.Fatalf("expected password_env to normalize into password, got %q", got)
+	}
+	if got := cfg.Access.PasswordEnv; got != "" {
+		t.Fatalf("expected password_env alias to be cleared after normalization, got %q", got)
 	}
 }
 

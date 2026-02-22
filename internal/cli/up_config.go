@@ -20,7 +20,7 @@ type upAccessConfig struct {
 	Protect     bool
 	User        string
 	Password    string
-	PasswordEnv string
+	PasswordEnv string // deprecated alias for Password; accepted for compatibility
 }
 
 type upTunnelConfig struct {
@@ -69,13 +69,17 @@ func (c *upConfig) normalizeAndValidate() error {
 	c.Access.User = strings.TrimSpace(c.Access.User)
 	c.Access.Password = strings.TrimSpace(c.Access.Password)
 	c.Access.PasswordEnv = strings.TrimSpace(c.Access.PasswordEnv)
+	if c.Access.Password == "" && c.Access.PasswordEnv != "" {
+		c.Access.Password = c.Access.PasswordEnv
+		c.Access.PasswordEnv = ""
+	}
 	if c.Access.User == "" {
 		c.Access.User = "admin"
 	}
 	if c.Access.Password != "" && c.Access.PasswordEnv != "" {
 		return errors.New("protect.password and protect.password_env are mutually exclusive")
 	}
-	if c.Access.Password != "" || c.Access.PasswordEnv != "" {
+	if c.Access.Password != "" {
 		c.Access.Protect = true
 	}
 
@@ -172,10 +176,11 @@ func renderUpYAML(cfg upConfig) string {
 		if cfg.Access.User != "" {
 			fmt.Fprintf(&b, "  user: %s\n", yamlQuoteString(cfg.Access.User))
 		}
-		if cfg.Access.PasswordEnv != "" {
-			fmt.Fprintf(&b, "  password_env: %s\n", yamlQuoteString(cfg.Access.PasswordEnv))
-		} else if cfg.Access.Password != "" {
+		if cfg.Access.Password != "" {
 			fmt.Fprintf(&b, "  password: %s\n", yamlQuoteString(cfg.Access.Password))
+		} else if cfg.Access.PasswordEnv != "" {
+			// Canonicalize legacy alias when writing.
+			fmt.Fprintf(&b, "  password: %s\n", yamlQuoteString(cfg.Access.PasswordEnv))
 		}
 	}
 	b.WriteString("tunnels:\n")

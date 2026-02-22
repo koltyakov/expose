@@ -166,9 +166,11 @@ This requests `https://myapp.<EXPOSE_DOMAIN>`.
 Run `expose help` (or `expose --help`) for the full command list.
 
 ```text
+expose login                             Save server URL and API key
 expose http <port>                       Expose local port (temporary subdomain)
 expose http --domain=myapp <port>        Expose with a named subdomain
-expose login                             Save server URL and API key
+expose up                                Start tunnels from expose.yml
+expose up init                           Guided expose.yml setup
 expose server                            Start tunnel server
 expose server init                       Guided server setup + .env write
 expose apikey create --name NAME         Create API key
@@ -208,21 +210,9 @@ Protected tunnel (no prompt):
 EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
 ```
 
+Default mode is temporary when `--domain` is not set. For host allocation behavior and rationale, see [docs/temporary-host-allocation.md](docs/temporary-host-allocation.md).
+
 For full local single-machine E2E instructions (`127.0.0.1.sslip.io` + protected tunnel), see [Local Testing](docs/local-testing.md).
-
-Default mode is temporary. If `--domain` is not set, host allocation is automatic:
-
-- Wildcard TLS active: randomized temporary host (6-char slug) is allocated.
-- Wildcard TLS not active: server first tries a deterministic host from `client_hostname + ":" + local_port`:
-  - `sha1(client_hostname:local_port)` -> base32 lowercase -> first 6 chars
-  - example shape: `k3xnz3.example.com`
-  - on collision, server falls back to randomized 6-char host
-
-Why randomization exists:
-
-- avoids users accidentally claiming memorable names in temporary mode
-- reduces hostname collisions across clients
-- keeps temporary endpoints disposable
 
 ### Server flags
 
@@ -239,6 +229,12 @@ Why randomization exists:
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`        | -             | Explicit pepper override   |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`             | `info`        | `debug\|info\|warn\|error` |
 | -                         | `EXPOSE_WAF_ENABLE`            | `true`        | Enable/disable the WAF     |
+
+### See also
+
+- For full local single-machine E2E instructions (`127.0.0.1.sslip.io` + protected tunnel), see [Local Testing](docs/local-testing.md).
+- For project-based multi-route tunnels with `expose up` and `expose.yml`, see [docs/expose-up.md](docs/expose-up.md).
+- For temporary host allocation behavior and randomization rationale, see [docs/temporary-host-allocation.md](docs/temporary-host-allocation.md).
 
 ## Wildcard TLS Mode
 

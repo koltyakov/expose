@@ -62,6 +62,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to persist tunnel auth settings", http.StatusInternalServerError)
 		return
 	}
+	// Access credentials can change between registrations for the same host.
+	// Evict any cached host->route entry so public auth checks do not use stale
+	// access settings (e.g. a previous protected session) before reconnect.
+	s.routes.deleteHost(domainRec.Hostname)
 
 	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
 	if err != nil {

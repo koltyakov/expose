@@ -68,6 +68,19 @@ func (c *routeCache) cleanup() {
 	}
 }
 
+// deleteHost removes a cached entry for a specific host.
+func (c *routeCache) deleteHost(host string) {
+	if host == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[host]; ok {
+		delete(c.entries, host)
+		c.untrackHostLocked(e.route.Tunnel.ID, host)
+	}
+}
+
 // deleteByTunnelID removes any cached entry whose tunnel matches tunnelID.
 func (c *routeCache) deleteByTunnelID(tunnelID string) {
 	c.mu.Lock()

@@ -37,6 +37,29 @@ func TestRouteCacheSetGetDelete(t *testing.T) {
 	}
 }
 
+func TestRouteCacheDeleteHost(t *testing.T) {
+	t.Parallel()
+
+	c := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+	}
+
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-1", Hostname: "a.example.com"},
+		Tunnel: domain.Tunnel{ID: "t-1"},
+	}
+	c.set("a.example.com", route)
+
+	c.deleteHost("a.example.com")
+	if _, ok := c.get("a.example.com"); ok {
+		t.Fatal("expected cache miss after deleteHost")
+	}
+	if hosts := c.hostsByTunnel["t-1"]; len(hosts) != 0 {
+		t.Fatal("expected host tracking to be cleared for deleteHost")
+	}
+}
+
 func TestRouteCacheTTLExpiry(t *testing.T) {
 	t.Parallel()
 

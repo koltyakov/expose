@@ -23,7 +23,7 @@ const (
 )
 
 // displayFieldWidth is the column width for header field labels.
-const displayFieldWidth = 26
+const displayFieldWidth = 18
 
 // maxDisplayRequests is the number of HTTP request lines kept visible.
 const maxDisplayRequests = 10

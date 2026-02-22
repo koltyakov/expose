@@ -14,8 +14,8 @@ import (
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
-func TestBuildWizardEnvEntriesDynamic(t *testing.T) {
-	entries := buildWizardEnvEntries(serverWizardAnswers{
+func TestBuildInitEnvEntriesDynamic(t *testing.T) {
+	entries := buildInitEnvEntries(serverInitAnswers{
 		BaseDomain:   "example.com",
 		ListenHTTPS:  ":10443",
 		ListenHTTP:   ":10080",
@@ -52,8 +52,8 @@ func TestBuildWizardEnvEntriesDynamic(t *testing.T) {
 	}
 }
 
-func TestBuildWizardEnvEntriesWildcard(t *testing.T) {
-	entries := buildWizardEnvEntries(serverWizardAnswers{
+func TestBuildInitEnvEntriesWildcard(t *testing.T) {
+	entries := buildInitEnvEntries(serverInitAnswers{
 		BaseDomain:   "example.com",
 		ListenHTTPS:  ":10443",
 		DBPath:       "./expose.db",
@@ -142,7 +142,7 @@ func TestParseEnvAssignment(t *testing.T) {
 	}
 }
 
-func TestValidateWizardTLSMode(t *testing.T) {
+func TestValidateInitTLSMode(t *testing.T) {
 	if err := validateWizardTLSMode("dynamic"); err != nil {
 		t.Fatalf("expected dynamic to be valid: %v", err)
 	}
@@ -150,14 +150,14 @@ func TestValidateWizardTLSMode(t *testing.T) {
 		t.Fatalf("expected wildcard to be valid: %v", err)
 	}
 	if err := validateWizardTLSMode("auto"); err == nil {
-		t.Fatal("expected auto to be invalid in wizard")
+		t.Fatal("expected auto to be invalid in init")
 	}
 }
 
-func TestLoadServerWizardDefaults(t *testing.T) {
-	clearWizardEnvForTest(t)
+func TestLoadServerInitDefaults(t *testing.T) {
+	clearInitEnvForTest(t)
 	t.Setenv("EXPOSE_TLS_MODE", "")
-	defaults := loadServerWizardDefaults(filepath.Join(t.TempDir(), ".env"))
+	defaults := loadServerInitDefaults(filepath.Join(t.TempDir(), ".env"))
 	if defaults.TLSMode != "dynamic" {
 		t.Fatalf("expected default TLS mode dynamic, got %s", defaults.TLSMode)
 	}
@@ -166,8 +166,8 @@ func TestLoadServerWizardDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadServerWizardDefaultsFromEnvFile(t *testing.T) {
-	clearWizardEnvForTest(t)
+func TestLoadServerInitDefaultsFromEnvFile(t *testing.T) {
+	clearInitEnvForTest(t)
 	envPath := filepath.Join(t.TempDir(), ".env")
 	envContent := strings.Join([]string{
 		"EXPOSE_DOMAIN=from-file.example.com",
@@ -180,7 +180,7 @@ func TestLoadServerWizardDefaultsFromEnvFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defaults := loadServerWizardDefaults(envPath)
+	defaults := loadServerInitDefaults(envPath)
 	if defaults.BaseDomain != "from-file.example.com" {
 		t.Fatalf("expected domain from .env file, got %q", defaults.BaseDomain)
 	}
@@ -195,15 +195,15 @@ func TestLoadServerWizardDefaultsFromEnvFile(t *testing.T) {
 	}
 }
 
-func TestLoadServerWizardDefaultsEnvOverridesFile(t *testing.T) {
-	clearWizardEnvForTest(t)
+func TestLoadServerInitDefaultsEnvOverridesFile(t *testing.T) {
+	clearInitEnvForTest(t)
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("EXPOSE_TLS_MODE=wildcard\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("EXPOSE_TLS_MODE", "dynamic")
 
-	defaults := loadServerWizardDefaults(envPath)
+	defaults := loadServerInitDefaults(envPath)
 	if defaults.TLSMode != "dynamic" {
 		t.Fatalf("expected process env to override .env file, got %s", defaults.TLSMode)
 	}
@@ -226,7 +226,7 @@ func TestParseDarwinIOPlatformUUID(t *testing.T) {
 	}
 }
 
-func TestResolveWizardPepperDefaultFromDB(t *testing.T) {
+func TestResolveInitPepperDefaultFromDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "expose.db")
 	store, err := sqlite.Open(dbPath)
 	if err != nil {
@@ -240,21 +240,21 @@ func TestResolveWizardPepperDefaultFromDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := resolveWizardPepperDefault(ctx, dbPath, "fallback-pepper")
+	got := resolveInitPepperDefault(ctx, dbPath, "fallback-pepper")
 	if got != "db-pepper" {
 		t.Fatalf("expected db pepper, got %q", got)
 	}
 }
 
-func TestResolveWizardPepperDefaultFallback(t *testing.T) {
+func TestResolveInitPepperDefaultFallback(t *testing.T) {
 	ctx := context.Background()
-	got := resolveWizardPepperDefault(ctx, filepath.Join(t.TempDir(), "missing.db"), "fallback-pepper")
+	got := resolveInitPepperDefault(ctx, filepath.Join(t.TempDir(), "missing.db"), "fallback-pepper")
 	if got != "fallback-pepper" {
 		t.Fatalf("expected fallback pepper, got %q", got)
 	}
 }
 
-func TestRunServerWizardInteractiveCanceled(t *testing.T) {
+func TestRunServerInitInteractiveCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -263,7 +263,7 @@ func TestRunServerWizardInteractiveCanceled(t *testing.T) {
 	defer func() { _ = inW.Close() }()
 
 	var out bytes.Buffer
-	err := runServerWizardInteractive(ctx, inR, &out, filepath.Join(t.TempDir(), ".env"))
+	err := runServerInitInteractive(ctx, inR, &out, filepath.Join(t.TempDir(), ".env"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
@@ -286,7 +286,7 @@ func envEntryKeys(entries []envEntry) []string {
 	return out
 }
 
-func clearWizardEnvForTest(t *testing.T) {
+func clearInitEnvForTest(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"EXPOSE_DOMAIN",

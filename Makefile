@@ -100,8 +100,8 @@ ci: deps fmt vet test test-race build release-check
 run-server:
 	go run ./cmd/expose server
 
-run-server-wizard:
-	go run ./cmd/expose server wizard
+run-server-init:
+	go run ./cmd/expose server init
 
 client-login:
 	@if [ -n "$$EXPOSE_API_KEY" ]; then \

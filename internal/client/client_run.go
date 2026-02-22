@@ -77,7 +77,7 @@ func (c *Client) Run(ctx context.Context) error {
 				c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
 			}
 			if reg.ServerVersion != "" {
-				c.log.Info("versions", "client", c.version, "server", versionutil.EnsureVPrefix(reg.ServerVersion))
+				c.log.Info("versions", "client", c.version, "server", versionutil.EnsureVPrefix(reg.ServerVersion), "waf_enabled", reg.WAFEnabled)
 			}
 		}
 

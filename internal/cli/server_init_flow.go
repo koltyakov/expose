@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-type serverWizardAnswers struct {
+type serverInitAnswers struct {
 	BaseDomain    string
 	ListenHTTPS   string
 	ListenHTTP    string
@@ -33,38 +33,38 @@ type envEntry struct {
 	Value string
 }
 
-func runServerWizard(ctx context.Context, args []string) int {
-	fs := flag.NewFlagSet("server-wizard", flag.ContinueOnError)
+func runServerInit(ctx context.Context, args []string) int {
+	fs := flag.NewFlagSet("server-init", flag.ContinueOnError)
 	envFile := ".env"
 	fs.StringVar(&envFile, "env-file", envFile, "path to .env output file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: expose server wizard [--env-file=.env]")
+		fmt.Fprintln(os.Stderr, "usage: expose server init [--env-file=.env]")
 		return 2
 	}
 	if !isInteractiveInput() {
-		fmt.Fprintln(os.Stderr, "server wizard error: interactive terminal required")
+		fmt.Fprintln(os.Stderr, "server init error: interactive terminal required")
 		return 2
 	}
 
-	if err := runServerWizardInteractive(ctx, os.Stdin, os.Stdout, envFile); err != nil {
+	if err := runServerInitInteractive(ctx, os.Stdin, os.Stdout, envFile); err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(os.Stderr, "server wizard canceled")
+			fmt.Fprintln(os.Stderr, "server init canceled")
 			return 130
 		}
-		fmt.Fprintln(os.Stderr, "server wizard error:", err)
+		fmt.Fprintln(os.Stderr, "server init error:", err)
 		return 1
 	}
 	return 0
 }
 
-func runServerWizardInteractive(ctx context.Context, in io.Reader, out io.Writer, envFile string) error {
+func runServerInitInteractive(ctx context.Context, in io.Reader, out io.Writer, envFile string) error {
 	reader := bufio.NewReader(in)
-	defaults := loadServerWizardDefaults(envFile)
+	defaults := loadServerInitDefaults(envFile)
 
-	_, _ = fmt.Fprintln(out, "Expose Server Wizard")
+	_, _ = fmt.Fprintln(out, "Expose Server Init")
 	_, _ = fmt.Fprintln(out, "Press Enter to accept defaults. Values are saved to .env for future runs.")
 	_, _ = fmt.Fprintln(out)
 
@@ -182,7 +182,7 @@ func runServerWizardInteractive(ctx context.Context, in io.Reader, out io.Writer
 		return err
 	}
 
-	apiKeyPepperDefault := resolveWizardPepperDefault(ctx, dbPath, defaults.APIKeyPepper)
+	apiKeyPepperDefault := resolveInitPepperDefault(ctx, dbPath, defaults.APIKeyPepper)
 	apiKeyPepper, err := askWizardValue(ctx, reader, out,
 		"API key pepper",
 		"Secret salt used when hashing API keys. Default is existing DB pepper (if set), otherwise this machine ID.",
@@ -219,7 +219,7 @@ func runServerWizardInteractive(ctx context.Context, in io.Reader, out io.Writer
 		}
 	}
 
-	answers := serverWizardAnswers{
+	answers := serverInitAnswers{
 		BaseDomain:   domain,
 		ListenHTTPS:  listenHTTPS,
 		ListenHTTP:   listenHTTP,
@@ -235,7 +235,7 @@ func runServerWizardInteractive(ctx context.Context, in io.Reader, out io.Writer
 	}
 
 	if answers.GenerateKey {
-		plain, err := createWizardAPIKey(ctx, answers.DBPath, answers.APIKeyPepper, answers.APIKeyName)
+		plain, err := createInitAPIKey(ctx, answers.DBPath, answers.APIKeyPepper, answers.APIKeyName)
 		if err != nil {
 			return fmt.Errorf("generate api key: %w", err)
 		}
@@ -245,13 +245,13 @@ func runServerWizardInteractive(ctx context.Context, in io.Reader, out io.Writer
 		_, _ = fmt.Fprintf(out, "Generated API key (%s).\n", answers.APIKeyName)
 	}
 
-	entries := buildWizardEnvEntries(answers)
+	entries := buildInitEnvEntries(answers)
 	if err := upsertEnvFile(envFile, entries); err != nil {
 		return fmt.Errorf("write %s: %w", envFile, err)
 	}
 
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintf(out, "Saved %d settings to %s\n", len(entries), envFile)
-	printWizardNextSteps(out, answers)
+	printInitNextSteps(out, answers)
 	return nil
 }

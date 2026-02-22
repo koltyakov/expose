@@ -15,8 +15,11 @@ Usage:
   expose http <port>                    Expose local port (temporary subdomain)
   expose http --domain=myapp <port>     Expose with a named subdomain
   expose login                          Save server URL and API key
+  expose up                             Start routes from ./expose.yml
+  expose up -f expose.yml               Start routes from YAML config
+  expose up init                        Create expose.yml via wizard
   expose server                         Start tunnel server
-  expose server wizard                  Guided server setup + .env write
+  expose server init                    Guided server setup + .env write
   expose apikey create --name NAME      Create a new API key
   expose apikey list                    List all API keys
   expose apikey revoke --id=ID          Revoke an API key
@@ -29,6 +32,7 @@ Quick Start:
   2. expose apikey create --name default            # create API key
   3. expose login --server example.com --api-key KEY  # save credentials
   4. expose http 3000                               # expose local port
+     or: expose up init && expose up                # multi-route project config
 
 Environment Variables:
   EXPOSE_DOMAIN           Server base domain (e.g. example.com)

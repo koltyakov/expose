@@ -418,11 +418,20 @@ func (rt *clientSessionRuntime) handlePingPong(msg tunnelproto.Message) error {
 		rt.pingSentMu.Lock()
 		sentAt := rt.pingSentAt
 		rt.pingSentMu.Unlock()
-		if !sentAt.IsZero() && rt.client.display != nil {
-			rt.client.display.ShowLatency(time.Since(sentAt))
+		if !sentAt.IsZero() {
+			rtt := time.Since(sentAt)
+			if rt.client.display != nil {
+				rt.client.display.ShowLatency(rtt)
+			} else if rt.client.log != nil {
+				rt.client.log.Info("latency", "duration", rtt.String())
+			}
 		}
-		if msg.Stats != nil && rt.client.display != nil {
-			rt.client.display.ShowWAFStats(msg.Stats.WAFBlocked)
+		if msg.Stats != nil {
+			if rt.client.display != nil {
+				rt.client.display.ShowWAFStats(msg.Stats.WAFBlocked)
+			} else if rt.client.log != nil {
+				rt.client.log.Info("waf stats", "blocked", msg.Stats.WAFBlocked)
+			}
 		}
 	}
 

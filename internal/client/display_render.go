@@ -120,7 +120,7 @@ func (d *Display) redraw() {
 	b.WriteString("\n")
 
 	// ── HTTP Requests (counters) ────────────────────────────────
-	b.WriteString(d.styled(ansiBold, "HTTP Requests"))
+	b.WriteString(d.styled(ansiBold, "HTTP Requests   "))
 	b.WriteString("  ")
 	b.WriteString(d.styled(ansiDim, httpSummary))
 	b.WriteString("\n")
@@ -128,7 +128,7 @@ func (d *Display) redraw() {
 	b.WriteString("\n")
 
 	if len(d.requests) == 0 {
-		b.WriteString(d.styled(ansiDim, "  Waiting for requests…"))
+		b.WriteString(d.styled(ansiDim, "Waiting for requests…"))
 		b.WriteString("\n")
 	} else {
 		for _, r := range d.requests {

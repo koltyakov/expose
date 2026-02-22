@@ -22,8 +22,8 @@ func runServer(ctx context.Context, args []string) int {
 		switch args[0] {
 		case "apikey":
 			return runAPIKeyAdmin(ctx, args[1:])
-		case "wizard":
-			return runServerWizard(ctx, args[1:])
+		case "init":
+			return runServerInit(ctx, args[1:])
 		}
 	}
 

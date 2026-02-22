@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func printWizardNextSteps(out io.Writer, a serverWizardAnswers) {
+func printInitNextSteps(out io.Writer, a serverInitAnswers) {
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "Next steps")
 	_, _ = fmt.Fprintln(out, "  1) Start the server")

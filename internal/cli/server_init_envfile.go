@@ -24,14 +24,14 @@ func loadEnvFileValues(path string) map[string]string {
 	return out
 }
 
-func buildWizardEnvEntries(a serverWizardAnswers) []envEntry {
+func buildInitEnvEntries(a serverInitAnswers) []envEntry {
 	entries := []envEntry{
 		{Key: "EXPOSE_DOMAIN", Value: a.BaseDomain},
 		{Key: "EXPOSE_LISTEN_HTTPS", Value: a.ListenHTTPS},
 		{Key: "EXPOSE_TLS_MODE", Value: a.TLSMode},
 	}
 	if a.TLSMode == "wildcard" {
-		entries = appendWizardDBAndCertEntries(entries, a)
+		entries = appendInitDBAndCertEntries(entries, a)
 		entries = append(entries,
 			envEntry{Key: "EXPOSE_TLS_CERT_FILE", Value: a.TLSCertFile},
 			envEntry{Key: "EXPOSE_TLS_KEY_FILE", Value: a.TLSKeyFile},
@@ -40,7 +40,7 @@ func buildWizardEnvEntries(a serverWizardAnswers) []envEntry {
 		entries = append(entries,
 			envEntry{Key: "EXPOSE_LISTEN_HTTP_CHALLENGE", Value: a.ListenHTTP},
 		)
-		entries = appendWizardDBAndCertEntries(entries, a)
+		entries = appendInitDBAndCertEntries(entries, a)
 	}
 	entries = append(entries,
 		envEntry{Key: "EXPOSE_LOG_LEVEL", Value: a.LogLevel},
@@ -52,7 +52,7 @@ func buildWizardEnvEntries(a serverWizardAnswers) []envEntry {
 	return entries
 }
 
-func appendWizardDBAndCertEntries(entries []envEntry, a serverWizardAnswers) []envEntry {
+func appendInitDBAndCertEntries(entries []envEntry, a serverInitAnswers) []envEntry {
 	return append(entries,
 		envEntry{Key: "EXPOSE_DB_PATH", Value: a.DBPath},
 		envEntry{Key: "EXPOSE_CERT_CACHE_DIR", Value: a.CertCacheDir},
@@ -111,14 +111,14 @@ func upsertEnvFile(path string, entries []envEntry) error {
 		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
 			lines = append(lines, "")
 		}
-		lines = append(lines, "# Added by expose server wizard")
+		lines = append(lines, "# Added by expose server init")
 		for _, key := range pending {
 			lines = append(lines, formatEnvEntry(key, byKey[key]))
 		}
 	}
 
 	if len(lines) == 0 {
-		lines = append(lines, "# Added by expose server wizard")
+		lines = append(lines, "# Added by expose server init")
 		for _, key := range order {
 			lines = append(lines, formatEnvEntry(key, byKey[key]))
 		}

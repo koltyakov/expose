@@ -337,6 +337,11 @@ func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, star
 	if c.display != nil {
 		c.display.LogRequest(req.Method, path, status, elapsed, req.Headers)
 	} else if c.log != nil {
-		c.log.Info("forwarded request", "method", req.Method, "path", path, "status", status, "duration", elapsed.String())
+		fp := visitorFingerprint(req.Headers)
+		if fp != "" {
+			c.log.Info("forwarded request", "method", req.Method, "path", path, "status", status, "duration", elapsed.String(), "client_fingerprint", fp)
+		} else {
+			c.log.Info("forwarded request", "method", req.Method, "path", path, "status", status, "duration", elapsed.String())
+		}
 	}
 }

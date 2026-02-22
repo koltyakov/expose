@@ -21,6 +21,8 @@ func Run(args []string) int {
 		return runClientLogin(args[1:])
 	case "http":
 		return runHTTP(ctx, args[1:])
+	case "up":
+		return runUp(ctx, args[1:])
 	case "tunnel":
 		return runTunnel(ctx, args[1:])
 	case "client":

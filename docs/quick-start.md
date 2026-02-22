@@ -19,7 +19,7 @@ go build -o bin/expose ./cmd/expose
 On your public-facing machine:
 
 ```bash
-./bin/expose server wizard
+./bin/expose server init
 ```
 
 Or configure environment variables manually:

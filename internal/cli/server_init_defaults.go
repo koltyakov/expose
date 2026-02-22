@@ -9,7 +9,7 @@ import (
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
-func loadServerWizardDefaults(envFile string) serverWizardAnswers {
+func loadServerInitDefaults(envFile string) serverInitAnswers {
 	fileValues := loadEnvFileValues(envFile)
 	valueOrDefault := func(key, def string) string {
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
@@ -29,10 +29,10 @@ func loadServerWizardDefaults(envFile string) serverWizardAnswers {
 	}
 	pepper := strings.TrimSpace(valueOrDefault("EXPOSE_API_KEY_PEPPER", ""))
 	if pepper == "" {
-		pepper = strings.TrimSpace(detectWizardMachineID())
+		pepper = strings.TrimSpace(detectInitMachineID())
 	}
 
-	return serverWizardAnswers{
+	return serverInitAnswers{
 		BaseDomain:   normalizeWizardDomain(valueOrDefault("EXPOSE_DOMAIN", "")),
 		ListenHTTPS:  strings.TrimSpace(valueOrDefault("EXPOSE_LISTEN_HTTPS", ":10443")),
 		ListenHTTP:   strings.TrimSpace(valueOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", ":10080")),
@@ -46,11 +46,11 @@ func loadServerWizardDefaults(envFile string) serverWizardAnswers {
 	}
 }
 
-func detectWizardMachineID() string {
+func detectInitMachineID() string {
 	return detectMachineID()
 }
 
-func resolveWizardPepperDefault(ctx context.Context, dbPath, fallback string) string {
+func resolveInitPepperDefault(ctx context.Context, dbPath, fallback string) string {
 	dbPath = strings.TrimSpace(dbPath)
 	if dbPath == "" {
 		return strings.TrimSpace(fallback)
@@ -69,7 +69,7 @@ func resolveWizardPepperDefault(ctx context.Context, dbPath, fallback string) st
 	return strings.TrimSpace(fallback)
 }
 
-func createWizardAPIKey(ctx context.Context, dbPath, pepper, name string) (string, error) {
+func createInitAPIKey(ctx context.Context, dbPath, pepper, name string) (string, error) {
 	store, err := sqlite.Open(dbPath)
 	if err != nil {
 		return "", err

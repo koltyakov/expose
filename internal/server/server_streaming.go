@@ -64,7 +64,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	n, readErr := io.ReadFull(r.Body, firstBuf)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		// The entire body fits within the threshold — send inline.
+		// The entire body fits within the threshold - send inline.
 		return false, sess.writeJSON(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{
@@ -81,7 +81,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 		return false, readErr
 	}
 
-	// Body exceeds threshold — stream it.
+	// Body exceeds threshold - stream it.
 	if err := sess.writeJSON(tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
 		Request: &tunnelproto.HTTPRequest{

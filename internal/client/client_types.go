@@ -78,12 +78,18 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 			Timeout: cfg.Timeout,
 		},
 		fwdClient: &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   100,
-				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: 2 * time.Minute,
-			},
+			Transport: newForwardHTTPTransport(),
 		},
 	}
+}
+
+func newForwardHTTPTransport() *http.Transport {
+	base, _ := http.DefaultTransport.(*http.Transport)
+	tr := base.Clone()
+	tr.MaxIdleConns = 100
+	tr.MaxIdleConnsPerHost = 100
+	tr.MaxConnsPerHost = maxConcurrentForwards
+	tr.IdleConnTimeout = 90 * time.Second
+	tr.ResponseHeaderTimeout = 2 * time.Minute
+	return tr
 }

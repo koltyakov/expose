@@ -44,7 +44,7 @@ var forbiddenJSONBody = []byte(`{"error":"Forbidden"}` + "\n")
 func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if !cfg.Enabled {
-			return next // WAF disabled — no overhead
+			return next // WAF disabled - no overhead
 		}
 
 		fw := &firewall{

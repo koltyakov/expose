@@ -50,11 +50,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	headers := tunnelproto.CloneHeaders(req.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
-	for k, vals := range headers {
-		for _, v := range vals {
-			localReq.Header.Add(k, v)
-		}
-	}
+	localReq.Header = headers
 	localReq.Header.Del("Host")
 	if forwardedHost != "" {
 		localReq.Host = forwardedHost
@@ -130,8 +126,10 @@ func (c *Client) forwardAndSend(
 
 	// Build request body reader.
 	var body io.Reader
+	var pipeReader *io.PipeReader
 	if bodyCh != nil {
 		pr, pw := io.Pipe()
+		pipeReader = pr
 		go func() {
 			defer func() { _ = pw.Close() }()
 			for {
@@ -162,6 +160,11 @@ func (c *Client) forwardAndSend(
 		}
 		body = bytes.NewReader(data)
 	}
+	if pipeReader != nil {
+		// Ensure the body pump goroutine unblocks if forwarding fails before the
+		// local upstream reads the streamed request body.
+		defer func() { _ = pipeReader.Close() }()
+	}
 
 	localReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), body)
 	if err != nil {
@@ -176,11 +179,7 @@ func (c *Client) forwardAndSend(
 	headers := tunnelproto.CloneHeaders(req.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
-	for k, vals := range headers {
-		for _, v := range vals {
-			localReq.Header.Add(k, v)
-		}
-	}
+	localReq.Header = headers
 	localReq.Header.Del("Host")
 	if forwardedHost != "" {
 		localReq.Host = forwardedHost
@@ -232,7 +231,7 @@ func (c *Client) forwardAndSend(
 	n, readErr := io.ReadFull(resp.Body, firstBuf)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		// Small response — send inline.
+		// Small response - send inline.
 		_ = writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindResponse,
 			Response: &tunnelproto.HTTPResponse{
@@ -260,7 +259,7 @@ func (c *Client) forwardAndSend(
 		return
 	}
 
-	// Large response — stream it.
+	// Large response - stream it.
 	if err := writeMsg(tunnelproto.Message{
 		Kind: tunnelproto.KindResponse,
 		Response: &tunnelproto.HTTPResponse{

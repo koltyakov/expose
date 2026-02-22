@@ -51,7 +51,7 @@ type ServerConfig struct {
 	TempRetention          time.Duration
 	WAFEnabled             bool
 
-	// Timeout and pool tuning (optional — zero values fall back to sane
+	// Timeout and pool tuning (optional - zero values fall back to sane
 	// defaults defined in the server package).
 	HTTPSReadTimeout  time.Duration
 	HTTPSWriteTimeout time.Duration
@@ -251,7 +251,7 @@ func normalizeListenAddr(v string) string {
 	if v == "" {
 		return v
 	}
-	// Already contains a colon that is part of host:port — leave as-is,
+	// Already contains a colon that is part of host:port - leave as-is,
 	// but if the entire value is digits-only it's a bare port number.
 	if isAllDigits(v) {
 		return ":" + v
@@ -259,7 +259,7 @@ func normalizeListenAddr(v string) string {
 	if strings.HasPrefix(v, ":") {
 		return v // e.g. ":10443"
 	}
-	// Could be "host:port" or an IPv6 bracketed address — pass through.
+	// Could be "host:port" or an IPv6 bracketed address - pass through.
 	return v
 }
 

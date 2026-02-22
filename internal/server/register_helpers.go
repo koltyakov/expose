@@ -116,7 +116,7 @@ func (s *Server) allocateRegisterRoute(ctx context.Context, keyID string, prepar
 		// Only fall back to a random subdomain for cross-key hash collisions.
 		// If the same API key already owns this subdomain with an active
 		// tunnel, the client is trying to duplicate an existing session from
-		// the same machine+port — block it instead of silently assigning a
+		// the same machine+port - block it instead of silently assigning a
 		// new random subdomain.
 		host := req.Subdomain + "." + normalizeHost(s.cfg.BaseDomain)
 		if route, routeErr := s.store.FindRouteByHost(ctx, host); routeErr != nil || route.Domain.APIKeyID != keyID {

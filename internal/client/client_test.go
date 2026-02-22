@@ -47,6 +47,40 @@ func TestNextBackoff(t *testing.T) {
 	}
 }
 
+func TestNewUsesClonedForwardTransportWithSafeDefaults(t *testing.T) {
+	t.Parallel()
+
+	c := New(config.ClientConfig{Timeout: 3 * time.Second}, slog.Default())
+	tr, ok := c.fwdClient.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("expected *http.Transport, got %T", c.fwdClient.Transport)
+	}
+	if tr == http.DefaultTransport {
+		t.Fatal("expected cloned transport, got shared default transport")
+	}
+	if tr.Proxy == nil {
+		t.Fatal("expected ProxyFromEnvironment to be preserved")
+	}
+	if tr.DialContext == nil {
+		t.Fatal("expected DialContext to be preserved")
+	}
+	if tr.TLSHandshakeTimeout <= 0 {
+		t.Fatalf("expected TLSHandshakeTimeout > 0, got %s", tr.TLSHandshakeTimeout)
+	}
+	if tr.MaxIdleConns != 100 {
+		t.Fatalf("expected MaxIdleConns=100, got %d", tr.MaxIdleConns)
+	}
+	if tr.MaxIdleConnsPerHost != 100 {
+		t.Fatalf("expected MaxIdleConnsPerHost=100, got %d", tr.MaxIdleConnsPerHost)
+	}
+	if tr.MaxConnsPerHost != maxConcurrentForwards {
+		t.Fatalf("expected MaxConnsPerHost=%d, got %d", maxConcurrentForwards, tr.MaxConnsPerHost)
+	}
+	if tr.ResponseHeaderTimeout != 2*time.Minute {
+		t.Fatalf("expected ResponseHeaderTimeout=2m, got %s", tr.ResponseHeaderTimeout)
+	}
+}
+
 func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 	t.Parallel()
 

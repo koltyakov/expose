@@ -214,7 +214,7 @@ func getFileCaps(path string) string {
 }
 
 // setFileCaps re-applies previously captured Linux file capabilities.
-// It is a best-effort operation — errors are silently ignored (the caller
+// It is a best-effort operation - errors are silently ignored (the caller
 // may not be root, in which case setcap will fail and the administrator
 // must re-run setcap manually).
 func setFileCaps(path, caps string) {

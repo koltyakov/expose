@@ -153,9 +153,9 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // gracefulShutdown performs an orderly multi-phase shutdown:
-//  1. Drain — stop accepting new connections (http.Server.Shutdown).
-//  2. Close — terminate all active tunnel sessions.
-//  3. Wait  — allow read loops to finish within a timeout.
+//  1. Drain - stop accepting new connections (http.Server.Shutdown).
+//  2. Close - terminate all active tunnel sessions.
+//  3. Wait  - allow read loops to finish within a timeout.
 func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *http.Server) error {
 	drainTimeout := durationOr(s.cfg.ShutdownDrainTime, 5*time.Second)
 	waitTimeout := durationOr(s.cfg.ShutdownWaitTime, 15*time.Second)

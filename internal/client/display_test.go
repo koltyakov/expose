@@ -525,7 +525,7 @@ func TestDisplayActiveClientsWSKeepsAlive(t *testing.T) {
 		t.Fatalf("expected 1 active from open WebSocket, got: %s", out)
 	}
 
-	// Close the WS — now with expired timestamp, visitor should become inactive.
+	// Close the WS - now with expired timestamp, visitor should become inactive.
 	d.TrackWSClose("ws_1")
 	buf.Reset()
 	d.mu.Lock()
@@ -598,7 +598,7 @@ func TestDisplayWSCloseDebounceNoBlink(t *testing.T) {
 		t.Fatal("expected 2 open WebSockets initially")
 	}
 
-	// Close ws_1 — the floor holds the displayed count at 2.
+	// Close ws_1 - the floor holds the displayed count at 2.
 	buf.Reset()
 	d.TrackWSClose("ws_1")
 	out = buf.String()
@@ -608,7 +608,7 @@ func TestDisplayWSCloseDebounceNoBlink(t *testing.T) {
 	}
 
 	// A new event (e.g. WS open) triggers an immediate redraw which absorbs
-	// the previous close — the counter goes from 2 → 2 smoothly.
+	// the previous close - the counter goes from 2 → 2 smoothly.
 	buf.Reset()
 	d.TrackWSOpen("ws_3", "/new", nil)
 	out = buf.String()

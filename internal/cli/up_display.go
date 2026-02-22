@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -29,10 +31,12 @@ const (
 )
 
 const (
-	upDisplayFieldWidth  = 18
-	upMaxDisplayReqs     = 10
-	upActiveClientWindow = 60 * time.Second
-	upWSCloseDebounce    = 500 * time.Millisecond
+	upDisplayFieldWidth   = 18
+	upMaxDisplayReqs      = 10
+	upActiveClientWindow  = 60 * time.Second
+	upWSCloseDebounce     = 500 * time.Millisecond
+	upLocalHealthCacheTTL = 2 * time.Second
+	upLocalHealthTimeout  = 200 * time.Millisecond
 )
 
 type upDashboard struct {
@@ -56,6 +60,7 @@ type upDashboard struct {
 	wafBlocked      int64
 	visitors        map[string]time.Time
 	wsConns         map[string]upDashboardWS
+	localHealth     map[string]upDashboardLocalHealth
 	totalHTTP       int
 	wsDisplayMin    int
 	wsDebounceTimer *time.Timer
@@ -85,6 +90,11 @@ type upDashboardWS struct {
 	Path        string
 	Fingerprint string
 	OpenedAt    time.Time
+}
+
+type upDashboardLocalHealth struct {
+	OK        bool
+	CheckedAt time.Time
 }
 
 type upDashboardEvent struct {
@@ -117,6 +127,7 @@ func newUpDashboard(configPath, version string) *upDashboard {
 		wafEnabled:     make(map[string]bool),
 		visitors:       make(map[string]time.Time),
 		wsConns:        make(map[string]upDashboardWS),
+		localHealth:    make(map[string]upDashboardLocalHealth),
 		stopCh:         make(chan struct{}),
 		doneCh:         make(chan struct{}),
 	}
@@ -696,7 +707,7 @@ func (d *upDashboard) forwardingLinesLocked() []string {
 			if strings.TrimSpace(g.PublicURL) != "" {
 				external = d.styled(upANSICyan, upRouteExternalURL(g.PublicURL, r))
 			}
-			local := upRouteLocalTarget(r)
+			local := d.localTargetWithHealthLocked(upRouteLocalTarget(r))
 			lines = append(lines, fmt.Sprintf("%s %s %s", external, arrow, local))
 		}
 	}
@@ -725,6 +736,65 @@ func upRouteLocalTarget(r upLocalRoute) string {
 		return target
 	}
 	return target + prefix
+}
+
+func (d *upDashboard) localTargetWithHealthLocked(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return d.styled(upANSIDim, "--")
+	}
+	if d.localTargetHealthyLocked(raw) {
+		return raw + " " + d.styled(upANSIGreen, "✅")
+	}
+	return raw + " " + d.styled(upANSIRed, "❌")
+}
+
+func (d *upDashboard) localTargetHealthyLocked(raw string) bool {
+	cacheKey, dialAddr, ok := upLocalTargetDialAddr(raw)
+	if !ok {
+		return false
+	}
+	if d.localHealth == nil {
+		d.localHealth = make(map[string]upDashboardLocalHealth)
+	}
+	now := d.now()
+	if e, ok := d.localHealth[cacheKey]; ok && now.Sub(e.CheckedAt) < upLocalHealthCacheTTL {
+		return e.OK
+	}
+	conn, err := net.DialTimeout("tcp", dialAddr, upLocalHealthTimeout)
+	healthy := err == nil
+	if err == nil {
+		_ = conn.Close()
+	}
+	d.localHealth[cacheKey] = upDashboardLocalHealth{
+		OK:        healthy,
+		CheckedAt: now,
+	}
+	return healthy
+}
+
+func upLocalTargetDialAddr(raw string) (cacheKey string, dialAddr string, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", "", false
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "", "", false
+	}
+	port := strings.TrimSpace(u.Port())
+	if port == "" {
+		switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", "", false
+		}
+	}
+	dialAddr = net.JoinHostPort(host, port)
+	return dialAddr, dialAddr, true
 }
 
 func (d *upDashboard) requestDisplayPathLocked(r upDashboardRequest) string {
@@ -811,49 +881,6 @@ func (d *upDashboard) formatRequestStatusText(code int) string {
 	default:
 		return d.styled(upANSIRed, s)
 	}
-}
-
-func (d *upDashboard) colorStatus(status string, width int) string {
-	status = strings.TrimSpace(status)
-	if status == "" {
-		status = "--"
-	}
-	padded := padRight(truncateRight(status, width), width)
-	switch status {
-	case "online":
-		return d.styled(upANSIGreen, padded)
-	case "reconnecting", "connecting", "waiting-tls", "starting":
-		return d.styled(upANSIYellow, padded)
-	case "error":
-		return d.styled(upANSIRed, padded)
-	default:
-		return d.styled(upANSIDim, padded)
-	}
-}
-
-func (d *upDashboard) formatHTTPStatus(code, width int) string {
-	if code <= 0 {
-		return d.styled(upANSIDim, padLeft("--", width))
-	}
-	text := padLeft(fmt.Sprintf("%d", code), width)
-	switch {
-	case code >= 200 && code < 300:
-		return d.styled(upANSIGreen, text)
-	case code >= 300 && code < 400:
-		return d.styled(upANSICyan, text)
-	case code >= 400 && code < 500:
-		return d.styled(upANSIYellow, text)
-	default:
-		return d.styled(upANSIRed, text)
-	}
-}
-
-func (d *upDashboard) formatHTTPDuration(raw string, width int) string {
-	formatted := dashboardFormatRequestDuration(raw)
-	if formatted == "" {
-		return d.styled(upANSIDim, padLeft("--", width))
-	}
-	return padLeft(truncateRight(formatted, width), width)
 }
 
 func (d *upDashboard) styled(code, text string) string {
@@ -1024,19 +1051,6 @@ func summarizeDashboardEvent(msg string, attrs map[string]slog.Value) string {
 	return shortenDashboardText(msg, 120)
 }
 
-func dashboardFormatUptime(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	s := int(d.Seconds()) % 60
-	if h > 0 {
-		return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
-	}
-	return fmt.Sprintf("%02d:%02d", m, s)
-}
-
 func upFormatHeaderUptime(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -1092,20 +1106,6 @@ func dashboardFormatDurationRounded(d time.Duration) string {
 	}
 }
 
-func padRight(s string, n int) string {
-	if stringWidth(s) >= n {
-		return truncateRight(s, n)
-	}
-	return s + strings.Repeat(" ", n-stringWidth(s))
-}
-
-func padLeft(s string, n int) string {
-	if stringWidth(s) >= n {
-		return truncateRight(s, n)
-	}
-	return strings.Repeat(" ", n-stringWidth(s)) + s
-}
-
 func truncateRight(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -1130,31 +1130,4 @@ func shortenDashboardText(s string, max int) string {
 
 func stringWidth(s string) int {
 	return utf8.RuneCountInString(s)
-}
-
-func formatCompactCount(n int) string {
-	if n < 0 {
-		return fmt.Sprintf("%d", n)
-	}
-	switch {
-	case n < 1000:
-		return fmt.Sprintf("%d", n)
-	case n < 1_000_000:
-		return formatCompactSuffix(float64(n)/1_000, "K")
-	case n < 1_000_000_000:
-		return formatCompactSuffix(float64(n)/1_000_000, "M")
-	default:
-		return formatCompactSuffix(float64(n)/1_000_000_000, "B")
-	}
-}
-
-func formatCompactSuffix(v float64, suffix string) string {
-	switch {
-	case v >= 100:
-		return fmt.Sprintf("%.0f%s", v, suffix)
-	case v >= 10:
-		return fmt.Sprintf("%.1f%s", v, suffix)
-	default:
-		return fmt.Sprintf("%.1f%s", v, suffix)
-	}
 }

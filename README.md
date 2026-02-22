@@ -200,6 +200,8 @@ Protected tunnel (interactive prompt):
 expose http --domain=myapp --protect 3000
 ```
 
+Note: tunnel-level protection (`--protect` or `EXPOSE_USER`/`EXPOSE_PASSWORD`) adds HTTP Basic Auth in front of your app. If your app already has its own auth/session flow, this can cause double-auth prompts or break callback flows that expect direct access.
+
 Protected tunnel (no prompt):
 
 ```bash

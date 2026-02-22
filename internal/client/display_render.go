@@ -2,7 +2,9 @@ package client
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -83,7 +85,7 @@ func (d *Display) redraw() {
 	if d.publicURL != "" {
 		arrow := d.styled(ansiDim, "→")
 		d.writeField(&b, "Forwarding", fmt.Sprintf("%s %s %s",
-			d.styled(ansiCyan, d.publicURL), arrow, d.localAddr))
+			d.styled(ansiCyan, d.publicURL), arrow, d.localTargetWithHealth(d.localAddr)))
 	} else {
 		d.writeField(&b, "Forwarding", placeholder)
 	}
@@ -197,6 +199,62 @@ func (d *Display) styled(code, text string) string {
 		return text
 	}
 	return code + text + ansiReset
+}
+
+func (d *Display) localTargetWithHealth(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return d.styled(ansiDim, "--")
+	}
+	if d.localTargetHealthy(raw) {
+		return raw + " " + d.styled(ansiGreen, "✅")
+	}
+	return raw + " " + d.styled(ansiRed, "❌")
+}
+
+func (d *Display) localTargetHealthy(raw string) bool {
+	cacheKey, dialAddr, ok := localTargetDialAddr(raw)
+	if !ok {
+		return false
+	}
+	if d.localHealth == nil {
+		d.localHealth = make(map[string]localHealthEntry)
+	}
+	now := d.now()
+	if e, ok := d.localHealth[cacheKey]; ok && now.Sub(e.checkedAt) < displayLocalHealthCacheTTL {
+		return e.ok
+	}
+	conn, err := net.DialTimeout("tcp", dialAddr, displayLocalHealthTimeout)
+	up := err == nil
+	if err == nil {
+		_ = conn.Close()
+	}
+	d.localHealth[cacheKey] = localHealthEntry{ok: up, checkedAt: now}
+	return up
+}
+
+func localTargetDialAddr(raw string) (cacheKey string, dialAddr string, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", "", false
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "", "", false
+	}
+	port := strings.TrimSpace(u.Port())
+	if port == "" {
+		switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", "", false
+		}
+	}
+	dialAddr = net.JoinHostPort(host, port)
+	return dialAddr, dialAddr, true
 }
 
 // displayTruncatePath shortens a path to fit within max visible characters.

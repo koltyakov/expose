@@ -39,6 +39,11 @@ const activeClientWindow = 60 * time.Second
 // dropping and causing visible flicker.
 const wsCloseDebounce = 500 * time.Millisecond
 
+const (
+	displayLocalHealthCacheTTL = 2 * time.Second
+	displayLocalHealthTimeout  = 200 * time.Millisecond
+)
+
 // requestEntry stores one logged HTTP request for the rolling display.
 type requestEntry struct {
 	ts       time.Time
@@ -54,6 +59,11 @@ type wsEntry struct {
 	path        string
 	ts          time.Time
 	fingerprint string // visitor fingerprint (IP|UA)
+}
+
+type localHealthEntry struct {
+	ok        bool
+	checkedAt time.Time
 }
 
 // Display renders an ngrok-inspired terminal interface for the tunnel client.
@@ -105,17 +115,20 @@ type Display struct {
 	wsDisplayMin    int
 	wsDebounceTimer *time.Timer
 	wsDebounceGen   uint64
+
+	localHealth map[string]localHealthEntry
 }
 
 // NewDisplay creates a Display that writes to stdout.
 // When color is true, ANSI escape codes are used for styling.
 func NewDisplay(color bool) *Display {
 	return &Display{
-		out:      os.Stdout,
-		color:    color,
-		wsConns:  make(map[string]wsEntry),
-		visitors: make(map[string]time.Time),
-		requests: make([]requestEntry, 0, maxDisplayRequests),
-		nowFunc:  time.Now,
+		out:         os.Stdout,
+		color:       color,
+		wsConns:     make(map[string]wsEntry),
+		visitors:    make(map[string]time.Time),
+		requests:    make([]requestEntry, 0, maxDisplayRequests),
+		nowFunc:     time.Now,
+		localHealth: make(map[string]localHealthEntry),
 	}
 }

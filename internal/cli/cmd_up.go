@@ -299,10 +299,12 @@ func countDistinctSubdomains(routes []upTunnelConfig) int {
 
 func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defaultPath string) error {
 	reader := bufio.NewReader(in)
+	ui := newWizardTUI()
 
-	_, _ = fmt.Fprintln(out, "Expose Up Init")
-	_, _ = fmt.Fprintln(out, "Creates an expose.yml project config for multi-route tunnels.")
-	_, _ = fmt.Fprintln(out)
+	ui.printBanner(out,
+		"Expose Up Init",
+		"Creates an expose.yml project config for multi-route tunnels.",
+	)
 
 	cfgPath, err := askWizardValue(ctx, reader, out,
 		"Config file path",
@@ -404,7 +406,7 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 			}
 			cfg.Access.PasswordEnv = passwordEnv
 		} else {
-			pw, err := promptSecret("Shared public password (stored in YAML): ")
+			pw, err := promptSecretContext(ctx, "Shared public password (stored in YAML): ")
 			if err != nil {
 				return err
 			}
@@ -416,34 +418,15 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 		}
 	}
 
-	countStr, err := askWizardValue(ctx, reader, out,
-		"Number of routes",
-		"Each route maps one public host/path to one local port.",
-		"Example: 2",
-		"2",
-		strings.TrimSpace,
-		validateUpPositiveIntWizard,
-	)
-	if err != nil {
-		return err
-	}
-	count, _ := strconv.Atoi(countStr)
-
-	cfg.Tunnels = make([]upTunnelConfig, 0, count)
-	for i := 0; i < count; i++ {
-		_, _ = fmt.Fprintf(out, "Route %d/%d\n\n", i+1, count)
-		nameDef := fmt.Sprintf("route-%d", i+1)
-		switch i {
-		case 0:
-			nameDef = "frontend"
-		case 1:
-			nameDef = "api"
-		}
+	cfg.Tunnels = make([]upTunnelConfig, 0, 2)
+	for i := 0; ; i++ {
+		ui.printSection(out, fmt.Sprintf("Route %d", i+1))
+		_, _ = fmt.Fprintln(out)
 		name, err := askWizardValue(ctx, reader, out,
 			"Route name",
 			"Identifier used in logs and summaries.",
-			"Example: frontend",
-			nameDef,
+			"",
+			"",
 			strings.TrimSpace,
 			validateWizardNonEmpty,
 		)
@@ -451,15 +434,11 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 			return err
 		}
 
-		subdomainDef := "myapp"
-		if i == 1 {
-			subdomainDef = "myapp"
-		}
 		subdomain, err := askWizardValue(ctx, reader, out,
 			"Subdomain",
 			"Public host label under your expose server base domain.",
 			"Example: myapp (public URL becomes https://myapp.<base-domain>)",
-			subdomainDef,
+			"",
 			normalizeUpSubdomain,
 			validateUpSubdomainWizard,
 		)
@@ -474,7 +453,7 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 		portStr, err := askWizardValue(ctx, reader, out,
 			"Local port",
 			"HTTP service port on localhost.",
-			"Example: 3000",
+			"",
 			portDef,
 			strings.TrimSpace,
 			validateUpPortWizard,
@@ -491,7 +470,7 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 		pathPrefix, err := askWizardValue(ctx, reader, out,
 			"Path prefix",
 			"Public path mounted for this route. Longest prefix wins.",
-			"Examples: /  /api",
+			"",
 			pathDef,
 			strings.TrimSpace,
 			validateUpPathPrefixWizard,
@@ -500,13 +479,17 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 			return err
 		}
 
-		stripPrefix, err := askWizardYesNo(ctx, reader, out,
-			"Strip path prefix before forwarding",
-			"Use true when the upstream expects routes at `/` instead of the mounted prefix.",
-			pathDef != "/",
-		)
-		if err != nil {
-			return err
+		stripPrefix := false
+		normalizedPrefix := strings.TrimSpace(pathPrefix)
+		if normalizedPrefix != "" && normalizedPrefix != "/" {
+			stripPrefix, err = askWizardYesNo(ctx, reader, out,
+				"Strip path prefix before forwarding",
+				"Use true when the upstream expects routes at `/` instead of the mounted prefix.",
+				pathDef != "/",
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		cfg.Tunnels = append(cfg.Tunnels, upTunnelConfig{
@@ -516,6 +499,18 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 			PathPrefix:  pathPrefix,
 			StripPrefix: stripPrefix,
 		})
+
+		addAnother, err := askWizardYesNo(ctx, reader, out,
+			"Add another route",
+			"Configure one more host/path mapping.",
+			false,
+		)
+		if err != nil {
+			return err
+		}
+		if !addAnother {
+			break
+		}
 	}
 
 	if _, err := os.Stat(cfgPath); err == nil {
@@ -536,19 +531,13 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 		return err
 	}
 
-	_, _ = fmt.Fprintln(out, "Saved:", cfgPath)
+	_, _ = fmt.Fprintf(out, "%s Saved: %s\n", ui.ok("✓"), cfgPath)
 	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintln(out, "Next:")
+	ui.printSection(out, "Next")
 	_, _ = fmt.Fprintln(out, "  1) expose login   (if server/api key are not stored in expose.yml)")
-	_, _ = fmt.Fprintln(out, "  2) expose up")
-	return nil
-}
-
-func validateUpPositiveIntWizard(v string) error {
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return errors.New("must be a positive integer")
-	}
+	_, _ = fmt.Fprintf(out, "     %s\n", ui.cmd("expose login"))
+	_, _ = fmt.Fprintln(out, "  2) Start all routes")
+	_, _ = fmt.Fprintf(out, "     %s\n", ui.cmd("expose up"))
 	return nil
 }
 

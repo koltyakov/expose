@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -105,6 +106,10 @@ func promptClientPasswordIfNeeded(cfg *config.ClientConfig) error {
 }
 
 func promptSecret(label string) (string, error) {
+	return promptSecretContext(context.Background(), label)
+}
+
+func promptSecretContext(ctx context.Context, label string) (string, error) {
 	if _, err := fmt.Fprint(os.Stdout, label); err != nil {
 		return "", err
 	}
@@ -121,11 +126,37 @@ func promptSecret(label string) (string, error) {
 		}()
 	}
 	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := readPromptLineContext(ctx, reader)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+type promptReadResult struct {
+	line string
+	err  error
+}
+
+func readPromptLineContext(ctx context.Context, reader *bufio.Reader) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", context.Canceled
+	default:
+	}
+
+	resultCh := make(chan promptReadResult, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		resultCh <- promptReadResult{line: line, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", context.Canceled
+	case res := <-resultCh:
+		return res.line, res.err
+	}
 }
 
 func setTerminalEcho(enable bool) error {

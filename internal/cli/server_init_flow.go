@@ -63,10 +63,12 @@ func runServerInit(ctx context.Context, args []string) int {
 func runServerInitInteractive(ctx context.Context, in io.Reader, out io.Writer, envFile string) error {
 	reader := bufio.NewReader(in)
 	defaults := loadServerInitDefaults(envFile)
+	ui := newWizardTUI()
 
-	_, _ = fmt.Fprintln(out, "Expose Server Init")
-	_, _ = fmt.Fprintln(out, "Press Enter to accept defaults. Values are saved to .env for future runs.")
-	_, _ = fmt.Fprintln(out)
+	ui.printBanner(out,
+		"Expose Server Init",
+		"Press Enter to accept defaults. Saves server settings to .env for future runs.",
+	)
 
 	domain, err := askWizardValue(ctx, reader, out,
 		"Base domain",
@@ -242,7 +244,7 @@ func runServerInitInteractive(ctx context.Context, in io.Reader, out io.Writer, 
 		answers.GeneratedKey = plain
 		answers.GeneratedName = answers.APIKeyName
 		_, _ = fmt.Fprintln(out)
-		_, _ = fmt.Fprintf(out, "Generated API key (%s).\n", answers.APIKeyName)
+		_, _ = fmt.Fprintf(out, "%s Generated API key (%s).\n", ui.ok("✓"), answers.APIKeyName)
 	}
 
 	entries := buildInitEnvEntries(answers)
@@ -251,7 +253,7 @@ func runServerInitInteractive(ctx context.Context, in io.Reader, out io.Writer, 
 	}
 
 	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintf(out, "Saved %d settings to %s\n", len(entries), envFile)
+	_, _ = fmt.Fprintf(out, "%s Saved %d settings to %s\n", ui.ok("✓"), len(entries), envFile)
 	printInitNextSteps(out, answers)
 	return nil
 }

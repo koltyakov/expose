@@ -56,11 +56,11 @@ URL-decoded values (including `+` → space decoding) to defeat encoding-based e
 
 Each rule targets one or more of:
 
-- **Path** — the URL path component
-- **Query** — the raw query string (decoded variants are also tested)
-- **URI** — the full `RequestURI`
-- **User-Agent** — the `User-Agent` header
-- **Headers** — all header values except a safe-list of structural / browser-controlled headers (e.g. `Host`, `Accept`, `Authorization`, `Content-Type`, WebSocket headers, `Sec-*`)
+- **Path** - the URL path component
+- **Query** - the raw query string (decoded variants are also tested)
+- **URI** - the full `RequestURI`
+- **User-Agent** - the `User-Agent` header
+- **Headers** - all header values except a safe-list of structural / browser-controlled headers (e.g. `Host`, `Accept`, `Authorization`, `Content-Type`, WebSocket headers, `Sec-*`)
 
 ## Client Dashboard
 
@@ -104,7 +104,7 @@ stops on the first match.
 
 ## Limitations
 
-- The WAF applies a **fixed ruleset** — custom rules are not yet supported.
+- The WAF applies a **fixed ruleset** - custom rules are not yet supported.
 - Only request metadata is inspected (URL, headers, query string). **Request
   bodies are not scanned.**
 - The WAF is a defence-in-depth layer, not a replacement for input validation

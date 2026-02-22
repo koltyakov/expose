@@ -11,7 +11,7 @@ expose v1.0.0                                        (Ctrl+C to quit)
 
 Session     online for 2h 15m (ID: abc123)
 Server      v1.0.0 (WAF: On, TLS: Auto)
-Update      v1.1.0 available — run expose update or press Ctrl+U
+Update      v1.1.0 available - run expose update or press Ctrl+U
 Latency     12ms
 Forwarding  https://myapp.example.com → http://127.0.0.1:3000 (healthy)
 Clients     2 active, 5 total
@@ -43,16 +43,16 @@ Latency         P50 8ms | P90 15ms | P95 22ms | P99 45ms
 
 Each proxied request is displayed with:
 
-- **Timestamp** — when the request was received
-- **Method** — HTTP method (`GET`, `POST`, etc.)
-- **Path** — request path (truncated to 40 chars if needed)
-- **Status** — HTTP status code (color-coded: green for 2xx, yellow for 3xx/4xx, red for 5xx)
-- **Duration** — round-trip time for the request
+- **Timestamp** - when the request was received
+- **Method** - HTTP method (`GET`, `POST`, etc.)
+- **Path** - request path (truncated to 40 chars if needed)
+- **Status** - HTTP status code (color-coded: green for 2xx, yellow for 3xx/4xx, red for 5xx)
+- **Duration** - round-trip time for the request
 
 Special entries:
 
-- **WARN** — WAF-blocked requests or connection warnings
-- **INFO** — Informational messages (reconnections, updates)
+- **WARN** - WAF-blocked requests or connection warnings
+- **INFO** - Informational messages (reconnections, updates)
 
 ## Latency Percentiles
 
@@ -77,7 +77,7 @@ When the server has WAF enabled:
 
 The Forwarding line shows the health status of your local target:
 
-- **healthy** — local port is responding
+- **healthy** - local port is responding
 - Status is checked automatically
 
 ## Keyboard Shortcuts
@@ -91,14 +91,14 @@ The Forwarding line shows the health status of your local target:
 
 The dashboard uses ANSI colors for readability:
 
-- **Cyan** — public URL, info messages
-- **Green** — 2xx status codes, online status
-- **Yellow** — 3xx/4xx status codes, warnings, connecting status
-- **Red** — 5xx status codes, blocked requests
-- **Dim** — timestamps, separators, secondary info
+- **Cyan** - public URL, info messages
+- **Green** - 2xx status codes, online status
+- **Yellow** - 3xx/4xx status codes, warnings, connecting status
+- **Red** - 5xx status codes, blocked requests
+- **Dim** - timestamps, separators, secondary info
 
 ## See Also
 
-- [Client Configuration](client-configuration.md) — all client flags and env vars
-- [Auto-Update](auto-update.md) — update notifications and Ctrl+U
-- [Web Application Firewall](waf.md) — WAF rules and blocked request details
+- [Client Configuration](client-configuration.md) - all client flags and env vars
+- [Auto-Update](auto-update.md) - update notifications and Ctrl+U
+- [Web Application Firewall](waf.md) - WAF rules and blocked request details

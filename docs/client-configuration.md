@@ -31,10 +31,10 @@ Complete reference for all client flags, environment variables, and credential m
 
 The client resolves server URL and API key from multiple sources, with this priority:
 
-1. **CLI flags** (`--server`, `--api-key`) — highest priority
+1. **CLI flags** (`--server`, `--api-key`) - highest priority
 2. **Environment variables** (`EXPOSE_DOMAIN`, `EXPOSE_API_KEY`)
 3. **`.env` file** in the current directory
-4. **Saved credentials** from `expose login` (`~/.expose/settings.json`) — lowest priority
+4. **Saved credentials** from `expose login` (`~/.expose/settings.json`) - lowest priority
 
 This means you can `expose login` once and never pass credentials again, or override per-command with flags or env vars.
 
@@ -84,10 +84,10 @@ expose http --domain=myapp 3000
 Add HTTP Basic Auth in front of your tunnel:
 
 ```bash
-# Interactive — prompts for password
+# Interactive - prompts for password
 expose http --domain=myapp --protect 3000
 
-# Non-interactive — password from env
+# Non-interactive - password from env
 EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
 ```
 
@@ -142,6 +142,6 @@ The client automatically reconnects when the connection drops:
 
 ## See Also
 
-- [Quick Start](quick-start.md) — get started in 5 minutes
-- [API Keys](api-keys.md) — create and manage keys
-- [Local Testing](local-testing.md) — single-machine E2E with `127.0.0.1.sslip.io`
+- [Quick Start](quick-start.md) - get started in 5 minutes
+- [API Keys](api-keys.md) - create and manage keys
+- [Local Testing](local-testing.md) - single-machine E2E with `127.0.0.1.sslip.io`

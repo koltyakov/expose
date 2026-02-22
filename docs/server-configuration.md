@@ -100,7 +100,7 @@ See [TLS Modes](tls-modes.md) for the full comparison and decision guide.
 
 ## API Key Pepper
 
-API keys are hashed with SHA-256 plus a pepper for additional security. See [API Keys — Pepper](api-keys.md#pepper) for details on pepper derivation, persistence, and migration.
+API keys are hashed with SHA-256 plus a pepper for additional security. See [API Keys - Pepper](api-keys.md#pepper) for details on pepper derivation, persistence, and migration.
 
 **Production recommendation**: always set `EXPOSE_API_KEY_PEPPER` explicitly.
 
@@ -128,6 +128,6 @@ The server runs a background janitor that automatically:
 
 ## See Also
 
-- [Quick Start](quick-start.md) — up and running in 5 minutes
-- [VPS Deployment](vps-deployment.md) — systemd service, firewall, and production setup
-- [Architecture Overview](architecture-overview.md) — how the server works internally
+- [Quick Start](quick-start.md) - up and running in 5 minutes
+- [VPS Deployment](vps-deployment.md) - systemd service, firewall, and production setup
+- [Architecture Overview](architecture-overview.md) - how the server works internally

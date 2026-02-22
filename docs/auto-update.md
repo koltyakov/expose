@@ -17,9 +17,9 @@ flowchart LR
 
 When auto-update is enabled:
 
-1. **On startup** — checks for a newer release and updates before proceeding
-2. **Periodically** — checks every 30 minutes in the background
-3. **On server version change** — if the client detects the server upgraded (via registration response), it triggers an immediate update check
+1. **On startup** - checks for a newer release and updates before proceeding
+2. **Periodically** - checks every 30 minutes in the background
+3. **On server version change** - if the client detects the server upgraded (via registration response), it triggers an immediate update check
 
 When an update is applied, the binary is replaced in-place and the process restarts automatically.
 
@@ -42,7 +42,7 @@ This works for both `expose server` and `expose http` / `expose up`.
 Environment=EXPOSE_AUTOUPDATE=true
 ```
 
-> **Note on file capabilities**: If you use `setcap` for binding to privileged ports, those capabilities are lost when the binary is replaced. Use systemd `AmbientCapabilities=CAP_NET_BIND_SERVICE` instead — it survives binary replacement.
+> **Note on file capabilities**: If you use `setcap` for binding to privileged ports, those capabilities are lost when the binary is replaced. Use systemd `AmbientCapabilities=CAP_NET_BIND_SERVICE` instead - it survives binary replacement.
 
 ## Manual Update
 
@@ -59,7 +59,7 @@ This shows the current and available versions, prompts for confirmation (in inte
 While the client dashboard is running, press **Ctrl+U** to trigger an immediate update check and apply. The dashboard shows update availability:
 
 ```
-  Update      v1.2.0 available — run expose update or press Ctrl+U
+  Update      v1.2.0 available - run expose update or press Ctrl+U
 ```
 
 ## Development Builds
@@ -78,5 +78,5 @@ For auto-update to work, the binary must be in a directory where the running use
 
 ## See Also
 
-- [VPS Deployment](vps-deployment.md) — systemd setup with auto-update
-- [Client Dashboard](client-dashboard.md) — update notifications in the UI
+- [VPS Deployment](vps-deployment.md) - systemd setup with auto-update
+- [Client Dashboard](client-dashboard.md) - update notifications in the UI

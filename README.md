@@ -1,6 +1,6 @@
 # expose
 
-**expose** is a self-hosted HTTP tunnel. Run your own server, then expose local HTTP ports from any machine — no third-party services required.
+**expose** is a self-hosted HTTP tunnel. Run your own server, then expose local HTTP ports from any machine - no third-party services required.
 
 ![expose client](./assets/client-tunnel.png)
 
@@ -8,13 +8,13 @@
 
 - **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certificates
 - **Built-in WAF** blocks SQL injection, XSS, path traversal, and other attacks before they reach your app
-- **Multi-route configs** via `expose.yml` — expose multiple services under one subdomain with path-based routing
+- **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
-- **Auto-update** — server and client can self-update in the background with zero downtime
+- **Auto-update** - server and client can self-update in the background with zero downtime
 - **Password-protected tunnels** with HTTP Basic Auth (per-tunnel or per-config)
-- **Env-first configuration** — minimal CLI flags, `.env` support, and interactive setup wizards
+- **Env-first configuration** - minimal CLI flags, `.env` support, and interactive setup wizards
 - **Rate limiting** on tunnel registration to prevent abuse
-- **Persistent login** — authenticate once with `expose login`, credentials are saved locally
+- **Persistent login** - authenticate once with `expose login`, credentials are saved locally
 - **Automatic reconnection** with exponential backoff and keepalive pings
 
 ## How It Works
@@ -71,7 +71,7 @@ expose login --server example.com --api-key <KEY>
 expose http 3000
 ```
 
-That's it — open the URL shown in the terminal. For the full walkthrough, see [Quick Start](docs/quick-start.md).
+That's it - open the URL shown in the terminal. For the full walkthrough, see [Quick Start](docs/quick-start.md).
 
 ## CLI Commands
 
@@ -93,7 +93,7 @@ That's it — open the URL shown in the terminal. For the full walkthrough, see 
 
 ## Documentation
 
-See the [docs/](docs/README.md) folder for all guides — server & client configuration, TLS modes, DNS setup, deployment, WAF, auto-update, troubleshooting, and more.
+See the [docs/](docs/README.md) folder for all guides - server & client configuration, TLS modes, DNS setup, deployment, WAF, auto-update, troubleshooting, and more.
 
 ## License
 

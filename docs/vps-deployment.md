@@ -43,7 +43,7 @@ Or download a prebuilt binary from the [releases page](https://github.com/koltya
 
 > **Important**: The binary must live inside a directory the `expose` service
 > user can write to (e.g. `/opt/expose/bin/`). Auto-update needs to create a
-> temp file, remove the old binary, and write the new one — all of which
+> temp file, remove the old binary, and write the new one - all of which
 > require directory write permission. Do **not** place it in `/usr/local/bin/`
 > unless you run the service as root.
 
@@ -56,7 +56,7 @@ sudo setcap 'cap_net_bind_service=+ep' /opt/expose/bin/expose
 
 > **Note**: File capabilities set via `setcap` are lost when the binary is
 > replaced (e.g. by `EXPOSE_AUTOUPDATE`). If you use auto-update, rely on
-> systemd `AmbientCapabilities` instead (see the service unit below) — they
+> systemd `AmbientCapabilities` instead (see the service unit below) - they
 > survive binary replacement and process restarts.
 
 ## 3 - Configure DNS

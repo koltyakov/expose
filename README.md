@@ -75,21 +75,33 @@ That's it - open the URL shown in the terminal. For the full walkthrough, see [Q
 
 ## CLI Commands
 
-| Command                              | Description                           |
-| ------------------------------------ | ------------------------------------- |
+### Client
+
+| Command                              | Description                             |
+| ------------------------------------ | --------------------------------------- |
+| `expose login`                       | Save server URL and API key             |
 | `expose http <port>`                 | Expose local port (temporary subdomain) |
-| `expose http --domain=myapp <port>`  | Expose with a named subdomain         |
-| `expose http --protect <port>`       | Expose with password protection       |
-| `expose up`                          | Start routes from `expose.yml`        |
-| `expose up init`                     | Create `expose.yml` via guided wizard |
-| `expose login`                       | Save server URL and API key           |
-| `expose server`                      | Start tunnel server                   |
-| `expose server init`                 | Guided server setup + `.env` write    |
-| `expose apikey create --name NAME`   | Create a new API key                  |
-| `expose apikey list`                 | List all API keys                     |
-| `expose apikey revoke --id=ID`       | Revoke an API key                     |
-| `expose update`                      | Update to the latest release          |
-| `expose version`                     | Print version                         |
+| `expose http --domain=myapp <port>`  | Expose with a named subdomain           |
+| `expose http --protect <port>`       | Expose with password protection         |
+| `expose up`                          | Start routes from `expose.yml`          |
+| `expose up init`                     | Create `expose.yml` via guided wizard   |
+
+### Server
+
+| Command                              | Description                             |
+| ------------------------------------ | --------------------------------------- |
+| `expose server`                      | Start tunnel server                     |
+| `expose server init`                 | Guided server setup + `.env` write      |
+| `expose apikey create --name NAME`   | Create a new API key                    |
+| `expose apikey list`                 | List all API keys                       |
+| `expose apikey revoke --id=ID`       | Revoke an API key                       |
+
+### General
+
+| Command                              | Description                             |
+| ------------------------------------ | --------------------------------------- |
+| `expose update`                      | Update to the latest release            |
+| `expose version`                     | Print version                           |
 
 ## Documentation
 

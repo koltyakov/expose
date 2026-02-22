@@ -169,6 +169,20 @@ func TestDisplayReconnecting(t *testing.T) {
 	}
 }
 
+func TestDisplayUpdateHintIncludesHotkey(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowBanner("v1.0.0")
+	d.ShowUpdateStatus("v1.2.3")
+	out := buf.String()
+	if !strings.Contains(out, "expose update") {
+		t.Fatal("expected update command hint")
+	}
+	if !strings.Contains(out, "Ctrl+U") {
+		t.Fatal("expected Ctrl+U hotkey hint")
+	}
+}
+
 func TestDisplayWarningAndInfo(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
@@ -674,15 +688,20 @@ func TestDisplaySessionUptime(t *testing.T) {
 	d.redraw()
 	d.mu.Unlock()
 	out := buf.String()
-	if !strings.Contains(out, "Session Uptime") {
-		t.Fatal("expected Session Uptime field")
+	if !strings.Contains(out, "Session Status") {
+		t.Fatal("expected Session Status field")
 	}
-	if !strings.Contains(out, "5 minutes") {
-		t.Fatalf("expected '5 minutes' uptime, got: %s", out)
+	if !strings.Contains(out, "online") {
+		t.Fatalf("expected status text, got: %s", out)
 	}
-	// No reconnect yet — should not show "since reconnect".
-	if strings.Contains(out, "since reconnect") {
-		t.Fatal("expected no reconnect info on first connection")
+	if !strings.Contains(out, "for 5 minutes") {
+		t.Fatalf("expected status duration in Session Status, got: %s", out)
+	}
+	if strings.Contains(out, "Session Uptime") {
+		t.Fatal("expected no separate Session Uptime field")
+	}
+	if strings.Contains(out, "uptime:") || strings.Contains(out, "since change:") {
+		t.Fatal("expected simplified status duration format")
 	}
 }
 
@@ -712,19 +731,20 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	d.mu.Unlock()
 	out := buf.String()
 
-	if !strings.Contains(out, "Session Uptime") {
-		t.Fatal("expected Session Uptime field")
+	if !strings.Contains(out, "Session Status") {
+		t.Fatal("expected Session Status field")
 	}
-	// Total uptime: 14 minutes.
-	if !strings.Contains(out, "14 minutes") {
-		t.Fatalf("expected '14 minutes' total uptime, got: %s", out)
+	if !strings.Contains(out, "online") {
+		t.Fatalf("expected online status, got: %s", out)
 	}
-	// Since last reconnect: 3 minutes.
-	if !strings.Contains(out, "since reconnect") {
-		t.Fatal("expected 'since reconnect' after reconnection")
+	if !strings.Contains(out, "for 3 minutes") {
+		t.Fatalf("expected time since status change, got: %s", out)
 	}
-	if !strings.Contains(out, "3 minutes") {
-		t.Fatalf("expected '3 minutes' since reconnect, got: %s", out)
+	if strings.Contains(out, "Session Uptime") {
+		t.Fatal("expected no separate Session Uptime field")
+	}
+	if strings.Contains(out, "14 minutes") {
+		t.Fatal("expected no total session uptime in status line")
 	}
 }
 
@@ -733,7 +753,7 @@ func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
 	d, buf := newTestDisplay(false)
 	d.ShowBanner("dev")
 	out := buf.String()
-	if strings.Contains(out, "Session Uptime") {
-		t.Fatal("expected no Session Uptime before first connection")
+	if strings.Contains(out, "online for ") || strings.Contains(out, "reconnecting for ") {
+		t.Fatal("expected no status duration before first connection")
 	}
 }

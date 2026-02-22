@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -39,7 +40,7 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string)
 	} else {
 		d.lastReconnect = now
 	}
-	d.status = "online"
+	d.setStatusLocked("online", now)
 	d.publicURL = publicURL
 	d.localAddr = localAddr
 	d.tlsMode = tlsMode
@@ -86,8 +87,21 @@ func (d *Display) ShowWAFStats(blocked int64) {
 func (d *Display) ShowReconnecting(reason string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.status = "reconnecting"
+	d.setStatusLocked("reconnecting", d.now())
 	d.redraw()
+}
+
+func (d *Display) setStatusLocked(status string, now time.Time) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		d.status = ""
+		d.statusChangedAt = time.Time{}
+		return
+	}
+	if d.status != status || d.statusChangedAt.IsZero() {
+		d.statusChangedAt = now
+	}
+	d.status = status
 }
 
 // LogRequest records an HTTP request and redraws.

@@ -11,11 +11,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/koltyakov/expose/internal/client"
 	"github.com/koltyakov/expose/internal/client/settings"
 	"github.com/koltyakov/expose/internal/config"
 	ilog "github.com/koltyakov/expose/internal/log"
+	"github.com/koltyakov/expose/internal/selfupdate"
+	"github.com/koltyakov/expose/internal/versionutil"
 )
 
 func runHTTP(ctx context.Context, args []string) int {
@@ -139,12 +142,22 @@ func runClient(ctx context.Context, args []string) int {
 	}
 
 	var logger *slog.Logger
+	var display *client.Display
+	displayCleanup := func() {}
 	c := client.New(cfg, nil) // logger set below
 	c.SetVersion(Version)
 
 	if isInteractiveOutput() {
-		display := client.NewDisplay(true)
-		defer display.Cleanup()
+		display = client.NewDisplay(true)
+		cleaned := false
+		displayCleanup = func() {
+			if cleaned || display == nil {
+				return
+			}
+			cleaned = true
+			display.Cleanup()
+		}
+		defer displayCleanup()
 		c.SetDisplay(display)
 		logger = ilog.NewStderr("warn")
 	} else {
@@ -155,19 +168,106 @@ func runClient(ctx context.Context, args []string) int {
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
 	if isAutoUpdateEnabled() {
 		if autoUpdateOnStart(ctx, Version, logger) {
+			displayCleanup()
 			return restartProcess(logger)
 		}
 		c.SetAutoUpdate(true)
 	}
 
-	if err := c.Run(ctx); err != nil {
-		if errors.Is(err, client.ErrAutoUpdated) {
-			return restartProcess(logger)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	hotkeyCleanup := func() {}
+	hotkeyCh := (<-chan struct{})(nil)
+	if display != nil && isInteractiveInput() {
+		ch, cleanup, err := startClientUpdateHotkeyListener()
+		if err != nil {
+			logger.Debug("client hotkeys disabled", "err", err)
+		} else {
+			hotkeyCh = ch
+			hotkeyCleanup = cleanup
+			defer hotkeyCleanup()
 		}
-		fmt.Fprintln(os.Stderr, "client error:", err)
-		return 1
 	}
-	return 0
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- c.Run(runCtx)
+	}()
+
+	type manualUpdateResult struct {
+		result *selfupdate.Result
+		err    error
+	}
+	manualUpdateDone := make(chan manualUpdateResult, 1)
+	updateBusy := false
+	restartAfterClientExit := false
+
+	for {
+		select {
+		case err := <-runDone:
+			if restartAfterClientExit {
+				hotkeyCleanup()
+				displayCleanup()
+				return restartProcess(logger)
+			}
+			if errors.Is(err, client.ErrAutoUpdated) {
+				hotkeyCleanup()
+				displayCleanup()
+				return restartProcess(logger)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "client error:", err)
+				return 1
+			}
+			return 0
+		case <-hotkeyCh:
+			if updateBusy {
+				if display != nil {
+					display.ShowInfo("Update already in progress...")
+				}
+				continue
+			}
+			if Version == "" || Version == "dev" || strings.HasSuffix(Version, "-dev") {
+				if display != nil {
+					display.ShowWarning("Self-update is unavailable for dev builds")
+				}
+				continue
+			}
+			updateBusy = true
+			if display != nil {
+				display.ShowInfo("Checking for updates...")
+			}
+			go func() {
+				checkCtx, cancel := context.WithTimeout(runCtx, 2*time.Minute)
+				defer cancel()
+				result, err := selfupdate.CheckAndApply(checkCtx, Version)
+				manualUpdateDone <- manualUpdateResult{result: result, err: err}
+			}()
+		case res := <-manualUpdateDone:
+			updateBusy = false
+			if res.err != nil {
+				msg := "Update failed: " + res.err.Error()
+				if display != nil {
+					display.ShowWarning(msg)
+				}
+				logger.Warn("manual update failed", "err", res.err)
+				continue
+			}
+			if res.result == nil || !res.result.Updated {
+				if display != nil {
+					display.ShowInfo("Already up to date.")
+				}
+				continue
+			}
+			latest := versionutil.EnsureVPrefix(res.result.LatestVersion)
+			if display != nil {
+				display.ShowInfo("Update applied (" + latest + "); restarting...")
+			}
+			restartAfterClientExit = true
+			cancelRun()
+		}
+	}
 }
 
 func mergeClientSettings(cfg *config.ClientConfig) error {

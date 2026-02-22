@@ -90,8 +90,9 @@ type Display struct {
 	wafBlocked int64 // WAF-blocked requests reported by the server
 
 	// session timing
-	sessionStart  time.Time // when the first successful connection happened
-	lastReconnect time.Time // when the most recent reconnection happened (zero if none)
+	sessionStart    time.Time // when the first successful connection happened
+	lastReconnect   time.Time // when the most recent reconnection happened (zero if none)
+	statusChangedAt time.Time // when the current status was set
 
 	// latency from most recent ping/pong round-trip
 	latency time.Duration

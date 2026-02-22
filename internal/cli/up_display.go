@@ -65,6 +65,8 @@ type upDashboard struct {
 	wsDisplayMin    int
 	wsDebounceTimer *time.Timer
 	wsDebounceGen   uint64
+	statusText      string
+	statusChangedAt time.Time
 
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -412,28 +414,36 @@ func (d *upDashboard) redrawLocked() {
 	if gap < 4 {
 		gap = 4
 	}
-	fmt.Fprintf(&b, "%s%s%s\n", name, strings.Repeat(" ", gap), hint)
-	if strings.TrimSpace(d.configPath) != "" {
-		fmt.Fprintf(&b, "%s %s\n", d.styled(upANSIDim, "Config"), d.styled(upANSIBold, d.configPath))
-	}
-	b.WriteString(d.styled(upANSIDim, strings.Repeat("═", 78)))
-	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "%s%s%s\n\n", name, strings.Repeat(" ", gap), hint)
 
 	placeholder := d.styled(upANSIDim, "--")
-	d.writeSectionHeader(&b, "Session Overview", "")
 	status := d.aggregateStatusLocked()
 	if status != "" {
-		d.writeField(&b, "Session Status", d.statusBadge(status))
+		now := d.now()
+		if d.statusText != status || d.statusChangedAt.IsZero() {
+			d.statusText = status
+			d.statusChangedAt = now
+		}
+		statusColor := upANSIGreen
+		if status != "online" {
+			statusColor = upANSIYellow
+		}
+		statusValue := d.styled(statusColor, status)
+		if !d.statusChangedAt.IsZero() {
+			statusValue += d.styled(upANSIDim, " for "+upFormatHeaderUptime(now.Sub(d.statusChangedAt)))
+		}
+		d.writeField(&b, "Session Status", statusValue)
 	} else {
+		d.statusText = ""
+		d.statusChangedAt = time.Time{}
 		d.writeField(&b, "Session Status", placeholder)
 	}
-	d.writeField(&b, "Session Uptime", upFormatHeaderUptime(d.now().Sub(d.startedAt)))
 
 	tunnelIDs := d.tunnelIDsLocked()
 	if tunnelIDs != "" {
-		d.writeField(&b, "Tunnel IDs", d.styled(upANSIDim, tunnelIDs))
+		d.writeField(&b, "Tunnel ID", d.styled(upANSIDim, tunnelIDs))
 	} else {
-		d.writeField(&b, "Tunnel IDs", placeholder)
+		d.writeField(&b, "Tunnel ID", placeholder)
 	}
 
 	serverVersion := d.serverVersionDisplayLocked()
@@ -483,7 +493,6 @@ func (d *upDashboard) redrawLocked() {
 	}
 
 	b.WriteString("\n")
-	d.writeSectionHeader(&b, "HTTP Requests", "")
 	httpSummary := fmt.Sprintf("%d total", d.totalHTTP)
 	if d.anyWAFEnabledLocked() {
 		if d.wafBlocked > 0 {
@@ -492,11 +501,9 @@ func (d *upDashboard) redrawLocked() {
 			httpSummary += ", blocked 0"
 		}
 	}
-	b.WriteString(d.styled(upANSIDim, "  "+httpSummary))
-	b.WriteString("\n")
-	b.WriteString(d.styled(upANSIDim, strings.Repeat("─", 78)))
-	b.WriteString("\n")
-	b.WriteString(d.styled(upANSIDim, "TIME      METHOD   PATH                                     STATUS               LATENCY "))
+	b.WriteString(d.styled(upANSIBold, "HTTP Requests   "))
+	b.WriteString("  ")
+	b.WriteString(d.styled(upANSIDim, httpSummary))
 	b.WriteString("\n")
 	b.WriteString(d.styled(upANSIDim, strings.Repeat("─", 78)))
 	b.WriteString("\n")
@@ -537,32 +544,6 @@ func (d *upDashboard) redrawLocked() {
 		}
 	}
 
-	b.WriteString("\n")
-	d.writeSectionHeader(&b, "Recent Events", "")
-	if len(d.events) == 0 {
-		b.WriteString(d.styled(upANSIDim, "Waiting for status updates…"))
-		b.WriteString("\n")
-	} else {
-		b.WriteString(d.styled(upANSIDim, strings.Repeat("─", 78)))
-		b.WriteString("\n")
-		for _, ev := range d.events {
-			sub := strings.TrimSpace(ev.Subdomain)
-			if sub == "" {
-				sub = "-"
-			}
-			msg := strings.TrimSpace(ev.Message)
-			if msg == "" {
-				msg = "-"
-			}
-			fmt.Fprintf(&b, "%s  %s  %-12s %s\n",
-				d.styled(upANSIDim, ev.At.Format("15:04:05")),
-				d.eventLevelTag(ev.Level),
-				truncateRight(sub, 12),
-				truncateRight(msg, 48),
-			)
-		}
-	}
-
 	_, _ = fmt.Fprint(d.out, b.String())
 }
 
@@ -571,62 +552,11 @@ func (d *upDashboard) writeField(b *strings.Builder, label, value string) {
 	if pad < 1 {
 		pad = 1
 	}
-	displayLabel := label
-	if strings.TrimSpace(label) != "" {
-		displayLabel = d.styled(upANSIDim, label)
-	}
-	_, _ = fmt.Fprintf(b, "%s%s%s\n", displayLabel, strings.Repeat(" ", pad), value)
+	_, _ = fmt.Fprintf(b, "%s%s%s\n", label, strings.Repeat(" ", pad), value)
 }
 
 func (d *upDashboard) writeFieldContinuation(b *strings.Builder, value string) {
 	d.writeField(b, "", value)
-}
-
-func (d *upDashboard) writeSectionHeader(b *strings.Builder, title, meta string) {
-	title = strings.TrimSpace(title)
-	meta = strings.TrimSpace(meta)
-	if title == "" {
-		return
-	}
-	b.WriteString(d.styled(upANSIBold+upANSICyan, title))
-	if meta != "" {
-		b.WriteString(d.styled(upANSIDim, "  "+meta))
-	}
-	b.WriteString("\n")
-}
-
-func (d *upDashboard) statusBadge(status string) string {
-	status = strings.TrimSpace(status)
-	if status == "" {
-		return d.styled(upANSIDim, "[--]")
-	}
-	label := "[" + strings.ToUpper(status) + "]"
-	switch status {
-	case "online":
-		return d.styled(upANSIGreen, label)
-	case "reconnecting", "connecting", "waiting-tls", "starting":
-		return d.styled(upANSIYellow, label)
-	case "error":
-		return d.styled(upANSIRed, label)
-	default:
-		return d.styled(upANSIDim, label)
-	}
-}
-
-func (d *upDashboard) eventLevelTag(level string) string {
-	level = strings.ToUpper(strings.TrimSpace(level))
-	if level == "" {
-		level = "INFO"
-	}
-	tag := fmt.Sprintf("%-5s", level)
-	switch level {
-	case "ERROR":
-		return d.styled(upANSIRed, tag)
-	case "WARN":
-		return d.styled(upANSIYellow, tag)
-	default:
-		return d.styled(upANSICyan, tag)
-	}
 }
 
 func (d *upDashboard) aggregateStatusLocked() string {
@@ -824,9 +754,9 @@ func (d *upDashboard) localTargetWithHealthLocked(raw string) string {
 		return d.styled(upANSIDim, "--")
 	}
 	if d.localTargetHealthyLocked(raw) {
-		return raw + " " + d.styled(upANSIGreen, "✅")
+		return raw + " " + d.styled(upANSIGreen, "●")
 	}
-	return raw + " " + d.styled(upANSIRed, "❌")
+	return raw + " " + d.styled(upANSIRed, "●")
 }
 
 func (d *upDashboard) localTargetHealthyLocked(raw string) bool {

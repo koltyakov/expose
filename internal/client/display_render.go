@@ -44,19 +44,18 @@ func (d *Display) redraw() {
 		if d.status != "online" {
 			statusColor = ansiYellow
 		}
-		d.writeField(&b, "Session Status", d.styled(statusColor, d.status))
+		statusText := d.styled(statusColor, d.status)
+		statusSince := d.statusChangedAt
+		if statusSince.IsZero() {
+			statusSince = d.sessionStart
+		}
+		if !statusSince.IsZero() {
+			now := d.now()
+			statusText += d.styled(ansiDim, " for "+displayFormatUptime(now.Sub(statusSince)))
+		}
+		d.writeField(&b, "Session Status", statusText)
 	} else {
 		d.writeField(&b, "Session Status", placeholder)
-	}
-	if !d.sessionStart.IsZero() {
-		now := d.now()
-		total := now.Sub(d.sessionStart)
-		uptime := displayFormatUptime(total)
-		if !d.lastReconnect.IsZero() {
-			sinceLast := now.Sub(d.lastReconnect)
-			uptime += d.styled(ansiDim, fmt.Sprintf(" (since reconnect: %s)", displayFormatUptime(sinceLast)))
-		}
-		d.writeField(&b, "Session Uptime", uptime)
 	}
 	if d.tunnelID != "" {
 		d.writeField(&b, "Tunnel ID", d.styled(ansiDim, d.tunnelID))
@@ -75,7 +74,9 @@ func (d *Display) redraw() {
 		d.writeField(&b, "Update",
 			d.styled(ansiYellow, fmt.Sprintf("%s available", d.updateVersion))+
 				d.styled(ansiDim, " — run ")+
-				d.styled(ansiBold, "expose update"))
+				d.styled(ansiBold, "expose update")+
+				d.styled(ansiDim, " or press ")+
+				d.styled(ansiBold, "Ctrl+U"))
 	}
 	if d.latency > 0 {
 		d.writeField(&b, "Latency", displayFormatDuration(d.latency))
@@ -207,9 +208,9 @@ func (d *Display) localTargetWithHealth(raw string) string {
 		return d.styled(ansiDim, "--")
 	}
 	if d.localTargetHealthy(raw) {
-		return raw + " " + d.styled(ansiGreen, "✅")
+		return raw + " " + d.styled(ansiGreen, "●")
 	}
-	return raw + " " + d.styled(ansiRed, "❌")
+	return raw + " " + d.styled(ansiRed, "●")
 }
 
 func (d *Display) localTargetHealthy(raw string) bool {

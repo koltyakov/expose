@@ -31,12 +31,13 @@ const (
 )
 
 const (
-	upDisplayFieldWidth   = 18
+	upDisplayFieldWidth   = 19
 	upMaxDisplayReqs      = 10
 	upActiveClientWindow  = 60 * time.Second
 	upWSCloseDebounce     = 500 * time.Millisecond
 	upLocalHealthCacheTTL = 2 * time.Second
 	upLocalHealthTimeout  = 200 * time.Millisecond
+	upLatencySampleMax    = 1024
 )
 
 type upDashboard struct {
@@ -48,10 +49,11 @@ type upDashboard struct {
 	startedAt  time.Time
 	protectAll bool
 
-	order  []string
-	groups map[string]*upDashboardGroup
-	events []upDashboardEvent
-	reqs   []upDashboardRequest
+	order          []string
+	groups         map[string]*upDashboardGroup
+	events         []upDashboardEvent
+	reqs           []upDashboardRequest
+	latencySamples []time.Duration
 
 	serverVersions  map[string]string
 	tlsModes        map[string]string
@@ -391,6 +393,20 @@ func (d *upDashboard) appendRequestLocked(req upDashboardRequest) {
 		copy(d.reqs, d.reqs[len(d.reqs)-upMaxDisplayReqs:])
 		d.reqs = d.reqs[:upMaxDisplayReqs]
 	}
+	if parsed, ok := dashboardParseRequestDuration(req.Duration); ok {
+		d.appendLatencySampleLocked(parsed)
+	}
+}
+
+func (d *upDashboard) appendLatencySampleLocked(v time.Duration) {
+	if v < 0 {
+		v = 0
+	}
+	d.latencySamples = append(d.latencySamples, v)
+	if len(d.latencySamples) > upLatencySampleMax {
+		copy(d.latencySamples, d.latencySamples[len(d.latencySamples)-upLatencySampleMax:])
+		d.latencySamples = d.latencySamples[:upLatencySampleMax]
+	}
 }
 
 func (d *upDashboard) redrawLocked() {
@@ -501,7 +517,7 @@ func (d *upDashboard) redrawLocked() {
 			httpSummary += ", blocked 0"
 		}
 	}
-	b.WriteString(d.styled(upANSIBold, "HTTP Requests   "))
+	b.WriteString(d.styled(upANSIBold, "HTTP Requests    "))
 	b.WriteString("  ")
 	b.WriteString(d.styled(upANSIDim, httpSummary))
 	b.WriteString("\n")
@@ -542,6 +558,27 @@ func (d *upDashboard) redrawLocked() {
 				)
 			}
 		}
+	}
+	if p, ok := upLatencyPercentiles(d.latencySamples); ok {
+		b.WriteString("\n")
+		b.WriteString("Latency")
+		pad := upDisplayFieldWidth - len("Latency")
+		if pad < 1 {
+			pad = 1
+		}
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString(d.styled(upANSIDim, "P50 "))
+		b.WriteString(p.p50)
+		b.WriteString(d.styled(upANSIDim, " | "))
+		b.WriteString(d.styled(upANSIDim, "P90 "))
+		b.WriteString(p.p90)
+		b.WriteString(d.styled(upANSIDim, " | "))
+		b.WriteString(d.styled(upANSIDim, "P95 "))
+		b.WriteString(p.p95)
+		b.WriteString(d.styled(upANSIDim, " | "))
+		b.WriteString(d.styled(upANSIDim, "P99 "))
+		b.WriteString(p.p99)
+		b.WriteString("\n")
 	}
 
 	_, _ = fmt.Fprint(d.out, b.String())
@@ -880,7 +917,7 @@ func (d *upDashboard) formatRequestStatusText(code int) string {
 	if text == "" {
 		text = "Unknown"
 	}
-	s := fmt.Sprintf("%-19s", fmt.Sprintf("%d %s", code, text))
+	s := fmt.Sprintf("%-10s", fmt.Sprintf("%d %s", code, text))
 	switch {
 	case code >= 200 && code < 300:
 		return d.styled(upANSIGreen, s)
@@ -1090,18 +1127,29 @@ func pluralizeUpUnit(n int, singular string) string {
 }
 
 func dashboardFormatRequestDuration(raw string) string {
+	parsed, ok := dashboardParseRequestDuration(raw)
+	if !ok {
+		return strings.TrimSpace(raw)
+	}
+	return dashboardFormatDurationRounded(parsed)
+}
+
+func dashboardParseRequestDuration(raw string) (time.Duration, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return ""
+		return 0, false
 	}
 	// ParseDuration accepts "µs" but normalizing keeps this robust.
 	raw = strings.ReplaceAll(raw, "μs", "us")
 	raw = strings.ReplaceAll(raw, "µs", "us")
 	parsed, err := time.ParseDuration(raw)
 	if err != nil {
-		return raw
+		return 0, false
 	}
-	return dashboardFormatDurationRounded(parsed)
+	if parsed < 0 {
+		parsed = 0
+	}
+	return parsed, true
 }
 
 // Match the single-tunnel dashboard rounding style.
@@ -1114,6 +1162,48 @@ func dashboardFormatDurationRounded(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%.2fs", d.Seconds())
 	}
+}
+
+type upLatencyPercentilesValues struct {
+	p50 string
+	p90 string
+	p95 string
+	p99 string
+}
+
+func upLatencyPercentiles(samples []time.Duration) (upLatencyPercentilesValues, bool) {
+	if len(samples) == 0 {
+		return upLatencyPercentilesValues{}, false
+	}
+	sorted := append([]time.Duration(nil), samples...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return upLatencyPercentilesValues{
+		p50: dashboardFormatDurationRounded(durationPercentile(sorted, 50)),
+		p90: dashboardFormatDurationRounded(durationPercentile(sorted, 90)),
+		p95: dashboardFormatDurationRounded(durationPercentile(sorted, 95)),
+		p99: dashboardFormatDurationRounded(durationPercentile(sorted, 99)),
+	}, true
+}
+
+func durationPercentile(sorted []time.Duration, p int) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 100 {
+		return sorted[len(sorted)-1]
+	}
+	n := len(sorted)
+	idx := (p*n + 99) / 100 // ceil(p*n/100)
+	if idx <= 0 {
+		idx = 1
+	}
+	if idx > n {
+		idx = n
+	}
+	return sorted[idx-1]
 }
 
 func truncateRight(s string, n int) string {

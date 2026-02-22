@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -123,7 +124,7 @@ func (d *Display) redraw() {
 	b.WriteString("\n")
 
 	// ── HTTP Requests (counters) ────────────────────────────────
-	b.WriteString(d.styled(ansiBold, "HTTP Requests   "))
+	b.WriteString(d.styled(ansiBold, "HTTP Requests    "))
 	b.WriteString("  ")
 	b.WriteString(d.styled(ansiDim, httpSummary))
 	b.WriteString("\n")
@@ -162,16 +163,34 @@ func (d *Display) redraw() {
 			}
 		}
 	}
+	if p, ok := displayLatencyPercentiles(d.latencySamples); ok {
+		b.WriteString("\n")
+		b.WriteString("Latency")
+		pad := displayFieldWidth - len("Latency")
+		if pad < 1 {
+			pad = 1
+		}
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString(d.styled(ansiDim, "P50 "))
+		b.WriteString(p.p50)
+		b.WriteString(d.styled(ansiDim, " | "))
+		b.WriteString(d.styled(ansiDim, "P90 "))
+		b.WriteString(p.p90)
+		b.WriteString(d.styled(ansiDim, " | "))
+		b.WriteString(d.styled(ansiDim, "P95 "))
+		b.WriteString(p.p95)
+		b.WriteString(d.styled(ansiDim, " | "))
+		b.WriteString(d.styled(ansiDim, "P99 "))
+		b.WriteString(p.p99)
+		b.WriteString("\n")
+	}
 
 	_, _ = fmt.Fprint(d.out, b.String())
 }
 
 // writeField writes a label–value pair aligned to displayFieldWidth.
 func (d *Display) writeField(b *strings.Builder, label, value string) {
-	pad := displayFieldWidth - len(label)
-	if pad < 1 {
-		pad = 1
-	}
+	pad := max(displayFieldWidth-len(label), 1)
 	fmt.Fprintf(b, "%s%s%s\n", label, strings.Repeat(" ", pad), value)
 }
 
@@ -181,7 +200,7 @@ func (d *Display) formatStatus(code int) string {
 	if text == "" {
 		text = "Unknown"
 	}
-	s := fmt.Sprintf("%-19s", fmt.Sprintf("%d %s", code, text))
+	s := fmt.Sprintf("%-10s", fmt.Sprintf("%d %s", code, text))
 	switch {
 	case code >= 200 && code < 300:
 		return d.styled(ansiGreen, s)
@@ -279,6 +298,48 @@ func displayFormatDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%.2fs", d.Seconds())
 	}
+}
+
+type displayLatencyPercentilesValues struct {
+	p50 string
+	p90 string
+	p95 string
+	p99 string
+}
+
+func displayLatencyPercentiles(samples []time.Duration) (displayLatencyPercentilesValues, bool) {
+	if len(samples) == 0 {
+		return displayLatencyPercentilesValues{}, false
+	}
+	sorted := append([]time.Duration(nil), samples...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return displayLatencyPercentilesValues{
+		p50: displayFormatDuration(durationPercentile(sorted, 50)),
+		p90: displayFormatDuration(durationPercentile(sorted, 90)),
+		p95: displayFormatDuration(durationPercentile(sorted, 95)),
+		p99: displayFormatDuration(durationPercentile(sorted, 99)),
+	}, true
+}
+
+func durationPercentile(sorted []time.Duration, p int) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 100 {
+		return sorted[len(sorted)-1]
+	}
+	n := len(sorted)
+	idx := (p*n + 99) / 100 // ceil(p*n/100)
+	if idx <= 0 {
+		idx = 1
+	}
+	if idx > n {
+		idx = n
+	}
+	return sorted[idx-1]
 }
 
 // displayFormatUptime formats a duration as a human-readable uptime string.

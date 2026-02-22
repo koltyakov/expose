@@ -23,7 +23,7 @@ const (
 )
 
 // displayFieldWidth is the column width for header field labels.
-const displayFieldWidth = 18
+const displayFieldWidth = 19
 
 // maxDisplayRequests is the number of HTTP request lines kept visible.
 const maxDisplayRequests = 10
@@ -42,6 +42,7 @@ const wsCloseDebounce = 500 * time.Millisecond
 const (
 	displayLocalHealthCacheTTL = 2 * time.Second
 	displayLocalHealthTimeout  = 200 * time.Millisecond
+	displayLatencySampleMax    = 1024
 )
 
 // requestEntry stores one logged HTTP request for the rolling display.
@@ -105,6 +106,8 @@ type Display struct {
 
 	// rolling request log (most recent at the end)
 	requests []requestEntry
+	// bounded latency samples for percentile metrics (recent requests)
+	latencySamples []time.Duration
 
 	// active WebSocket streams
 	wsConns map[string]wsEntry
@@ -124,12 +127,13 @@ type Display struct {
 // When color is true, ANSI escape codes are used for styling.
 func NewDisplay(color bool) *Display {
 	return &Display{
-		out:         os.Stdout,
-		color:       color,
-		wsConns:     make(map[string]wsEntry),
-		visitors:    make(map[string]time.Time),
-		requests:    make([]requestEntry, 0, maxDisplayRequests),
-		nowFunc:     time.Now,
-		localHealth: make(map[string]localHealthEntry),
+		out:            os.Stdout,
+		color:          color,
+		wsConns:        make(map[string]wsEntry),
+		visitors:       make(map[string]time.Time),
+		requests:       make([]requestEntry, 0, maxDisplayRequests),
+		latencySamples: make([]time.Duration, 0, displayLatencySampleMax),
+		nowFunc:        time.Now,
+		localHealth:    make(map[string]localHealthEntry),
 	}
 }

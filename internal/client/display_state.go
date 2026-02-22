@@ -112,6 +112,7 @@ func (d *Display) LogRequest(method, path string, status int, duration time.Dura
 	defer d.mu.Unlock()
 	d.totalHTTP++
 	d.trackVisitor(headers)
+	d.appendLatencySampleLocked(duration)
 	now := d.now()
 	d.appendEntry(requestEntry{
 		ts:       now,
@@ -207,6 +208,17 @@ func (d *Display) appendEntry(e requestEntry) {
 	if len(d.requests) > maxDisplayRequests {
 		copy(d.requests, d.requests[len(d.requests)-maxDisplayRequests:])
 		d.requests = d.requests[:maxDisplayRequests]
+	}
+}
+
+func (d *Display) appendLatencySampleLocked(v time.Duration) {
+	if v < 0 {
+		v = 0
+	}
+	d.latencySamples = append(d.latencySamples, v)
+	if len(d.latencySamples) > displayLatencySampleMax {
+		copy(d.latencySamples, d.latencySamples[len(d.latencySamples)-displayLatencySampleMax:])
+		d.latencySamples = d.latencySamples[:displayLatencySampleMax]
 	}
 }
 

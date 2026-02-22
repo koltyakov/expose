@@ -105,6 +105,25 @@ func TestDisplayLogRequest(t *testing.T) {
 	}
 }
 
+func TestDisplayShowsLatencyPercentiles(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowBanner("dev")
+	for i := 1; i <= 10; i++ {
+		d.LogRequest("GET", fmt.Sprintf("/req/%d", i), 200, time.Duration(i)*time.Millisecond, nil)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Latency") || !strings.Contains(out, "P50") {
+		t.Fatalf("expected latency percentile summary, got: %s", out)
+	}
+	if !strings.Contains(out, "P90 9ms") {
+		t.Fatalf("expected P90 metric, got: %s", out)
+	}
+	if !strings.Contains(out, "P95 10ms") || !strings.Contains(out, "P99 10ms") {
+		t.Fatalf("expected P95/P99 metrics, got: %s", out)
+	}
+}
+
 func TestDisplayLogRequestMaxEntries(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)

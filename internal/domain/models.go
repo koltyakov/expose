@@ -26,11 +26,12 @@ const (
 
 // APIKey represents a server-managed authentication key.
 type APIKey struct {
-	ID        string
-	Name      string
-	KeyHash   string
-	CreatedAt time.Time
-	RevokedAt *time.Time
+	ID          string
+	Name        string
+	KeyHash     string
+	CreatedAt   time.Time
+	RevokedAt   *time.Time
+	TunnelLimit int // max active tunnels; -1 = unlimited
 }
 
 // Domain represents a registered subdomain record (temporary or permanent).

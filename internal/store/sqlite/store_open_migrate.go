@@ -244,5 +244,10 @@ CREATE INDEX IF NOT EXISTS idx_connect_tokens_used_at ON connect_tokens(used_at)
 			return err
 		}
 	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN tunnel_limit INTEGER NOT NULL DEFAULT -1`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
 	return nil
 }

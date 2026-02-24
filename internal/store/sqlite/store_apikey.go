@@ -11,26 +11,31 @@ import (
 )
 
 func (s *Store) CreateAPIKey(ctx context.Context, name, keyHash string) (domain.APIKey, error) {
+	return s.CreateAPIKeyWithLimit(ctx, name, keyHash, -1)
+}
+
+func (s *Store) CreateAPIKeyWithLimit(ctx context.Context, name, keyHash string, tunnelLimit int) (domain.APIKey, error) {
 	now := time.Now().UTC()
 	id, err := newID("k")
 	if err != nil {
 		return domain.APIKey{}, err
 	}
 	k := domain.APIKey{
-		ID:        id,
-		Name:      name,
-		KeyHash:   keyHash,
-		CreatedAt: now,
+		ID:          id,
+		Name:        name,
+		KeyHash:     keyHash,
+		CreatedAt:   now,
+		TunnelLimit: tunnelLimit,
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO api_keys(id, name, key_hash, created_at, revoked_at)
-VALUES(?, ?, ?, ?, NULL)`, k.ID, k.Name, k.KeyHash, k.CreatedAt)
+INSERT INTO api_keys(id, name, key_hash, created_at, revoked_at, tunnel_limit)
+VALUES(?, ?, ?, ?, NULL, ?)`, k.ID, k.Name, k.KeyHash, k.CreatedAt, k.TunnelLimit)
 	return k, err
 }
 
 func (s *Store) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, key_hash, created_at, revoked_at
+SELECT id, name, key_hash, created_at, revoked_at, tunnel_limit
 FROM api_keys
 ORDER BY created_at DESC`)
 	if err != nil {
@@ -42,7 +47,7 @@ ORDER BY created_at DESC`)
 	for rows.Next() {
 		var k domain.APIKey
 		var revoked sql.NullTime
-		if err := rows.Scan(&k.ID, &k.Name, &k.KeyHash, &k.CreatedAt, &revoked); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.KeyHash, &k.CreatedAt, &revoked, &k.TunnelLimit); err != nil {
 			return nil, err
 		}
 		if revoked.Valid {
@@ -78,6 +83,30 @@ func (s *Store) ResolveAPIKeyID(ctx context.Context, keyHash string) (string, er
 	}
 	err := stmt.QueryRowContext(ctx, keyHash).Scan(&id)
 	return id, err
+}
+
+// GetAPIKeyTunnelLimit returns the per-key tunnel limit for the given key ID.
+// A value of -1 means unlimited.
+func (s *Store) GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error) {
+	var limit int
+	err := s.db.QueryRowContext(ctx, `SELECT tunnel_limit FROM api_keys WHERE id = ?`, keyID).Scan(&limit)
+	return limit, err
+}
+
+// SetAPIKeyTunnelLimit updates the per-key tunnel limit. Use -1 for unlimited.
+func (s *Store) SetAPIKeyTunnelLimit(ctx context.Context, keyID string, limit int) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE api_keys SET tunnel_limit = ? WHERE id = ?`, limit, keyID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) GetServerPepper(ctx context.Context) (string, bool, error) {

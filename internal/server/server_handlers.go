@@ -34,7 +34,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if active >= s.cfg.MaxActivePerKey {
+	keyLimit, err := s.store.GetAPIKeyTunnelLimit(r.Context(), keyID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if keyLimit >= 0 && active >= keyLimit {
 		writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
 		return
 	}

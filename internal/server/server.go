@@ -23,6 +23,7 @@ import (
 type serverStore interface {
 	ResetConnectedTunnels(ctx context.Context) (int64, error)
 	ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error)
+	GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error)
 	IsHostnameActive(ctx context.Context, host string) (bool, error)
 	AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID, mode, subdomain, baseDomain, clientMeta string) (domain.Domain, domain.Tunnel, error)
 	SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, hash string) error

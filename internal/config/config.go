@@ -44,7 +44,6 @@ type ServerConfig struct {
 	RequestTimeout         time.Duration
 	MaxBodyBytes           int64
 	ConnectTokenTTL        time.Duration
-	MaxActivePerKey        int
 	ClientPingTimeout      time.Duration
 	HeartbeatCheckInterval time.Duration
 	CleanupInterval        time.Duration
@@ -128,7 +127,6 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		RequestTimeout:         30 * time.Second,
 		MaxBodyBytes:           10 * 1024 * 1024,
 		ConnectTokenTTL:        60 * time.Second,
-		MaxActivePerKey:        5,
 		ClientPingTimeout:      defaultServerClientPingTimeout,
 		HeartbeatCheckInterval: defaultServerHeartbeatCheckInterval,
 		CleanupInterval:        defaultServerCleanupInterval,

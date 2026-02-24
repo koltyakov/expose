@@ -830,6 +830,138 @@ func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyDefaultTunnelLimit(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_default_limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.TunnelLimit != -1 {
+		t.Fatalf("expected default tunnel limit -1, got %d", k.TunnelLimit)
+	}
+	limit, err := store.GetAPIKeyTunnelLimit(ctx, k.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limit != -1 {
+		t.Fatalf("expected stored tunnel limit -1, got %d", limit)
+	}
+}
+
+func TestCreateAPIKeyWithLimit(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKeyWithLimit(ctx, "test", "hash_custom_limit", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.TunnelLimit != 10 {
+		t.Fatalf("expected tunnel limit 10, got %d", k.TunnelLimit)
+	}
+	limit, err := store.GetAPIKeyTunnelLimit(ctx, k.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limit != 10 {
+		t.Fatalf("expected stored tunnel limit 10, got %d", limit)
+	}
+}
+
+func TestSetAPIKeyTunnelLimit(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_set_limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAPIKeyTunnelLimit(ctx, k.ID, 5); err != nil {
+		t.Fatal(err)
+	}
+	limit, err := store.GetAPIKeyTunnelLimit(ctx, k.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limit != 5 {
+		t.Fatalf("expected tunnel limit 5, got %d", limit)
+	}
+	// Update to unlimited
+	if err := store.SetAPIKeyTunnelLimit(ctx, k.ID, -1); err != nil {
+		t.Fatal(err)
+	}
+	limit, err = store.GetAPIKeyTunnelLimit(ctx, k.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limit != -1 {
+		t.Fatalf("expected tunnel limit -1, got %d", limit)
+	}
+}
+
+func TestSetAPIKeyTunnelLimitNonExistent(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	err = store.SetAPIKeyTunnelLimit(ctx, "nonexistent", 5)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestListAPIKeysIncludesTunnelLimit(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	if _, err := store.CreateAPIKeyWithLimit(ctx, "unlimited", "hash_list_limit_1", -1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAPIKeyWithLimit(ctx, "limited", "hash_list_limit_2", 3); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := store.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) < 2 {
+		t.Fatalf("expected at least 2 keys, got %d", len(keys))
+	}
+	// Keys are ordered by created_at DESC, so "limited" is first.
+	found := map[string]int{}
+	for _, k := range keys {
+		found[k.Name] = k.TunnelLimit
+	}
+	if found["unlimited"] != -1 {
+		t.Fatalf("expected unlimited key limit -1, got %d", found["unlimited"])
+	}
+	if found["limited"] != 3 {
+		t.Fatalf("expected limited key limit 3, got %d", found["limited"])
+	}
+}
+
 func openTestStore(t *testing.T) (*Store, error) {
 	t.Helper()
 	return openTestStoreWithOptions(t, OpenOptions{})

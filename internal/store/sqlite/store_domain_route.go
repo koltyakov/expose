@@ -66,7 +66,7 @@ func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (strin
 	slugs := make([]string, 0, attempts)
 	hostnames := make([]any, 0, attempts)
 	slugByHostname := make(map[string]struct{}, attempts)
-	for i := 0; i < attempts; i++ {
+	for range attempts {
 		slug, err := randomSlug(6)
 		if err != nil {
 			return "", err

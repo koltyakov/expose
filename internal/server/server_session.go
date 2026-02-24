@@ -47,10 +47,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		pending:   make(map[string]chan tunnelproto.Message),
 		wsPending: make(map[string]chan tunnelproto.Message),
 	}
-	wsReadLimit := s.cfg.MaxBodyBytes * 2
-	if wsReadLimit < minWSReadLimit {
-		wsReadLimit = minWSReadLimit
-	}
+	wsReadLimit := max(s.cfg.MaxBodyBytes*2, minWSReadLimit)
 	sess.conn.SetReadLimit(wsReadLimit)
 	sess.touch(time.Now())
 	prev := s.replaceSession(tunnelID, sess)

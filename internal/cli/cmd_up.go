@@ -183,7 +183,6 @@ func runUpFromFile(ctx context.Context, path string) int {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(clients))
 	for _, hc := range clients {
-		hc := hc
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

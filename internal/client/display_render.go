@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -32,10 +32,7 @@ func (d *Display) redraw() {
 	if d.version != "" {
 		visName += 1 + len(d.version)
 	}
-	gap := displayContentWidth - visName - visHint
-	if gap < 4 {
-		gap = 4
-	}
+	gap := max(displayContentWidth-visName-visHint, 4)
 	fmt.Fprintf(&b, "%s%s%s\n\n", name, strings.Repeat(" ", gap), hint)
 
 	// ── Connection info ─────────────────────────────────────────
@@ -107,12 +104,10 @@ func (d *Display) redraw() {
 		d.writeField(&b, "Forwarding", placeholder)
 	}
 	// ── Connections counter ─────────────────────────────────────
-	wsCount := len(d.wsConns)
-	// Use the debounced floor so the counter never dips below the
-	// pre-close value during a rapid refresh cycle.
-	if d.wsDisplayMin > wsCount {
-		wsCount = d.wsDisplayMin
-	}
+	wsCount := max(
+		// Use the debounced floor so the counter never dips below the
+		// pre-close value during a rapid refresh cycle.
+		d.wsDisplayMin, len(d.wsConns))
 	activeCount := d.activeClientCount()
 	clientCount := len(d.visitors)
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
@@ -175,10 +170,7 @@ func (d *Display) redraw() {
 	if p, ok := displayLatencyPercentiles(d.latencySamples); ok {
 		b.WriteString("\n")
 		b.WriteString("Latency")
-		pad := displayFieldWidth - len("Latency")
-		if pad < 1 {
-			pad = 1
-		}
+		pad := max(displayFieldWidth-len("Latency"), 1)
 		b.WriteString(strings.Repeat(" ", pad))
 		b.WriteString(d.styled(ansiDim, "P50 "))
 		b.WriteString(p.p50)
@@ -334,7 +326,7 @@ func displayLatencyPercentiles(samples []time.Duration) (displayLatencyPercentil
 		return displayLatencyPercentilesValues{}, false
 	}
 	sorted := append([]time.Duration(nil), samples...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	slices.Sort(sorted)
 	return displayLatencyPercentilesValues{
 		p50: displayFormatDuration(durationPercentile(sorted, 50)),
 		p90: displayFormatDuration(durationPercentile(sorted, 90)),

@@ -3,6 +3,7 @@ package waf
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/koltyakov/expose/internal/netutil"
@@ -146,12 +147,7 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 
 // matchHeaderValues inspects all non-exempt header values for a rule match.
 func (fw *firewall) matchHeaderValues(rl *rule, values []string) bool {
-	for _, v := range values {
-		if rl.pattern.MatchString(v) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(values, rl.pattern.MatchString)
 }
 
 // clientAddr extracts the remote IP for logging. It prefers X-Forwarded-For

@@ -13,7 +13,7 @@ func TestRateLimiterAllow(t *testing.T) {
 	rl := newRateLimiter()
 
 	// First burst should succeed up to the burst limit.
-	for i := 0; i < int(regBurstLimit); i++ {
+	for i := range int(regBurstLimit) {
 		if !rl.allow("key-a") {
 			t.Fatalf("expected allow on burst iteration %d", i)
 		}
@@ -30,7 +30,7 @@ func TestRateLimiterIsolatesKeys(t *testing.T) {
 	rl := newRateLimiter()
 
 	// Exhaust key-a.
-	for i := 0; i < int(regBurstLimit); i++ {
+	for range int(regBurstLimit) {
 		rl.allow("key-a")
 	}
 	if rl.allow("key-a") {
@@ -100,7 +100,7 @@ func TestRateLimiterConcurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		g := g
 		go func() {
 			defer wg.Done()

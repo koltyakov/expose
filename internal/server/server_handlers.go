@@ -196,7 +196,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	defer close(relayStop)
 
 	s.startPublicWSReadRelay(streamID, sess, publicConn, readDone)
-	s.startPublicWSWriteRelay(r, streamID, publicConn, streamCh, relayStop, writeDone)
+	s.startPublicWSWriteRelay(r, publicConn, streamCh, relayStop, writeDone)
 
 	select {
 	case <-r.Context().Done():

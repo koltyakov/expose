@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1201,7 +1202,7 @@ func upLatencyPercentiles(samples []time.Duration) (upLatencyPercentilesValues, 
 		return upLatencyPercentilesValues{}, false
 	}
 	sorted := append([]time.Duration(nil), samples...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	slices.Sort(sorted)
 	return upLatencyPercentilesValues{
 		p50: dashboardFormatDurationRounded(durationPercentile(sorted, 50)),
 		p90: dashboardFormatDurationRounded(durationPercentile(sorted, 90)),

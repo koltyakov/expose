@@ -64,7 +64,6 @@ func (s *Server) startPublicWSReadRelay(
 
 func (s *Server) startPublicWSWriteRelay(
 	r *http.Request,
-	streamID string,
 	publicConn *websocket.Conn,
 	streamCh <-chan tunnelproto.Message,
 	relayStop <-chan struct{},

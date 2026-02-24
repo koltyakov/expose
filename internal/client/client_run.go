@@ -139,10 +139,7 @@ func nextBackoff(current time.Duration) time.Duration {
 	if current <= 0 {
 		current = reconnectInitialDelay
 	}
-	next := current * 2
-	if next > reconnectMaxDelay {
-		next = reconnectMaxDelay
-	}
+	next := min(current*2, reconnectMaxDelay)
 	// Add ±25% jitter to avoid thundering herd on reconnect.
 	jitter := 1.0 + (rand.Float64()-0.5)*0.5 // range [0.75, 1.25]
 	return time.Duration(float64(next) * jitter)

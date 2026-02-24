@@ -99,7 +99,7 @@ func TestRouteCacheConcurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		g := g
 		go func() {
 			defer wg.Done()

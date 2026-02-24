@@ -18,7 +18,7 @@ func Run(args []string) int {
 
 	switch args[0] {
 	case "login":
-		return runClientLogin(args[1:])
+		return runClientLogin(ctx, args[1:])
 	case "http":
 		return runHTTP(ctx, args[1:])
 	case "up":
@@ -48,7 +48,7 @@ func runClientCommand(ctx context.Context, args []string) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "login":
-			return runClientLogin(args[1:])
+			return runClientLogin(ctx, args[1:])
 		case "http":
 			return runHTTP(ctx, args[1:])
 		case "tunnel":

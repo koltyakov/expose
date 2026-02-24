@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,17 +30,21 @@ func isInteractiveOutput() bool {
 }
 
 func prompt(reader *bufio.Reader, label string) (string, error) {
+	return promptContext(context.Background(), reader, label)
+}
+
+func promptContext(ctx context.Context, reader *bufio.Reader, label string) (string, error) {
 	if _, err := fmt.Fprint(os.Stdout, label); err != nil {
 		return "", err
 	}
-	line, err := reader.ReadString('\n')
+	line, err := readPromptLineContext(ctx, reader)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
 }
 
-func resolveRequiredValue(reader *bufio.Reader, value string, canPrompt bool, promptLabel string) (string, bool, error) {
+func resolveRequiredValueContext(ctx context.Context, reader *bufio.Reader, value string, canPrompt bool, promptLabel string) (string, bool, error) {
 	value = strings.TrimSpace(value)
 	if value != "" {
 		return value, false, nil
@@ -47,7 +52,7 @@ func resolveRequiredValue(reader *bufio.Reader, value string, canPrompt bool, pr
 	if !canPrompt {
 		return "", true, nil
 	}
-	v, err := prompt(reader, promptLabel)
+	v, err := promptContext(ctx, reader, promptLabel)
 	if err != nil {
 		return "", false, err
 	}
@@ -62,7 +67,7 @@ func appendFlagIfNotEmpty(args []string, flagName, value string) []string {
 	return append(args, flagName, value)
 }
 
-func promptClientPasswordIfNeeded(cfg *config.ClientConfig) error {
+func promptClientPasswordIfNeeded(ctx context.Context, cfg *config.ClientConfig) error {
 	if cfg == nil || !cfg.Protect {
 		return nil
 	}
@@ -84,7 +89,7 @@ func promptClientPasswordIfNeeded(cfg *config.ClientConfig) error {
 	reader := bufio.NewReader(os.Stdin)
 	if !hasUserFromEnv {
 		label := fmt.Sprintf("Public user (default %s): ", cfg.User)
-		v, err := prompt(reader, label)
+		v, err := promptContext(ctx, reader, label)
 		if err != nil {
 			return err
 		}
@@ -93,7 +98,7 @@ func promptClientPasswordIfNeeded(cfg *config.ClientConfig) error {
 		}
 	}
 	if !hasPassword {
-		password, err := promptSecret("Public password (required): ")
+		password, err := promptSecretContext(ctx, "Public password (required): ")
 		if err != nil {
 			return err
 		}
@@ -155,7 +160,13 @@ func readPromptLineContext(ctx context.Context, reader *bufio.Reader) (string, e
 	case <-ctx.Done():
 		return "", context.Canceled
 	case res := <-resultCh:
-		return res.line, res.err
+		if res.err != nil {
+			if errors.Is(res.err, io.EOF) && res.line != "" {
+				return res.line, nil
+			}
+			return "", res.err
+		}
+		return res.line, nil
 	}
 }
 

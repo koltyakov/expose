@@ -70,7 +70,7 @@ func runTunnel(ctx context.Context, args []string) int {
 	return runClient(ctx, args)
 }
 
-func runClientLogin(args []string) int {
+func runClientLogin(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("client-login", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
@@ -84,8 +84,12 @@ func runClientLogin(args []string) int {
 	canPrompt := isInteractiveInput()
 	reader := bufio.NewReader(os.Stdin)
 	var missing bool
-	serverURL, missing, err := resolveRequiredValue(reader, serverURL, canPrompt, "Server host or URL: ")
+	serverURL, missing, err := resolveRequiredValueContext(ctx, reader, serverURL, canPrompt, "Server host or URL: ")
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "client login canceled")
+			return 130
+		}
 		fmt.Fprintln(os.Stderr, "client login error:", err)
 		return 1
 	}
@@ -94,8 +98,12 @@ func runClientLogin(args []string) int {
 		return 2
 	}
 
-	apiKey, missing, err = resolveRequiredValue(reader, apiKey, canPrompt, "API key: ")
+	apiKey, missing, err = resolveRequiredValueContext(ctx, reader, apiKey, canPrompt, "API key: ")
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "client login canceled")
+			return 130
+		}
 		fmt.Fprintln(os.Stderr, "client login error:", err)
 		return 1
 	}
@@ -136,7 +144,7 @@ func runClient(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
-	if err := promptClientPasswordIfNeeded(&cfg); err != nil {
+	if err := promptClientPasswordIfNeeded(ctx, &cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}

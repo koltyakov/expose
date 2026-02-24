@@ -37,8 +37,8 @@ Quick Start:
 Environment Variables:
   EXPOSE_DOMAIN           Server base domain (e.g. example.com)
   EXPOSE_API_KEY          API key for client authentication
-	EXPOSE_USER             Basic auth username for protected tunnel (default: admin)
-	EXPOSE_PASSWORD         Optional public access password for this tunnel session
+  EXPOSE_USER             Basic auth username for protected tunnel (default: admin)
+  EXPOSE_PASSWORD         Optional public access password for this tunnel session
   EXPOSE_PORT             Local port to expose
   EXPOSE_SUBDOMAIN        Requested subdomain name
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)

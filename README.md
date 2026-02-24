@@ -54,58 +54,52 @@ For the full request lifecycle and component breakdown, see [Architecture Overvi
 
 ## Quick Start
 
+### Prerequisites
+
+- A **server or VPS** with a public IP - or a home server with [port forwarding](docs/port-forwarding.md) configured
+- A **domain** you control (e.g. `example.com`)
+- A **DNS wildcard A record** (`*.example.com`) pointing to your server's public IP
+
+### 1. Install
+
+Download the latest binary from [Releases](https://github.com/koltyakov/expose/releases) and place it in your `PATH`.
+
+### 2. Server - init and run
+
+On your public-facing machine, run the interactive setup (writes a `.env` for you):
+
 ```bash
-# Build
-go build -o bin/expose ./cmd/expose
+expose server init   # guided setup
+expose server        # start the tunnel server
+```
 
-# 1. Start server (interactive setup writes .env for you)
-expose server init
+Then create an API key for your client(s):
 
-# 2. Create an API key
+```bash
 expose apikey create --name default
+```
 
-# 3. Login from client machine (once)
-expose login --server example.com --api-key <KEY>
+### 3. Client - login and run
 
-# 4. Expose a local port
+On any machine you want to expose:
+
+```bash
+expose login
 expose http 3000
 ```
 
-That's it - open the URL shown in the terminal. For the full walkthrough, see [Quick Start](docs/quick-start.md).
+Open the URL shown in the terminal - that's it.
 
-## CLI Commands
-
-### Client
-
-| Command                              | Description                             |
-| ------------------------------------ | --------------------------------------- |
-| `expose login`                       | Save server URL and API key             |
-| `expose http <port>`                 | Expose local port (temporary subdomain) |
-| `expose http --domain=myapp <port>`  | Expose with a named subdomain           |
-| `expose http --protect <port>`       | Expose with password protection         |
-| `expose up`                          | Start routes from `expose.yml`          |
-| `expose up init`                     | Create `expose.yml` via guided wizard   |
-
-### Server
-
-| Command                              | Description                             |
-| ------------------------------------ | --------------------------------------- |
-| `expose server`                      | Start tunnel server                     |
-| `expose server init`                 | Guided server setup + `.env` write      |
-| `expose apikey create --name NAME`   | Create a new API key                    |
-| `expose apikey list`                 | List all API keys                       |
-| `expose apikey revoke --id=ID`       | Revoke an API key                       |
-
-### General
-
-| Command                              | Description                             |
-| ------------------------------------ | --------------------------------------- |
-| `expose update`                      | Update to the latest release            |
-| `expose version`                     | Print version                           |
+For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick Start](docs/quick-start.md).
 
 ## Documentation
 
 See the [docs/](docs/README.md) folder for all guides - server & client configuration, TLS modes, DNS setup, deployment, WAF, auto-update, troubleshooting, and more.
+
+## Acknowledgements
+
+- [ngrok](https://ngrok.com/) - the gold standard for HTTP tunnels and a huge inspiration. expose exists because I needed more freedom and control over infrastructure, but ngrok paved the way.
+- [OpenAI](https://openai.com/) and [Anthropic](https://anthropic.com/) - AI-assisted development boosted the entire build lifecycle by 10×.
 
 ## License
 

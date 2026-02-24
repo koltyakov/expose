@@ -37,14 +37,26 @@ var skipHeaders = map[string]struct{}{
 }
 
 type requestView struct {
-	requestURI   string
-	path         string
-	rawQuery     string
-	decodedQuery string
-	plusDecoded  string
-	userAgent    string
-	headerValues []string
+	requestURI    string
+	path          string
+	rawQuery      string
+	decodedQuery  string
+	plusDecoded   string
+	doubleDecoded string // second pass URL-decode to catch double-encoding
+	userAgent     string
+	headerValues  []string
+	uriTooLong    bool // URI exceeds safety limit
+	tooManyHdrs   bool // excessive header count
 }
+
+// maxURILength is the maximum URI length before the WAF considers a request
+// suspicious. Very long URIs are commonly used in buffer-overflow and
+// smuggling attacks. 8 KiB is the de-facto limit of most HTTP servers.
+const maxURILength = 8192
+
+// maxHeaderCount is the maximum number of non-exempt headers before the WAF
+// considers a request suspicious.
+const maxHeaderCount = 64
 
 func newRequestView(r *http.Request) requestView {
 	rawQuery := r.URL.RawQuery
@@ -60,6 +72,16 @@ func newRequestView(r *http.Request) requestView {
 		plusDecoded = strings.ReplaceAll(rawQuery, "+", " ")
 	}
 
+	// Double-decode: attackers use double-encoding (%2527 → %27 → ') to
+	// bypass single-pass decoding. Perform a second URL-unescape on the
+	// already-decoded value.
+	doubleDecoded := decodedQuery
+	if strings.Contains(decodedQuery, "%") {
+		if dd, err := url.QueryUnescape(decodedQuery); err == nil && dd != decodedQuery {
+			doubleDecoded = dd
+		}
+	}
+
 	headerValues := make([]string, 0, len(r.Header))
 	for name, values := range r.Header {
 		if _, skip := skipHeaders[strings.ToLower(name)]; skip {
@@ -69,19 +91,30 @@ func newRequestView(r *http.Request) requestView {
 	}
 
 	return requestView{
-		requestURI:   r.RequestURI,
-		path:         r.URL.Path,
-		rawQuery:     rawQuery,
-		decodedQuery: decodedQuery,
-		plusDecoded:  plusDecoded,
-		userAgent:    r.UserAgent(),
-		headerValues: headerValues,
+		requestURI:    r.RequestURI,
+		path:          r.URL.Path,
+		rawQuery:      rawQuery,
+		decodedQuery:  decodedQuery,
+		plusDecoded:   plusDecoded,
+		doubleDecoded: doubleDecoded,
+		userAgent:     r.UserAgent(),
+		headerValues:  headerValues,
+		uriTooLong:    len(r.RequestURI) > maxURILength,
+		tooManyHdrs:   len(headerValues) > maxHeaderCount,
 	}
 }
 
 // check tests the request against every rule and returns on the first match.
 func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 	view := newRequestView(r)
+
+	// Structural limits — block before regex evaluation.
+	if view.uriTooLong {
+		return true, "uri-too-long"
+	}
+	if view.tooManyHdrs {
+		return true, "too-many-headers"
+	}
 
 	for i := range fw.rules {
 		rl := &fw.rules[i]
@@ -95,7 +128,8 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 		if rl.targets&targetQuery != 0 && view.rawQuery != "" {
 			if rl.pattern.MatchString(view.rawQuery) ||
 				rl.pattern.MatchString(view.decodedQuery) ||
-				rl.pattern.MatchString(view.plusDecoded) {
+				rl.pattern.MatchString(view.plusDecoded) ||
+				(view.doubleDecoded != view.decodedQuery && rl.pattern.MatchString(view.doubleDecoded)) {
 				return true, rl.name
 			}
 		}

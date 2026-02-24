@@ -111,6 +111,17 @@ func defaultRules() []rule {
 					`|burpsuite` +
 					`|havij` +
 					`|commix` +
+					`|wpscan` +
+					`|whatweb` +
+					`|joomscan` +
+					`|ffuf` +
+					`|feroxbuster` +
+					`|subfinder` +
+					`|amass` +
+					`|fierce` +
+					`|wfuzz` +
+					`|jaeles` +
+					`|xray` +
 					`)`,
 			),
 		},
@@ -151,6 +162,53 @@ func defaultRules() []rule {
 					`<\?(?:php|=)` +
 					`|<%[^>]*%>` +
 					`|\bdata\s*:.*base64` +
+					`)`,
+			),
+		},
+		{
+			name:    "ssrf",
+			targets: targetQuery | targetHeaders,
+			pattern: regexp.MustCompile(
+				`(?i)(?:` +
+					// AWS / cloud metadata endpoints
+					`169\.254\.169\.254` +
+					`|metadata\.google\.internal` +
+					`|100\.100\.100\.200` + // Alibaba metadata
+					// Internal network ranges in URL context
+					`|(?:https?://)(?:127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\])` +
+					// file:// and gopher:// schemes
+					`|\bfile://` +
+					`|\bgopher://` +
+					`)`,
+			),
+		},
+		{
+			name:    "xxe",
+			targets: targetQuery | targetHeaders,
+			pattern: regexp.MustCompile(
+				`(?i)(?:` +
+					`<!DOCTYPE[^>]*\[` +
+					`|<!ENTITY` +
+					`|SYSTEM\s+["']file://` +
+					`|SYSTEM\s+["']https?://` +
+					`)`,
+			),
+		},
+		{
+			name:    "ssti",
+			targets: targetQuery | targetHeaders,
+			pattern: regexp.MustCompile(
+				`(?i)(?:` +
+					// Jinja2 / Twig / Django
+					`\{\{.*(?:config|self|request|lipsum|cycler|joiner|namespace)` +
+					// Jinja2 class traversal
+					`|\{\{.*\.__class__` +
+					// Freemarker
+					`|<#assign\b` +
+					// Thymeleaf / Spring EL
+					`|\$\{T\(` +
+					// Mako
+					`|<%!?\s*import\b` +
 					`)`,
 			),
 		},

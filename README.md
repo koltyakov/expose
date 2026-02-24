@@ -98,7 +98,7 @@ See the [docs/](docs/README.md) folder for all guides - server & client configur
 
 ## Acknowledgements
 
-- [ngrok](https://ngrok.com/) - the gold standard for HTTP tunnels and a huge inspiration. expose exists because I needed more freedom and control over infrastructure, but ngrok paved the way.
+- [ngrok](https://ngrok.com/) - the gold standard for HTTP tunnels and a huge inspiration. `expose` exists because I needed more freedom and control over infrastructure, but ngrok paved the way.
 - [OpenAI](https://openai.com/) and [Anthropic](https://anthropic.com/) - AI-assisted development boosted the entire build lifecycle by 10×.
 
 ## License

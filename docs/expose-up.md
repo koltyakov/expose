@@ -27,12 +27,6 @@ Create a config interactively:
 expose up init
 ```
 
-Custom path for the generated config:
-
-```bash
-expose up init -f ./expose.yml
-```
-
 ## Example `expose.yml`
 
 ```yaml

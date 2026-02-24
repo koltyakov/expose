@@ -54,10 +54,26 @@ flowchart TD
 2. Is the DNS wildcard record set? `dig +short yoursubdomain.example.com` should return the server IP.
 3. Is the client still connected? Check client logs for `client disconnected; reconnecting`.
 
+## 409 Conflict - Hostname in use
+
+**Symptom**: Client gets `409 Conflict` with error code `hostname_in_use`.
+
+- Another client is already using the requested subdomain (`--domain=myapp`). Named subdomains are exclusive.
+- Wait for the other client to disconnect, or choose a different subdomain name.
+- If you control both clients and want to swap, disconnect the first client before starting the second.
+
+## 429 Too Many Requests - Active tunnel limit
+
+**Symptom**: Client gets `429 Too Many Requests` with error code `tunnel_limit`.
+
+- Each API key is limited to **5 simultaneous active tunnels**.
+- List active tunnels or disconnect unused ones.
+- Create additional API keys if you need more concurrent tunnels.
+
 ## WebSocket disconnects / frequent reconnects
 
 - **Network instability**: Client auto-reconnects with backoff - occasional reconnects are normal.
-- **Server ping timeout**: If the client's keepalive pings don't reach the server within 12 minutes, the session is expired. Check for network middleboxes dropping idle connections.
+- **Server ping timeout**: If the client's keepalive pings don't reach the server within 3 minutes, the session is expired. Check for network middleboxes dropping idle connections.
 - **Server restart**: Clients reconnect automatically after a server restart.
 
 ## ACME rate limits

@@ -24,9 +24,26 @@ Output:
 api_key: <RANDOM_KEY>
 id:      <KEY_ID>
 name:    my-laptop
+tunnel_limit: unlimited
 ```
 
 > **Copy the `api_key` immediately** - it is shown only once. The server stores a salted hash, not the raw key.
+
+To limit the number of concurrent tunnels a key can open:
+
+```bash
+expose apikey create --name ci-runner --tunnel-limit 3
+```
+
+## Set tunnel limit
+
+Update the maximum concurrent tunnels for an existing key:
+
+```bash
+expose apikey set-limit --id=<KEY_ID> --tunnel-limit 10
+```
+
+Use `--tunnel-limit -1` to remove the limit (unlimited).
 
 ## List keys
 

@@ -50,6 +50,20 @@ sequenceDiagram
 | **Temporary** | Auto-generated 6-char slug (e.g. `k3xnz3.example.com`) | Cleaned up after disconnect + retention period |
 | **Named**     | User-chosen (e.g. `myapp.example.com`)                 | Persists across reconnects                     |
 
+## Forwarded Headers
+
+The server injects standard reverse-proxy headers before forwarding requests through the tunnel, so your local app can see the real client information:
+
+| Header              | Value                                                        |
+| ------------------- | ------------------------------------------------------------ |
+| `X-Forwarded-For`   | Original client IP (appended to existing chain if present)   |
+| `X-Forwarded-Proto` | `https` (the protocol used by the public request)            |
+| `X-Forwarded-Host`  | Public hostname (e.g. `myapp.example.com`)                   |
+| `X-Forwarded-Port`  | Public port (e.g. `443`)                                     |
+| `Host`              | Rewritten to match the public hostname                       |
+
+Any pre-existing values for these headers in the incoming request are replaced to prevent spoofing.
+
 ## Security
 
 - Built-in **Web Application Firewall** blocks common attack patterns (enabled by default)

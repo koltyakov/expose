@@ -117,6 +117,26 @@ The server applies token-bucket rate limiting to tunnel registration requests (`
 
 Clients that exceed the limit receive `429 Too Many Requests`.
 
+## Active Tunnel Limit
+
+Each API key has a configurable tunnel limit that controls how many active tunnels it can have simultaneously. The default is **unlimited** (`-1`).
+
+### Setting during key creation
+
+```bash
+expose apikey create --name mykey --tunnel-limit 10
+```
+
+### Updating an existing key
+
+```bash
+expose apikey set-limit --id <key-id> --tunnel-limit 5
+```
+
+Use `--tunnel-limit -1` to remove the limit (unlimited).
+
+When a key with an active limit reaches its maximum concurrent tunnels, the server responds with `429 Too Many Requests` and error code `tunnel_limit`.
+
 ## Background Maintenance
 
 The server runs a background janitor that automatically:

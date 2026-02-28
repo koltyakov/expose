@@ -122,6 +122,12 @@ When the tunnel is public (no `--protect`), static mode also only serves a conse
 - Markdown, text, PDF, ZIP/tar archives
 - Office-style documents such as `.docx`, `.xlsx`, `.pptx`, and OpenDocument variants
 
+Markdown behavior:
+
+- Requests for `.md` and `.markdown` files are rendered as formatted HTML pages instead of raw source.
+- Fenced `mermaid` code blocks are upgraded automatically with Mermaid client-side rendering.
+- Other fenced code blocks, headings, lists, links, quotes, and inline code are styled for readability.
+
 If you need to serve arbitrary file types, use `--protect`.
 
 Folder behavior:

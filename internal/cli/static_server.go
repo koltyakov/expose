@@ -1,20 +1,27 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/base32"
 	"errors"
+	"fmt"
+	"html"
+	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const staticServerShutdownTimeout = 5 * time.Second
@@ -234,7 +241,1174 @@ func staticDirectoryPath(cleanPath string) string {
 }
 
 func serveStaticOpenedFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) {
+	if staticShouldRenderMarkdown(r.Method, info.Name()) {
+		if serveRenderedMarkdownFile(w, r, file, info) {
+			return
+		}
+	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+}
+
+func staticShouldRenderMarkdown(method, name string) bool {
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
+	return ext == ".md" || ext == ".markdown"
+}
+
+func serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) bool {
+	body, err := io.ReadAll(file)
+	if err != nil {
+		return false
+	}
+	rendered, title, hasMermaid := renderMarkdownDocument(string(body))
+	if strings.TrimSpace(title) == "" {
+		title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
+	}
+	page, err := buildMarkdownHTMLPage(markdownPageData{
+		Title:      title,
+		BodyHTML:   template.HTML(rendered),
+		HasMermaid: hasMermaid,
+	})
+	if err != nil {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, info.Name()+".html", info.ModTime(), bytes.NewReader(page))
+	return true
+}
+
+type markdownPageData struct {
+	Title      string
+	BodyHTML   template.HTML
+	HasMermaid bool
+}
+
+var markdownPageTemplate = template.Must(template.New("markdown-page").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f8fa;
+      --panel: #ffffff;
+      --border: #d0d7de;
+      --border-muted: #d8dee4;
+      --text: #1f2328;
+      --muted: #59636e;
+      --accent: #0969da;
+      --accent-hover: #0550ae;
+      --code-bg: #f6f8fa;
+      --code-text: #1f2328;
+      --pre-bg: #f6f8fa;
+      --quote-border: #d0d7de;
+      --quote-bg: transparent;
+      --shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --panel: #0d1117;
+        --border: #30363d;
+        --border-muted: #21262d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --accent-hover: #79c0ff;
+        --code-bg: rgba(110, 118, 129, 0.22);
+        --code-text: #e6edf3;
+        --pre-bg: #161b22;
+        --quote-border: #3d444d;
+        --quote-bg: transparent;
+        --shadow: none;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px 16px 48px;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .markdown-body {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px;
+      background: var(--panel);
+      border: 1px solid var(--border-muted);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+    .markdown-body > *:first-child {
+      margin-top: 0 !important;
+    }
+    .markdown-body > *:last-child {
+      margin-bottom: 0 !important;
+    }
+    .markdown-body h1,
+    .markdown-body h2,
+    .markdown-body h3,
+    .markdown-body h4,
+    .markdown-body h5,
+    .markdown-body h6 {
+      margin-top: 24px;
+      margin-bottom: 16px;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+    .markdown-body h1 {
+      padding-bottom: 0.3em;
+      font-size: 2em;
+      border-bottom: 1px solid var(--border);
+    }
+    .markdown-body h2 {
+      padding-bottom: 0.3em;
+      font-size: 1.5em;
+      border-bottom: 1px solid var(--border);
+    }
+    .markdown-body h3 { font-size: 1.25em; }
+    .markdown-body h4 { font-size: 1em; }
+    .markdown-body h5 { font-size: 0.875em; }
+    .markdown-body h6 { font-size: 0.85em; color: var(--muted); }
+    .markdown-body p,
+    .markdown-body ul,
+    .markdown-body ol,
+    .markdown-body blockquote,
+    .markdown-body pre,
+    .markdown-body table,
+    .markdown-body hr {
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+    .markdown-body ul,
+    .markdown-body ol {
+      padding-left: 2em;
+    }
+    .markdown-body li + li {
+      margin-top: 0.25em;
+    }
+    .markdown-body a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .markdown-body a:hover {
+      color: var(--accent-hover);
+      text-decoration: underline;
+    }
+    .markdown-body code {
+      padding: 0.2em 0.4em;
+      margin: 0;
+      border-radius: 6px;
+      background: var(--code-bg);
+      color: var(--code-text);
+      font: 0.82em/1.45 ui-monospace, SFMono-Regular, SFMono, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    .markdown-body pre {
+      overflow: auto;
+      padding: 14px 16px;
+      border-radius: 6px;
+      background: var(--pre-bg);
+      line-height: 1.45;
+      tab-size: 4;
+      position: relative;
+    }
+    .markdown-body pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      border-radius: 0;
+      font-size: 0.82em;
+      display: block;
+    }
+    .markdown-body pre code[data-lang]::before {
+      content: attr(data-lang);
+      display: block;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .markdown-body .tok-comment { color: #6e7781; }
+    .markdown-body .tok-keyword { color: #cf222e; }
+    .markdown-body .tok-string { color: #0a3069; }
+    .markdown-body .tok-number { color: #0550ae; }
+    .markdown-body .tok-type { color: #953800; }
+    .markdown-body .tok-func { color: #8250df; }
+    .markdown-body .tok-var { color: #116329; }
+    .markdown-body .tok-tag { color: #116329; }
+    .markdown-body .tok-attr { color: #953800; }
+    .markdown-body .tok-punct { color: var(--muted); }
+    @media (prefers-color-scheme: dark) {
+      .markdown-body .tok-comment { color: #8b949e; }
+      .markdown-body .tok-keyword { color: #ff7b72; }
+      .markdown-body .tok-string { color: #a5d6ff; }
+      .markdown-body .tok-number { color: #79c0ff; }
+      .markdown-body .tok-type { color: #ffa657; }
+      .markdown-body .tok-func { color: #d2a8ff; }
+      .markdown-body .tok-var { color: #7ee787; }
+      .markdown-body .tok-tag { color: #7ee787; }
+      .markdown-body .tok-attr { color: #ffa657; }
+      .markdown-body .tok-punct { color: #8b949e; }
+    }
+    .markdown-body blockquote {
+      margin-left: 0;
+      margin-right: 0;
+      padding: 0 0 0 16px;
+      color: var(--muted);
+      border-left: 0.25em solid var(--quote-border);
+      background: var(--quote-bg);
+      border-radius: 0;
+    }
+    .markdown-body blockquote p:last-child {
+      margin-bottom: 0;
+    }
+    .markdown-body hr {
+      border: 0;
+      height: 1px;
+      background: var(--border);
+    }
+    .markdown-body table {
+      width: 100%;
+      border-collapse: collapse;
+      display: block;
+      overflow-x: auto;
+    }
+    .markdown-body th,
+    .markdown-body td {
+      padding: 6px 13px;
+      border: 1px solid var(--border);
+      text-align: left;
+    }
+    .markdown-body tr:nth-child(2n) {
+      background: color-mix(in srgb, var(--code-bg) 70%, transparent);
+    }
+    .markdown-body img {
+      max-width: 100%;
+      height: auto;
+      background: transparent;
+      border-radius: 6px;
+    }
+    .markdown-body .mermaid {
+      padding: 8px;
+      border-radius: 6px;
+      background: var(--pre-bg);
+      overflow-x: auto;
+      text-align: center;
+    }
+    .markdown-body .mermaid svg {
+      display: block;
+      margin: 0 auto;
+    }
+    @media (max-width: 768px) {
+      .markdown-body {
+        padding: 20px 16px;
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="markdown-body">{{.BodyHTML}}</main>
+  {{if .HasMermaid}}
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>if (window.mermaid) { window.mermaid.initialize({ startOnLoad: true, securityLevel: "loose" }); }</script>
+  {{end}}
+</body>
+</html>`))
+
+func buildMarkdownHTMLPage(data markdownPageData) ([]byte, error) {
+	var out bytes.Buffer
+	if err := markdownPageTemplate.Execute(&out, data); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func renderMarkdownDocument(src string) (string, string, bool) {
+	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
+	var out strings.Builder
+	var paragraph []string
+	var quote []string
+	var codeFence []string
+	var listItems []string
+	var pageTitle string
+	listType := ""
+	codeLang := ""
+	hasMermaid := false
+	inCodeFence := false
+
+	flushParagraph := func() {
+		if len(paragraph) == 0 {
+			return
+		}
+		text := strings.Join(paragraph, " ")
+		out.WriteString("<p>")
+		out.WriteString(renderMarkdownInline(strings.TrimSpace(text)))
+		out.WriteString("</p>\n")
+		paragraph = nil
+	}
+	flushList := func() {
+		if len(listItems) == 0 {
+			return
+		}
+		tag := "ul"
+		if listType == "ol" {
+			tag = "ol"
+		}
+		out.WriteString("<" + tag + ">\n")
+		for _, item := range listItems {
+			out.WriteString("<li>")
+			out.WriteString(renderMarkdownInline(item))
+			out.WriteString("</li>\n")
+		}
+		out.WriteString("</" + tag + ">\n")
+		listItems = nil
+		listType = ""
+	}
+	flushTable := func(headers []string, rows [][]string) {
+		if len(headers) == 0 {
+			return
+		}
+		out.WriteString("<table>\n<thead>\n<tr>")
+		for _, cell := range headers {
+			out.WriteString("<th>")
+			out.WriteString(renderMarkdownInline(cell))
+			out.WriteString("</th>")
+		}
+		out.WriteString("</tr>\n</thead>\n")
+		if len(rows) > 0 {
+			out.WriteString("<tbody>\n")
+			for _, row := range rows {
+				out.WriteString("<tr>")
+				for _, cell := range row {
+					out.WriteString("<td>")
+					out.WriteString(renderMarkdownInline(cell))
+					out.WriteString("</td>")
+				}
+				out.WriteString("</tr>\n")
+			}
+			out.WriteString("</tbody>\n")
+		}
+		out.WriteString("</table>\n")
+	}
+	flushQuote := func() {
+		if len(quote) == 0 {
+			return
+		}
+		text := strings.Join(quote, " ")
+		out.WriteString("<blockquote><p>")
+		out.WriteString(renderMarkdownInline(strings.TrimSpace(text)))
+		out.WriteString("</p></blockquote>\n")
+		quote = nil
+	}
+	flushCodeFence := func() {
+		if !inCodeFence {
+			return
+		}
+		code := strings.Join(codeFence, "\n")
+		if strings.EqualFold(codeLang, "mermaid") {
+			hasMermaid = true
+			out.WriteString(`<pre class="mermaid">`)
+			out.WriteString(html.EscapeString(code))
+			out.WriteString("</pre>\n")
+		} else {
+			classAttr := ""
+			dataLangAttr := ""
+			if codeLang != "" {
+				classAttr = ` class="language-` + html.EscapeString(codeLang) + `"`
+				dataLangAttr = ` data-lang="` + html.EscapeString(codeLang) + `"`
+			}
+			out.WriteString("<pre><code" + classAttr + dataLangAttr + ">")
+			out.WriteString(highlightCodeBlock(codeLang, code))
+			out.WriteString("</code></pre>\n")
+		}
+		codeFence = nil
+		codeLang = ""
+		inCodeFence = false
+	}
+
+	for i := 0; i < len(lines); i++ {
+		rawLine := lines[i]
+		line := strings.TrimRight(rawLine, " \t")
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "```") {
+			if inCodeFence {
+				flushCodeFence()
+			} else {
+				flushParagraph()
+				flushList()
+				flushQuote()
+				inCodeFence = true
+				codeLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				codeFence = nil
+			}
+			continue
+		}
+		if inCodeFence {
+			codeFence = append(codeFence, line)
+			continue
+		}
+		if trimmed == "" {
+			flushParagraph()
+			flushList()
+			flushQuote()
+			continue
+		}
+		if level, text, ok := parseMarkdownHeading(trimmed); ok {
+			flushParagraph()
+			flushList()
+			flushQuote()
+			if level == 1 && pageTitle == "" {
+				pageTitle = text
+			}
+			out.WriteString(fmt.Sprintf("<h%d>%s</h%d>\n", level, renderMarkdownInline(text), level))
+			continue
+		}
+		if trimmed == "---" || trimmed == "***" {
+			flushParagraph()
+			flushList()
+			flushQuote()
+			out.WriteString("<hr>\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") {
+			flushParagraph()
+			flushList()
+			quote = append(quote, strings.TrimSpace(strings.TrimPrefix(trimmed, ">")))
+			continue
+		}
+		flushQuote()
+		if i+1 < len(lines) {
+			headerCells, ok := parseMarkdownTableRow(trimmed)
+			if ok && isMarkdownTableSeparator(strings.TrimSpace(lines[i+1])) {
+				flushParagraph()
+				flushList()
+				var rows [][]string
+				i += 2
+				for ; i < len(lines); i++ {
+					rowLine := strings.TrimSpace(lines[i])
+					if rowLine == "" {
+						i--
+						break
+					}
+					rowCells, rowOK := parseMarkdownTableRow(rowLine)
+					if !rowOK {
+						i--
+						break
+					}
+					rows = append(rows, padMarkdownTableRow(rowCells, len(headerCells)))
+				}
+				flushTable(headerCells, rows)
+				continue
+			}
+		}
+		if kind, item, ok := parseMarkdownListItem(trimmed); ok {
+			flushParagraph()
+			if listType != "" && listType != kind {
+				flushList()
+			}
+			listType = kind
+			listItems = append(listItems, item)
+			continue
+		}
+		flushList()
+		paragraph = append(paragraph, trimmed)
+	}
+
+	flushParagraph()
+	flushList()
+	flushQuote()
+	flushCodeFence()
+
+	if out.Len() == 0 {
+		out.WriteString("<p></p>\n")
+	}
+	return out.String(), pageTitle, hasMermaid
+}
+
+func parseMarkdownHeading(line string) (int, string, bool) {
+	level := 0
+	for level < len(line) && level < 6 && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level >= len(line) || line[level] != ' ' {
+		return 0, "", false
+	}
+	return level, strings.TrimSpace(line[level:]), true
+}
+
+var orderedListPattern = regexp.MustCompile(`^\d+\.\s+(.+)$`)
+
+func parseMarkdownListItem(line string) (string, string, bool) {
+	for _, prefix := range []string{"- ", "* ", "+ "} {
+		if strings.HasPrefix(line, prefix) {
+			return "ul", strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		}
+	}
+	if matches := orderedListPattern.FindStringSubmatch(line); len(matches) == 2 {
+		return "ol", strings.TrimSpace(matches[1]), true
+	}
+	return "", "", false
+}
+
+func renderMarkdownInline(s string) string {
+	s = html.EscapeString(strings.TrimSpace(s))
+	s, codeSpans := extractInlineCodeSpans(s)
+	s = renderMarkdownImages(s)
+	s = renderMarkdownLinks(s)
+	s = renderMarkdownDelimited(s, "**", "<strong>", "</strong>")
+	s = renderMarkdownDelimited(s, "__", "<strong>", "</strong>")
+	s = renderMarkdownDelimited(s, "*", "<em>", "</em>")
+	s = renderMarkdownDelimited(s, "_", "<em>", "</em>")
+	s = restoreInlineCodeSpans(s, codeSpans)
+	return s
+}
+
+var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
+var markdownLinkPattern = regexp.MustCompile(`\[(.*?)\]\((.*?)\)`)
+
+func renderMarkdownImages(s string) string {
+	return markdownImagePattern.ReplaceAllStringFunc(s, func(match string) string {
+		parts := markdownImagePattern.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		src := strings.TrimSpace(html.UnescapeString(parts[2]))
+		if src == "" {
+			return match
+		}
+		if u, err := url.Parse(src); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "data") {
+			return match
+		}
+		alt := html.EscapeString(html.UnescapeString(parts[1]))
+		return `<img src="` + html.EscapeString(src) + `" alt="` + alt + `">`
+	})
+}
+
+func renderMarkdownLinks(s string) string {
+	return markdownLinkPattern.ReplaceAllStringFunc(s, func(match string) string {
+		parts := markdownLinkPattern.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		href := strings.TrimSpace(html.UnescapeString(parts[2]))
+		if href == "" {
+			return match
+		}
+		if u, err := url.Parse(href); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "mailto") {
+			return match
+		}
+		text := renderMarkdownInline(html.UnescapeString(parts[1]))
+		return `<a href="` + html.EscapeString(href) + `">` + text + `</a>`
+	})
+}
+
+func renderMarkdownDelimited(s, delim, openTag, closeTag string) string {
+	if delim == "" {
+		return s
+	}
+	var out strings.Builder
+	for {
+		start := strings.Index(s, delim)
+		if start < 0 {
+			out.WriteString(s)
+			return out.String()
+		}
+		end := strings.Index(s[start+len(delim):], delim)
+		if end < 0 {
+			out.WriteString(s)
+			return out.String()
+		}
+		end += start + len(delim)
+		out.WriteString(s[:start])
+		content := s[start+len(delim) : end]
+		if strings.TrimSpace(content) == "" {
+			out.WriteString(s[:end+len(delim)])
+			s = s[end+len(delim):]
+			continue
+		}
+		out.WriteString(openTag)
+		out.WriteString(content)
+		out.WriteString(closeTag)
+		s = s[end+len(delim):]
+	}
+}
+
+func extractInlineCodeSpans(s string) (string, []string) {
+	var spans []string
+	var out strings.Builder
+	for {
+		start := strings.Index(s, "`")
+		if start < 0 {
+			out.WriteString(s)
+			break
+		}
+		end := strings.Index(s[start+1:], "`")
+		if end < 0 {
+			out.WriteString(s)
+			break
+		}
+		end += start + 1
+		out.WriteString(s[:start])
+		content := s[start+1 : end]
+		token := fmt.Sprintf("%%CODE%d%%", len(spans))
+		spans = append(spans, "<code>"+content+"</code>")
+		out.WriteString(token)
+		s = s[end+1:]
+	}
+	return out.String(), spans
+}
+
+func restoreInlineCodeSpans(s string, spans []string) string {
+	for i, span := range spans {
+		token := fmt.Sprintf("%%CODE%d%%", i)
+		s = strings.ReplaceAll(s, token, span)
+	}
+	return s
+}
+
+func parseMarkdownTableRow(line string) ([]string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || !strings.Contains(line, "|") {
+		return nil, false
+	}
+	if strings.HasPrefix(line, "|") {
+		line = strings.TrimPrefix(line, "|")
+	}
+	if strings.HasSuffix(line, "|") {
+		line = strings.TrimSuffix(line, "|")
+	}
+	parts := strings.Split(line, "|")
+	if len(parts) < 2 {
+		return nil, false
+	}
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+	return cells, true
+}
+
+func isMarkdownTableSeparator(line string) bool {
+	cells, ok := parseMarkdownTableRow(line)
+	if !ok {
+		return false
+	}
+	for _, cell := range cells {
+		if cell == "" {
+			return false
+		}
+		for _, r := range cell {
+			if r != '-' && r != ':' && r != ' ' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func padMarkdownTableRow(row []string, width int) []string {
+	if len(row) >= width {
+		return row[:width]
+	}
+	out := make([]string, width)
+	copy(out, row)
+	return out
+}
+
+func highlightCodeBlock(lang, code string) string {
+	normalized := normalizeCodeLanguage(lang)
+	switch normalized {
+	case "go":
+		return highlightCodeLike(code, codeHighlightSpec{
+			keywords:     []string{"break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough", "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range", "return", "select", "struct", "switch", "type", "var"},
+			types:        []string{"any", "bool", "byte", "complex64", "complex128", "error", "float32", "float64", "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr"},
+			lineComment:  "//",
+			blockComment: true,
+			singleQuote:  true,
+			doubleQuote:  true,
+			backtick:     true,
+		})
+	case "js", "ts":
+		return highlightCodeLike(code, codeHighlightSpec{
+			keywords:     []string{"async", "await", "break", "case", "catch", "class", "const", "continue", "default", "delete", "else", "export", "extends", "finally", "for", "from", "function", "if", "import", "in", "instanceof", "let", "new", "of", "return", "static", "super", "switch", "this", "throw", "try", "typeof", "var", "while", "yield"},
+			types:        []string{"boolean", "number", "string", "object", "undefined", "null", "void", "unknown", "never"},
+			lineComment:  "//",
+			blockComment: true,
+			singleQuote:  true,
+			doubleQuote:  true,
+			backtick:     true,
+		})
+	case "json":
+		return highlightJSON(code)
+	case "yaml":
+		return highlightYAML(code)
+	case "sh", "bash", "zsh", "shell":
+		return highlightShell(code)
+	case "html", "xml":
+		return highlightMarkup(code)
+	case "css":
+		return highlightCSS(code)
+	default:
+		return html.EscapeString(code)
+	}
+}
+
+func normalizeCodeLanguage(lang string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	switch lang {
+	case "golang":
+		return "go"
+	case "javascript":
+		return "js"
+	case "typescript":
+		return "ts"
+	case "yml":
+		return "yaml"
+	case "shellscript", "console":
+		return "sh"
+	default:
+		return lang
+	}
+}
+
+type codeHighlightSpec struct {
+	keywords     []string
+	types        []string
+	lineComment  string
+	blockComment bool
+	singleQuote  bool
+	doubleQuote  bool
+	backtick     bool
+}
+
+func highlightCodeLike(code string, spec codeHighlightSpec) string {
+	keywordSet := make(map[string]struct{}, len(spec.keywords))
+	for _, v := range spec.keywords {
+		keywordSet[v] = struct{}{}
+	}
+	typeSet := make(map[string]struct{}, len(spec.types))
+	for _, v := range spec.types {
+		typeSet[v] = struct{}{}
+	}
+	var out strings.Builder
+	for i := 0; i < len(code); {
+		if spec.lineComment != "" && strings.HasPrefix(code[i:], spec.lineComment) {
+			j := i + len(spec.lineComment)
+			for j < len(code) && code[j] != '\n' {
+				j++
+			}
+			writeToken(&out, "tok-comment", code[i:j])
+			i = j
+			continue
+		}
+		if spec.blockComment && strings.HasPrefix(code[i:], "/*") {
+			j := i + 2
+			for j+1 < len(code) && code[j:j+2] != "*/" {
+				j++
+			}
+			if j+1 < len(code) {
+				j += 2
+			} else {
+				j = len(code)
+			}
+			writeToken(&out, "tok-comment", code[i:j])
+			i = j
+			continue
+		}
+		if (spec.singleQuote && code[i] == '\'') || (spec.doubleQuote && code[i] == '"') || (spec.backtick && code[i] == '`') {
+			quote := code[i]
+			j := i + 1
+			for j < len(code) {
+				if quote != '`' && code[j] == '\\' && j+1 < len(code) {
+					j += 2
+					continue
+				}
+				if code[j] == quote {
+					j++
+					break
+				}
+				j++
+			}
+			writeToken(&out, "tok-string", code[i:j])
+			i = j
+			continue
+		}
+		if isCodeNumberStart(code, i) {
+			j := i + 1
+			for j < len(code) && isCodeNumberPart(code[j]) {
+				j++
+			}
+			writeToken(&out, "tok-number", code[i:j])
+			i = j
+			continue
+		}
+		if isCodeIdentStart(code[i]) {
+			j := i + 1
+			for j < len(code) && isCodeIdentPart(code[j]) {
+				j++
+			}
+			word := code[i:j]
+			if _, ok := keywordSet[word]; ok {
+				writeToken(&out, "tok-keyword", word)
+			} else if _, ok := typeSet[word]; ok {
+				writeToken(&out, "tok-type", word)
+			} else if nextNonSpaceByte(code, j) == '(' {
+				writeToken(&out, "tok-func", word)
+			} else {
+				out.WriteString(html.EscapeString(word))
+			}
+			i = j
+			continue
+		}
+		if strings.ContainsRune("{}[]():.,;", rune(code[i])) {
+			writeToken(&out, "tok-punct", code[i:i+1])
+		} else {
+			out.WriteString(html.EscapeString(code[i : i+1]))
+		}
+		i++
+	}
+	return out.String()
+}
+
+func highlightShell(code string) string {
+	keywords := map[string]struct{}{
+		"if": {}, "then": {}, "else": {}, "elif": {}, "fi": {}, "for": {}, "in": {}, "do": {}, "done": {},
+		"case": {}, "esac": {}, "while": {}, "until": {}, "function": {}, "select": {}, "time": {}, "coproc": {},
+	}
+	builtins := map[string]struct{}{
+		"cd": {}, "echo": {}, "exit": {}, "export": {}, "local": {}, "readonly": {}, "return": {}, "set": {}, "shift": {}, "source": {}, "unset": {},
+	}
+	var out strings.Builder
+	for i := 0; i < len(code); {
+		if code[i] == '#' {
+			j := i + 1
+			for j < len(code) && code[j] != '\n' {
+				j++
+			}
+			writeToken(&out, "tok-comment", code[i:j])
+			i = j
+			continue
+		}
+		if code[i] == '\'' || code[i] == '"' {
+			quote := code[i]
+			j := i + 1
+			for j < len(code) {
+				if quote == '"' && code[j] == '\\' && j+1 < len(code) {
+					j += 2
+					continue
+				}
+				if code[j] == quote {
+					j++
+					break
+				}
+				j++
+			}
+			writeToken(&out, "tok-string", code[i:j])
+			i = j
+			continue
+		}
+		if code[i] == '$' {
+			j := i + 1
+			if j < len(code) && code[j] == '{' {
+				j++
+				for j < len(code) && code[j] != '}' {
+					j++
+				}
+				if j < len(code) {
+					j++
+				}
+			} else {
+				for j < len(code) && (isCodeIdentPart(code[j]) || code[j] == '@' || code[j] == '*' || code[j] == '#') {
+					j++
+				}
+			}
+			writeToken(&out, "tok-var", code[i:j])
+			i = j
+			continue
+		}
+		if isCodeIdentStart(code[i]) {
+			j := i + 1
+			for j < len(code) && isCodeIdentPart(code[j]) {
+				j++
+			}
+			word := code[i:j]
+			if _, ok := keywords[word]; ok {
+				writeToken(&out, "tok-keyword", word)
+			} else if _, ok := builtins[word]; ok {
+				writeToken(&out, "tok-func", word)
+			} else {
+				out.WriteString(html.EscapeString(word))
+			}
+			i = j
+			continue
+		}
+		out.WriteString(html.EscapeString(code[i : i+1]))
+		i++
+	}
+	return out.String()
+}
+
+func highlightJSON(code string) string {
+	var out strings.Builder
+	for i := 0; i < len(code); {
+		if code[i] == '"' {
+			j := i + 1
+			for j < len(code) {
+				if code[j] == '\\' && j+1 < len(code) {
+					j += 2
+					continue
+				}
+				if code[j] == '"' {
+					j++
+					break
+				}
+				j++
+			}
+			token := code[i:j]
+			className := "tok-string"
+			if nextNonSpaceByte(code, j) == ':' {
+				className = "tok-attr"
+			}
+			writeToken(&out, className, token)
+			i = j
+			continue
+		}
+		if isCodeNumberStart(code, i) {
+			j := i + 1
+			for j < len(code) && isCodeNumberPart(code[j]) {
+				j++
+			}
+			writeToken(&out, "tok-number", code[i:j])
+			i = j
+			continue
+		}
+		for _, literal := range []string{"true", "false", "null"} {
+			if strings.HasPrefix(code[i:], literal) && !isCodeIdentBoundary(code, i-1) && !isCodeIdentBoundary(code, i+len(literal)) {
+				writeToken(&out, "tok-keyword", literal)
+				i += len(literal)
+				goto nextJSON
+			}
+		}
+		if strings.ContainsRune("{}[]:,", rune(code[i])) {
+			writeToken(&out, "tok-punct", code[i:i+1])
+		} else {
+			out.WriteString(html.EscapeString(code[i : i+1]))
+		}
+		i++
+	nextJSON:
+	}
+	return out.String()
+}
+
+func highlightYAML(code string) string {
+	lines := strings.SplitAfter(code, "\n")
+	var out strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		indentLen := len(line) - len(trimmed)
+		out.WriteString(html.EscapeString(line[:indentLen]))
+		if strings.HasPrefix(strings.TrimSpace(trimmed), "#") {
+			writeToken(&out, "tok-comment", strings.TrimRight(trimmed, "\n"))
+			if strings.HasSuffix(line, "\n") {
+				out.WriteString("\n")
+			}
+			continue
+		}
+		if key, rest, ok := splitStaticYAMLKeyValue(strings.TrimRight(trimmed, "\n")); ok {
+			writeToken(&out, "tok-attr", key)
+			writeToken(&out, "tok-punct", ":")
+			if rest != "" {
+				out.WriteString(" ")
+				out.WriteString(highlightYAMLScalar(rest))
+			}
+			if strings.HasSuffix(line, "\n") {
+				out.WriteString("\n")
+			}
+			continue
+		}
+		out.WriteString(highlightYAMLScalar(strings.TrimRight(trimmed, "\n")))
+		if strings.HasSuffix(line, "\n") {
+			out.WriteString("\n")
+		}
+	}
+	return out.String()
+}
+
+func splitStaticYAMLKeyValue(line string) (string, string, bool) {
+	if line == "" || strings.HasPrefix(line, "- ") {
+		return "", "", false
+	}
+	idx := strings.Index(line, ":")
+	if idx <= 0 {
+		return "", "", false
+	}
+	return line[:idx], strings.TrimSpace(line[idx+1:]), true
+}
+
+func highlightYAMLScalar(s string) string {
+	switch s {
+	case "true", "false", "null", "~":
+		return wrapToken("tok-keyword", s)
+	}
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
+		return wrapToken("tok-string", s)
+	}
+	if len(s) > 0 && isCodeNumberStart(s, 0) {
+		allNum := true
+		for i := 1; i < len(s); i++ {
+			if !isCodeNumberPart(s[i]) {
+				allNum = false
+				break
+			}
+		}
+		if allNum {
+			return wrapToken("tok-number", s)
+		}
+	}
+	return html.EscapeString(s)
+}
+
+func highlightMarkup(code string) string {
+	escaped := html.EscapeString(code)
+	escaped = regexp.MustCompile(`&lt;!--[\s\S]*?--&gt;`).ReplaceAllStringFunc(escaped, func(m string) string {
+		return wrapToken("tok-comment", html.UnescapeString(m))
+	})
+	escaped = regexp.MustCompile(`&lt;/?[A-Za-z0-9:_-]+`).ReplaceAllStringFunc(escaped, func(m string) string {
+		return wrapToken("tok-tag", html.UnescapeString(m))
+	})
+	escaped = regexp.MustCompile(`\s([A-Za-z_:][-A-Za-z0-9_:.]*)(=)`).ReplaceAllString(escaped, ` <span class="tok-attr">$1</span><span class="tok-punct">$2</span>`)
+	escaped = regexp.MustCompile(`"[^"]*"`).ReplaceAllStringFunc(escaped, func(m string) string {
+		return wrapToken("tok-string", html.UnescapeString(m))
+	})
+	escaped = strings.ReplaceAll(escaped, "&gt;", wrapToken("tok-tag", ">"))
+	return escaped
+}
+
+func highlightCSS(code string) string {
+	var out strings.Builder
+	for i := 0; i < len(code); {
+		if strings.HasPrefix(code[i:], "/*") {
+			j := i + 2
+			for j+1 < len(code) && code[j:j+2] != "*/" {
+				j++
+			}
+			if j+1 < len(code) {
+				j += 2
+			} else {
+				j = len(code)
+			}
+			writeToken(&out, "tok-comment", code[i:j])
+			i = j
+			continue
+		}
+		if code[i] == '"' || code[i] == '\'' {
+			quote := code[i]
+			j := i + 1
+			for j < len(code) {
+				if code[j] == '\\' && j+1 < len(code) {
+					j += 2
+					continue
+				}
+				if code[j] == quote {
+					j++
+					break
+				}
+				j++
+			}
+			writeToken(&out, "tok-string", code[i:j])
+			i = j
+			continue
+		}
+		if isCodeIdentStart(code[i]) || code[i] == '.' || code[i] == '#' {
+			j := i + 1
+			for j < len(code) && (isCodeIdentPart(code[j]) || strings.ContainsRune(".#-%", rune(code[j]))) {
+				j++
+			}
+			word := code[i:j]
+			next := nextNonSpaceByte(code, j)
+			className := ""
+			switch {
+			case next == ':':
+				className = "tok-attr"
+			case next == '{':
+				className = "tok-tag"
+			}
+			if className != "" {
+				writeToken(&out, className, word)
+			} else {
+				out.WriteString(html.EscapeString(word))
+			}
+			i = j
+			continue
+		}
+		if isCodeNumberStart(code, i) {
+			j := i + 1
+			for j < len(code) && (isCodeNumberPart(code[j]) || unicode.IsLetter(rune(code[j])) || code[j] == '%') {
+				j++
+			}
+			writeToken(&out, "tok-number", code[i:j])
+			i = j
+			continue
+		}
+		out.WriteString(html.EscapeString(code[i : i+1]))
+		i++
+	}
+	return out.String()
+}
+
+func writeToken(out *strings.Builder, className, text string) {
+	out.WriteString(wrapToken(className, text))
+}
+
+func wrapToken(className, text string) string {
+	return `<span class="` + className + `">` + html.EscapeString(text) + `</span>`
+}
+
+func isCodeIdentStart(b byte) bool {
+	return b == '_' || unicode.IsLetter(rune(b))
+}
+
+func isCodeIdentPart(b byte) bool {
+	return isCodeIdentStart(b) || (b >= '0' && b <= '9')
+}
+
+func isCodeNumberStart(s string, i int) bool {
+	if i < 0 || i >= len(s) || !(s[i] >= '0' && s[i] <= '9') {
+		return false
+	}
+	return i == 0 || !isCodeIdentPart(s[i-1])
+}
+
+func isCodeNumberPart(b byte) bool {
+	return (b >= '0' && b <= '9') || b == '.' || b == '_' || b == 'x' || b == 'X' || b == 'a' || b == 'b' || b == 'c' || b == 'd' || b == 'e' || b == 'E' || b == 'f' || b == 'F' || b == '+' || b == '-'
+}
+
+func nextNonSpaceByte(s string, i int) byte {
+	for i < len(s) {
+		if !unicode.IsSpace(rune(s[i])) {
+			return s[i]
+		}
+		i++
+	}
+	return 0
+}
+
+func isCodeIdentBoundary(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return true
+	}
+	return !isCodeIdentPart(s[i])
 }
 
 type staticFileSystem struct {

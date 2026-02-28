@@ -299,6 +299,182 @@ func TestStaticHandlerSPAFallbackOnlyForGetHead(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerRendersMarkdownAsHTML(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "# Guide\n\n![expose client](./assets/client-tunnel.png)\n\nVisit [site](https://example.com).\n\n- one\n- two\n\nUse `code`.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("expected html content type, got %q", got)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `class="markdown-body"`) {
+		t.Fatalf("expected github-like markdown wrapper, got %q", body)
+	}
+	if !strings.Contains(body, "<h1>Guide</h1>") {
+		t.Fatalf("expected heading render, got %q", body)
+	}
+	if !strings.Contains(body, `<img src="./assets/client-tunnel.png" alt="expose client">`) {
+		t.Fatalf("expected image render, got %q", body)
+	}
+	if !strings.Contains(body, `<a href="https://example.com">site</a>`) {
+		t.Fatalf("expected link render, got %q", body)
+	}
+	if !strings.Contains(body, "<li>one</li>") || !strings.Contains(body, "<code>code</code>") {
+		t.Fatalf("expected list/code render, got %q", body)
+	}
+}
+
+func TestStaticHandlerRendersMarkdownWithMermaidSupport(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "diagram.md"), "# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/diagram.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown mermaid render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `class="mermaid"`) {
+		t.Fatalf("expected mermaid block, got %q", body)
+	}
+	if !strings.Contains(body, "cdn.jsdelivr.net/npm/mermaid") {
+		t.Fatalf("expected mermaid runtime include, got %q", body)
+	}
+	if !strings.Contains(body, "graph TD") {
+		t.Fatalf("expected mermaid source to be preserved, got %q", body)
+	}
+}
+
+func TestStaticHandlerHighlightsTaggedCodeBlocks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "main.md"), "```go\nfunc main() {\n    fmt.Println(\"hi\")\n}\n```\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/main.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected highlighted markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `data-lang="go"`) {
+		t.Fatalf("expected language tag metadata, got %q", body)
+	}
+	if !strings.Contains(body, `class="tok-keyword">func</span>`) {
+		t.Fatalf("expected keyword highlighting, got %q", body)
+	}
+	if !strings.Contains(body, `class="tok-func">main</span>`) {
+		t.Fatalf("expected function highlighting, got %q", body)
+	}
+	if !strings.Contains(body, `class="tok-string">&#34;hi&#34;</span>`) {
+		t.Fatalf("expected string highlighting, got %q", body)
+	}
+}
+
+func TestStaticHandlerRendersMarkdownTables(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "table.md"), "# Modes\n\n| Mode | Env |\n| ---- | --- |\n| auto | `auto` |\n| wildcard | `wildcard` |\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/table.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown table render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<table>") || !strings.Contains(body, "<th>Mode</th>") || !strings.Contains(body, "<td>auto</td>") {
+		t.Fatalf("expected html table output, got %q", body)
+	}
+}
+
+func TestStaticHandlerKeepsUnderscoresInsideInlineCode(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "inline.md"), "Use `EXPOSE_TLS_CERT_FILE` and `EXPOSE_TLS_KEY_FILE`.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/inline.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected inline code markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<code>EXPOSE_TLS_CERT_FILE</code>") || !strings.Contains(body, "<code>EXPOSE_TLS_KEY_FILE</code>") {
+		t.Fatalf("expected underscores preserved inside code spans, got %q", body)
+	}
+	if strings.Contains(body, "<em>") {
+		t.Fatalf("did not expect emphasis tags inside inline code render, got %q", body)
+	}
+}
+
+func TestStaticHandlerUsesFirstH1AsPageTitle(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "title.md"), "# TLS Modes\n\nBody text.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/title.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected title markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<title>TLS Modes</title>") {
+		t.Fatalf("expected page title from first h1, got %q", body)
+	}
+}
+
+func TestStaticHandlerCollapsesMultilineBlockquotes(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "quote.md"), "> Security notice: if your server is using per-host ACME certificates\n> and public hostnames are discovered by bots shortly after creation.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/quote.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown quote render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if count := strings.Count(body, "<blockquote>"); count != 1 {
+		t.Fatalf("expected a single blockquote, got %d in %q", count, body)
+	}
+	if !strings.Contains(body, "Security notice: if your server is using per-host ACME certificates and public hostnames are discovered by bots shortly after creation.") {
+		t.Fatalf("expected quote lines collapsed into one paragraph, got %q", body)
+	}
+}
+
 func newTestStaticHandler(t *testing.T, root string, opts staticServerOptions) http.Handler {
 	t.Helper()
 	policy, err := newStaticAccessPolicy(opts.Unprotected, opts.AllowPatterns)

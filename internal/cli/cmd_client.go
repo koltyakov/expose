@@ -149,7 +149,7 @@ func runStatic(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "static command error:", err)
 		return 2
 	}
-	defer staticSrv.Close()
+	defer func() { _ = staticSrv.Close() }()
 
 	cfg.LocalPort = port
 	return runConfiguredClient(ctx, cfg)

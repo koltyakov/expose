@@ -882,12 +882,8 @@ func parseMarkdownTableRow(line string) ([]string, bool) {
 	if line == "" || !strings.Contains(line, "|") {
 		return nil, false
 	}
-	if strings.HasPrefix(line, "|") {
-		line = strings.TrimPrefix(line, "|")
-	}
-	if strings.HasSuffix(line, "|") {
-		line = strings.TrimSuffix(line, "|")
-	}
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
 	parts := strings.Split(line, "|")
 	if len(parts) < 2 {
 		return nil, false
@@ -1338,10 +1334,10 @@ func highlightCSS(code string) string {
 			word := code[i:j]
 			next := nextNonSpaceByte(code, j)
 			className := ""
-			switch {
-			case next == ':':
+			switch next {
+			case ':':
 				className = "tok-attr"
-			case next == '{':
+			case '{':
 				className = "tok-tag"
 			}
 			if className != "" {
@@ -1384,7 +1380,7 @@ func isCodeIdentPart(b byte) bool {
 }
 
 func isCodeNumberStart(s string, i int) bool {
-	if i < 0 || i >= len(s) || !(s[i] >= '0' && s[i] <= '9') {
+	if i < 0 || i >= len(s) || s[i] < '0' || s[i] > '9' {
 		return false
 	}
 	return i == 0 || !isCodeIdentPart(s[i-1])

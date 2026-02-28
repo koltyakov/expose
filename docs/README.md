@@ -17,6 +17,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 
 ## Features
 
+- [Static Sites](static-sites.md) - Expose folders, SPAs, and Markdown docs
 - [Client Dashboard](client-dashboard.md) - Real-time terminal UI, metrics, and keyboard shortcuts
 - [Web Application Firewall](waf.md) - Built-in WAF rules, configuration, and dashboard
 - [Auto-Update](auto-update.md) - Automatic and manual binary updates

@@ -8,6 +8,7 @@
 
 - **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certificates
 - **Built-in WAF** blocks SQL injection, XSS, path traversal, and other attacks before they reach your app
+- **Static site publishing** via `expose static` for quick docs, SPAs, and local folders
 - **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
 - **Auto-update** - server and client can self-update in the background with zero downtime
@@ -84,10 +85,14 @@ expose apikey create --name default
 On any machine you want to expose:
 
 ```bash
+# Login once to save credentials locally
 expose login
+
+# Expose a local HTTP port (e.g. 3000) to the internet
 expose http 3000
-# or expose a directory directly
-expose static ./public
+
+# Or expose a static directory as a website
+expose static
 ```
 
 Open the URL shown in the terminal - that's it.
@@ -95,20 +100,14 @@ Open the URL shown in the terminal - that's it.
 > Security notice: if your server is using per-host ACME certificates
 > (`dynamic`, or `auto` without a matching wildcard certificate), new public
 > hostnames are often discovered and probed by bots shortly after they are
-> created. This is not something `expose` is doing by itself; it is a normal
-> consequence of public certificate issuance and Certificate Transparency
-> logging. Protect new tunnels immediately, especially if you are exposing
-> static files that could accidentally include `.env`, `.git`, backups, or
-> other secrets. `expose static` blocks hidden files/directories and common
-> backup suffixes by default. When the tunnel is public (no `--protect`), it
-> also limits serving to browser-friendly/static document asset types by
-> default. Use `--protect` for anything non-public. See [TLS Modes](docs/tls-modes.md).
+> created. Protect new tunnels immediately and use `--protect` for anything
+> non-public. See [TLS Modes](docs/tls-modes.md) and [Static Sites](docs/static-sites.md).
 
 For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick Start](docs/quick-start.md).
 
 ## Documentation
 
-See the [docs/](docs/README.md) folder for all guides - server & client configuration, TLS modes, DNS setup, deployment, WAF, auto-update, troubleshooting, and more.
+See the [docs/](docs/README.md) folder for all guides - server & client configuration, [static sites](docs/static-sites.md), TLS modes, DNS setup, deployment, WAF, auto-update, troubleshooting, and more.
 
 ## Acknowledgements
 

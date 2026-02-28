@@ -4,30 +4,30 @@ Complete reference for all client flags, environment variables, and credential m
 
 ## Commands
 
-| Command                              | Description                             |
-| ------------------------------------ | --------------------------------------- |
-| `expose http <port>`                 | Expose a local port (temporary subdomain) |
-| `expose http --domain=myapp <port>`  | Expose with a named subdomain           |
-| `expose http --protect <port>`       | Expose with password protection         |
-| `expose static [dir]`                | Expose a static directory               |
-| `expose login`                       | Save server URL and API key             |
-| `expose up`                          | Start routes from `expose.yml`          |
-| `expose up init`                     | Create `expose.yml` via wizard          |
-| `expose update`                      | Update to the latest release            |
+| Command                             | Description                               |
+| ----------------------------------- | ----------------------------------------- |
+| `expose http <port>`                | Expose a local port (temporary subdomain) |
+| `expose http --domain=myapp <port>` | Expose with a named subdomain             |
+| `expose http --protect <port>`      | Expose with password protection           |
+| `expose static [dir]`               | Expose a static directory                 |
+| `expose login`                      | Save server URL and API key               |
+| `expose up`                         | Start routes from `expose.yml`            |
+| `expose up init`                    | Create `expose.yml` via wizard            |
+| `expose update`                     | Update to the latest release              |
 
 ## Flags & Environment Variables
 
-| Flag        | Env Variable       | Description                                        |
-| ----------- | ------------------ | -------------------------------------------------- |
-| `--port`    | `EXPOSE_PORT`      | Local HTTP port on `127.0.0.1` (positional arg)   |
-| `--domain`  | `EXPOSE_SUBDOMAIN` | Requested subdomain label (e.g. `myapp`)           |
-| `--server`  | `EXPOSE_DOMAIN`    | Server URL (e.g. `example.com`)                    |
-| `--api-key` | `EXPOSE_API_KEY`   | API key for authentication                         |
-| `--protect` | -                  | Enable HTTP Basic Auth for this tunnel             |
-| `--allow`   | -                  | Allow blocked static paths matching a glob pattern |
-| -           | `EXPOSE_USER`      | Basic Auth username (default: `admin`)             |
-| -           | `EXPOSE_PASSWORD`  | Basic Auth password                                |
-| -           | `EXPOSE_AUTOUPDATE`| Enable automatic self-update (`true`/`1`/`yes`)   |
+| Flag        | Env Variable        | Description                                        |
+| ----------- | ------------------- | -------------------------------------------------- |
+| `--port`    | `EXPOSE_PORT`       | Local HTTP port on `127.0.0.1` (positional arg)    |
+| `--domain`  | `EXPOSE_SUBDOMAIN`  | Requested subdomain label (e.g. `myapp`)           |
+| `--server`  | `EXPOSE_DOMAIN`     | Server URL (e.g. `example.com`)                    |
+| `--api-key` | `EXPOSE_API_KEY`    | API key for authentication                         |
+| `--protect` | -                   | Enable HTTP Basic Auth for this tunnel             |
+| `--allow`   | -                   | Allow blocked static paths matching a glob pattern |
+| -           | `EXPOSE_USER`       | Basic Auth username (default: `admin`)             |
+| -           | `EXPOSE_PASSWORD`   | Basic Auth password                                |
+| -           | `EXPOSE_AUTOUPDATE` | Enable automatic self-update (`true`/`1`/`yes`)    |
 
 ## Credential Resolution
 
@@ -97,7 +97,7 @@ EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
 
 ## Static Files
 
-Expose the current directory:
+Use `expose static` for local folders, docs sites, and SPAs:
 
 ```bash
 expose static
@@ -106,51 +106,15 @@ expose static
 expose static ./public
 ```
 
-`expose static` starts a local static web server on an ephemeral loopback port and tunnels that server the same way `expose http` tunnels an existing app. It also reuses the same `--domain`, `--server`, `--api-key`, and `--protect` flags.
+Static mode reuses the same client auth flow as `expose http`, including `--server`, `--api-key`, and `--protect`.
 
-If you omit `--domain`, static mode derives a stable default subdomain from the machine id plus the absolute folder path. That means the same folder on the same machine gets the same public hostname on later runs, and a hostname conflict usually means that exact folder is already being served.
+See [Static Sites](static-sites.md) for the full static-mode reference, including:
 
-For safety, static mode does not serve:
-
-- Hidden files such as `.env`
-- Hidden directories such as `.git/`
-- Common backup/editor artifacts such as `file.txt.bak`, `file.orig`, or `file~`
-
-When the tunnel is public (no `--protect`), static mode also only serves a conservative set of browser-friendly/static document file types by default, including:
-
-- HTML, CSS, JavaScript, JSON, source maps, WebAssembly, fonts, and common images
-- Markdown, text, PDF, ZIP/tar archives
-- Office-style documents such as `.docx`, `.xlsx`, `.pptx`, and OpenDocument variants
-
-Markdown behavior:
-
-- Requests for `.md` and `.markdown` files are rendered as formatted HTML pages instead of raw source.
-- Fenced `mermaid` code blocks are upgraded automatically with Mermaid client-side rendering.
-- Other fenced code blocks, headings, lists, links, quotes, and inline code are styled for readability.
-
-If you need to serve arbitrary file types, use `--protect`.
-
-Folder behavior:
-
-- If a requested folder contains `index.html`, that file is served.
-- Folder listings are disabled by default.
-- Use `--folders` to allow directory listings when no `index.html` exists.
-
-SPA behavior:
-
-```bash
-expose static --spa ./dist
-```
-
-With `--spa`, unresolved `GET` and `HEAD` routes fall back to the root `index.html`, unless the route already resolves to a real file or to a folder containing its own `index.html`.
-
-If you intentionally need one of those paths, allow it explicitly:
-
-```bash
-expose static --allow '.well-known/**' ./public
-```
-
-`--allow` is repeatable and matches paths relative to the exposed directory. Use it carefully, because it overrides the default static-mode blocklist and public file-type restrictions.
+- `--folders`, `--spa`, and `--allow`
+- default hostname behavior
+- security defaults for hidden files and public file types
+- Markdown rendering and Mermaid support
+- examples for SPAs, docs, and downloads
 
 ## Multi-Route Config (`expose up`)
 
@@ -180,10 +144,10 @@ See [Client Dashboard](client-dashboard.md) for details.
 
 ## Keyboard Shortcuts
 
-| Key       | Action                    |
-| --------- | ------------------------- |
-| `Ctrl+C`  | Quit                      |
-| `Ctrl+U`  | Trigger manual update     |
+| Key      | Action                |
+| -------- | --------------------- |
+| `Ctrl+C` | Quit                  |
+| `Ctrl+U` | Trigger manual update |
 
 ## Auto-Update
 

@@ -56,7 +56,7 @@ Start your local app (e.g. on port 3000), then:
 
 ```bash
 ./bin/expose http 3000
-./bin/expose static ./public
+./bin/expose static
 ```
 
 You'll see output like:
@@ -70,14 +70,8 @@ Open the URL in your browser - traffic is tunnelled to `127.0.0.1:3000`.
 > Security notice: if your server is using per-host ACME certificates
 > (`dynamic`, or `auto` without a matching wildcard certificate), new public
 > hostnames are often discovered and probed by bots shortly after they are
-> created. This is not something `expose` is doing by itself; it is a normal
-> consequence of public certificate issuance and Certificate Transparency
-> logging. Protect new tunnels immediately, especially if you are exposing
-> static files that could accidentally include `.env`, `.git`, backups, or
-> other secrets. `expose static` blocks hidden files/directories and common
-> backup suffixes by default. When the tunnel is public (no `--protect`), it
-> also limits serving to browser-friendly/static document asset types by
-> default. You should still use `--protect` and not rely on an unguessable URL.
+> created. Protect new tunnels immediately and use `--protect` for anything
+> non-public. For static-mode details, see [Static Sites](static-sites.md).
 
 ## Named subdomain
 
@@ -91,16 +85,16 @@ This gives you `https://myapp.example.com` every time.
 
 ## What's next?
 
-| Topic               | Guide                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------- |
+| Topic                | Guide                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------- |
 | Server configuration | [Server Configuration](server-configuration.md)                                             |
 | Client configuration | [Client Configuration](client-configuration.md)                                             |
-| DNS records setup   | [GoDaddy](dns-godaddy.md) · [Cloudflare](dns-cloudflare.md) · [Namecheap](dns-namecheap.md) |
-| Router / NAT setup  | [Port Forwarding](port-forwarding.md)                                                       |
-| Cloud deployment    | [VPS Deployment](vps-deployment.md)                                                         |
-| Multi-route config  | [expose up](expose-up.md)                                                                   |
-| TLS options         | [TLS Modes](tls-modes.md)                                                                   |
-| Key management      | [API Keys](api-keys.md)                                                                     |
-| Auto-update         | [Auto-Update](auto-update.md)                                                               |
-| Client terminal UI  | [Client Dashboard](client-dashboard.md)                                                     |
-| Local machine E2E   | [Local Testing](local-testing.md)                                                           |
+| DNS records setup    | [GoDaddy](dns-godaddy.md) · [Cloudflare](dns-cloudflare.md) · [Namecheap](dns-namecheap.md) |
+| Router / NAT setup   | [Port Forwarding](port-forwarding.md)                                                       |
+| Cloud deployment     | [VPS Deployment](vps-deployment.md)                                                         |
+| Multi-route config   | [expose up](expose-up.md)                                                                   |
+| TLS options          | [TLS Modes](tls-modes.md)                                                                   |
+| Key management       | [API Keys](api-keys.md)                                                                     |
+| Auto-update          | [Auto-Update](auto-update.md)                                                               |
+| Client terminal UI   | [Client Dashboard](client-dashboard.md)                                                     |
+| Local machine E2E    | [Local Testing](local-testing.md)                                                           |

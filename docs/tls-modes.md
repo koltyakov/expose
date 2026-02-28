@@ -67,6 +67,35 @@ export EXPOSE_TLS_CERT_FILE=/etc/letsencrypt/live/example.com/fullchain.pem
 export EXPOSE_TLS_KEY_FILE=/etc/letsencrypt/live/example.com/privkey.pem
 ```
 
+## Security Notice
+
+When `expose` uses a per-host public certificate for a new hostname, that
+hostname can become visible very quickly through Certificate Transparency (CT)
+logs. In practice, internet scanners and bots often watch CT data and start
+probing new hostnames shortly after certificate issuance.
+
+This is **not** behavior specific to `expose`. It is a normal consequence of
+using publicly trusted certificates on the public internet. Let's Encrypt
+submits all certificates it issues to CT logs, and modern browsers require CT
+log inclusion for publicly trusted certificates.
+
+This affects:
+
+- `dynamic` mode
+- `auto` mode when no matching wildcard certificate is already loaded
+
+Using `wildcard` mode reduces this disclosure because the certificate covers
+`*.example.com` instead of logging each individual subdomain as a separate
+certificate. It does **not** make the service private; the hostname is still
+public once traffic starts reaching it.
+
+Practical recommendation:
+
+- Protect new tunnels immediately with `--protect`, application auth, or both
+- Be extra careful when exposing static file servers
+- Never assume files like `.env`, `.git`, backups, or build artifacts are safe
+  just because the URL is hard to guess
+
 ## Decision Guide
 
 ```mermaid

@@ -66,6 +66,15 @@ tunnel ready  public_url=https://k3xnz3.example.com  tunnel_id=...
 
 Open the URL in your browser - traffic is tunnelled to `127.0.0.1:3000`.
 
+> Security notice: if your server is using per-host ACME certificates
+> (`dynamic`, or `auto` without a matching wildcard certificate), new public
+> hostnames are often discovered and probed by bots shortly after they are
+> created. This is not something `expose` is doing by itself; it is a normal
+> consequence of public certificate issuance and Certificate Transparency
+> logging. Protect new tunnels immediately, especially if you are exposing
+> static files that could accidentally include `.env`, `.git`, backups, or
+> other secrets. Use `--protect` and do not rely on an unguessable URL.
+
 ## Named subdomain
 
 Request a stable subdomain:

@@ -90,6 +90,15 @@ expose http 3000
 
 Open the URL shown in the terminal - that's it.
 
+> Security notice: if your server is using per-host ACME certificates
+> (`dynamic`, or `auto` without a matching wildcard certificate), new public
+> hostnames are often discovered and probed by bots shortly after they are
+> created. This is not something `expose` is doing by itself; it is a normal
+> consequence of public certificate issuance and Certificate Transparency
+> logging. Protect new tunnels immediately, especially if you are exposing
+> static files that could accidentally include `.env`, `.git`, backups, or
+> other secrets. See [TLS Modes](docs/tls-modes.md).
+
 For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick Start](docs/quick-start.md).
 
 ## Documentation

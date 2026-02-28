@@ -97,11 +97,7 @@ expose static
 
 Open the URL shown in the terminal - that's it.
 
-> Security notice: if your server is using per-host ACME certificates
-> (`dynamic`, or `auto` without a matching wildcard certificate), new public
-> hostnames are often discovered and probed by bots shortly after they are
-> created. Protect new tunnels immediately and use `--protect` for anything
-> non-public. See [TLS Modes](docs/tls-modes.md) and [Static Sites](docs/static-sites.md).
+> ⚠️ Security notice: if your server is using per-host ACME certificates (`dynamic`, or `auto` without a matching wildcard certificate), new public hostnames are often discovered and probed by bots shortly after they are created. Protect new tunnels immediately and use `--protect` for anything non-public. See [TLS Modes](docs/tls-modes.md) and [Static Sites](docs/static-sites.md).
 
 For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick Start](docs/quick-start.md).
 

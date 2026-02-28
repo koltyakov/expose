@@ -135,20 +135,18 @@ func defaultRules() []rule {
 			targets: targetPath,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
-					`/\.env` +
-					`|/\.git/` +
-					`|/\.git$` +
+					// Hidden files/directories anywhere in the path. /.well-known
+					// is exempted in path matching code to allow standards like
+					// ACME and security.txt.
+					`(?:^|/)\.[^/]+(?:/|$)` +
 					`|/wp-admin` +
 					`|/wp-login` +
 					`|/phpmy` +
 					`|/cgi-bin/` +
-					`|/\.aws/` +
-					`|/\.ssh/` +
 					`|/etc/passwd` +
 					`|/etc/shadow` +
-					`|/\.docker/` +
-					`|/\.kube/` +
-					`|/\.config/` +
+					`|/proc/self/environ` +
+					`|/proc/1/environ` +
 					`|/wp-content/uploads/` +
 					`|/autodiscover/` +
 					`)`,

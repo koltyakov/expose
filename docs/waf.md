@@ -49,7 +49,7 @@ export EXPOSE_WAF_AUDIT_ONLY=true
 | **Log4Shell / JNDI**     | Path, query string, headers | `${jndi:ldap://…}`, `${jndi:rmi://…}`                                   |
 | **Scanner User-Agents**  | User-Agent header           | sqlmap, nikto, nmap, nuclei, zgrab, Burp Suite, wpscan, ffuf, and more  |
 | **Header Injection**     | All non-exempt headers      | `\r` or `\n` in header values (CRLF injection)                          |
-| **Sensitive File Probe** | URL path                    | `/.env`, `/.git/`, `/wp-admin`, `/etc/passwd`, `/.aws/`, `/.ssh/`       |
+| **Sensitive File Probe** | URL path                    | `/.env`, `/.git/`, `/.ssh/`, `/.idea/`, `/etc/passwd`, `/proc/self/environ` |
 | **Protocol Attack**      | Query string, headers       | `<?php`, `<% %>`, `data:…base64`                                        |
 | **SSRF**                 | Query string, headers       | `169.254.169.254`, `metadata.google.internal`, `file://`, `gopher://`   |
 | **XXE**                  | Query string, headers       | `<!DOCTYPE … [`, `<!ENTITY`, `SYSTEM "file://…"`                        |

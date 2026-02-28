@@ -123,7 +123,7 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 		if rl.targets&targetURI != 0 && rl.pattern.MatchString(view.requestURI) {
 			return true, rl.name
 		}
-		if rl.targets&targetPath != 0 && rl.pattern.MatchString(view.path) {
+		if rl.targets&targetPath != 0 && matchPathRule(rl, view.path) {
 			return true, rl.name
 		}
 		if rl.targets&targetQuery != 0 && view.rawQuery != "" {
@@ -143,6 +143,17 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 	}
 
 	return false, ""
+}
+
+func matchPathRule(rl *rule, path string) bool {
+	if rl.name == "sensitive-file-probe" && isWellKnownPath(path) {
+		return false
+	}
+	return rl.pattern.MatchString(path)
+}
+
+func isWellKnownPath(path string) bool {
+	return path == "/.well-known" || strings.HasPrefix(path, "/.well-known/")
 }
 
 // matchHeaderValues inspects all non-exempt header values for a rule match.

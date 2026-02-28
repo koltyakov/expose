@@ -196,8 +196,16 @@ func TestSensitiveFilePaths(t *testing.T) {
 	handler := newTestMiddleware(t)
 	paths := []string{
 		"/.env",
+		"/.env.local",
 		"/.git/config",
 		"/.git",
+		"/nested/.env.production",
+		"/.DS_Store",
+		"/.htpasswd",
+		"/.svn/entries",
+		"/.hg/requires",
+		"/.idea/workspace.xml",
+		"/.vscode/settings.json",
 		"/wp-admin/install.php",
 		"/wp-login.php",
 		"/phpmyadmin/",
@@ -206,6 +214,8 @@ func TestSensitiveFilePaths(t *testing.T) {
 		"/.ssh/id_rsa",
 		"/etc/passwd",
 		"/etc/shadow",
+		"/proc/self/environ",
+		"/proc/1/environ",
 		"/.docker/config.json",
 		"/.kube/config",
 	}
@@ -213,6 +223,21 @@ func TestSensitiveFilePaths(t *testing.T) {
 		t.Run(p, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, p, nil)
 			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestWellKnownPathsAllowed(t *testing.T) {
+	handler := newTestMiddleware(t)
+	paths := []string{
+		"/.well-known/security.txt",
+		"/.well-known/apple-app-site-association",
+		"/.well-known/acme-challenge/token",
+	}
+	for _, p := range paths {
+		t.Run(p, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, p, nil)
+			assertAllowed(t, handler, r)
 		})
 	}
 }

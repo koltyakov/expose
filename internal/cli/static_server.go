@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -671,7 +672,13 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 			if level == 1 && pageTitle == "" {
 				pageTitle = text
 			}
-			out.WriteString(fmt.Sprintf("<h%d>%s</h%d>\n", level, renderMarkdownInline(text), level))
+			out.WriteString("<h")
+			out.WriteString(strconv.Itoa(level))
+			out.WriteString(">")
+			out.WriteString(renderMarkdownInline(text))
+			out.WriteString("</h")
+			out.WriteString(strconv.Itoa(level))
+			out.WriteString(">\n")
 			continue
 		}
 		if trimmed == "---" || trimmed == "***" {

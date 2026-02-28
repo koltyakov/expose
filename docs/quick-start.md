@@ -56,6 +56,7 @@ Start your local app (e.g. on port 3000), then:
 
 ```bash
 ./bin/expose http 3000
+./bin/expose static ./public
 ```
 
 You'll see output like:
@@ -73,7 +74,10 @@ Open the URL in your browser - traffic is tunnelled to `127.0.0.1:3000`.
 > consequence of public certificate issuance and Certificate Transparency
 > logging. Protect new tunnels immediately, especially if you are exposing
 > static files that could accidentally include `.env`, `.git`, backups, or
-> other secrets. Use `--protect` and do not rely on an unguessable URL.
+> other secrets. `expose static` blocks hidden files/directories and common
+> backup suffixes by default. When the tunnel is public (no `--protect`), it
+> also limits serving to browser-friendly/static document asset types by
+> default. You should still use `--protect` and not rely on an unguessable URL.
 
 ## Named subdomain
 

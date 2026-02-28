@@ -14,6 +14,8 @@ Expose local HTTP ports to the internet through your own server.
 Usage:
   expose http <port>                    Expose local port (temporary subdomain)
   expose http --domain=myapp <port>     Expose with a named subdomain
+  expose static [dir]                   Expose a static directory (stable default subdomain)
+                                        --folders enables listings, --spa enables root index fallback
   expose login                          Save server URL and API key
   expose up                             Start routes from ./expose.yml
   expose up -f expose.yml               Start routes from YAML config
@@ -32,6 +34,7 @@ Quick Start:
   2. expose apikey create --name default            # create API key
   3. expose login --server example.com --api-key KEY  # save credentials
   4. expose http 3000                               # expose local port
+     or: expose static ./public                     # expose a static site
      or: expose up init && expose up                # multi-route project config
 
 Environment Variables:

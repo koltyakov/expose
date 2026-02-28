@@ -23,6 +23,8 @@ func Run(args []string) int {
 		return runClientLogin(ctx, args[1:])
 	case "http":
 		return runHTTP(ctx, args[1:])
+	case "static":
+		return runStatic(ctx, args[1:])
 	case "up":
 		return runUp(ctx, args[1:])
 	case "tunnel":
@@ -53,6 +55,8 @@ func runClientCommand(ctx context.Context, args []string) int {
 			return runClientLogin(ctx, args[1:])
 		case "http":
 			return runHTTP(ctx, args[1:])
+		case "static":
+			return runStatic(ctx, args[1:])
 		case "tunnel":
 			return runTunnel(ctx, args[1:])
 		}

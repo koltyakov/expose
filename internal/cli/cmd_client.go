@@ -66,6 +66,95 @@ func runHTTP(ctx context.Context, args []string) int {
 	return runClient(ctx, clientArgs)
 }
 
+func runStatic(ctx context.Context, args []string) int {
+	loadClientEnvFromDotEnv(".env")
+
+	fs := flag.NewFlagSet("static", flag.ContinueOnError)
+	serverURL := envOr("EXPOSE_DOMAIN", "")
+	apiKey := envOr("EXPOSE_API_KEY", "")
+	name := ""
+	protect := false
+	folders := false
+	spa := false
+	root := "."
+	var allowPatterns stringListFlag
+	fs.StringVar(&root, "dir", root, "Local directory to serve")
+	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
+	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with a password challenge")
+	fs.BoolVar(&folders, "folders", folders, "Allow directory listings when no index.html is present")
+	fs.BoolVar(&spa, "spa", spa, "Fallback unresolved GET/HEAD routes to /index.html")
+	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
+	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
+	fs.Var(&allowPatterns, "allow", "Allow blocked static paths matching a glob pattern (repeatable, e.g. .well-known/**)")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return 2
+	}
+
+	rest := fs.Args()
+	if len(rest) > 1 {
+		fmt.Fprintln(os.Stderr, "static command error: expected at most one directory, e.g. `expose static ./public`")
+		return 2
+	}
+	if len(rest) == 1 {
+		root = rest[0]
+	}
+	absRoot, err := resolveStaticRoot(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return 2
+	}
+
+	cfg := config.ClientConfig{
+		ServerURL: serverURL,
+		APIKey:    apiKey,
+		User:      envOr("EXPOSE_USER", "admin"),
+		Password:  envOr("EXPOSE_PASSWORD", ""),
+		Protect:   protect,
+		Name:      name,
+		Timeout:   30 * time.Second,
+	}
+	cfg.Name = strings.TrimSpace(cfg.Name)
+	cfg.User = strings.TrimSpace(cfg.User)
+	if cfg.User == "" {
+		cfg.User = "admin"
+	}
+	if cfg.Name == "" {
+		hostname, _ := os.Hostname()
+		cfg.Name = defaultStaticSubdomain(client.ResolveMachineID(hostname), absRoot)
+	}
+	cfg.Password = strings.TrimSpace(cfg.Password)
+	cfg.Protect = cfg.Protect || cfg.Password != ""
+	if len(cfg.Password) > 256 {
+		fmt.Fprintln(os.Stderr, "static command error: password must be at most 256 characters")
+		return 2
+	}
+
+	if err := mergeClientSettings(&cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "client config error:", err)
+		return 2
+	}
+	if err := promptClientPasswordIfNeeded(ctx, &cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "client config error:", err)
+		return 2
+	}
+
+	staticSrv, port, err := startStaticFileServer(ctx, absRoot, staticServerOptions{
+		AllowPatterns: allowPatterns.values(),
+		AllowFolders:  folders,
+		SPA:           spa,
+		Unprotected:   !cfg.Protect,
+	}, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return 2
+	}
+	defer staticSrv.Close()
+
+	cfg.LocalPort = port
+	return runConfiguredClient(ctx, cfg)
+}
+
 func runTunnel(ctx context.Context, args []string) int {
 	return runClient(ctx, args)
 }
@@ -148,7 +237,10 @@ func runClient(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
+	return runConfiguredClient(ctx, cfg)
+}
 
+func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 	var logger *slog.Logger
 	var display *client.Display
 	displayCleanup := func() {}
@@ -276,6 +368,35 @@ func runClient(ctx context.Context, args []string) int {
 			cancelRun()
 		}
 	}
+}
+
+type stringListFlag struct {
+	items []string
+}
+
+func (f *stringListFlag) String() string {
+	if f == nil || len(f.items) == 0 {
+		return ""
+	}
+	return strings.Join(f.items, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("value cannot be empty")
+	}
+	f.items = append(f.items, value)
+	return nil
+}
+
+func (f *stringListFlag) values() []string {
+	if f == nil || len(f.items) == 0 {
+		return nil
+	}
+	out := make([]string, len(f.items))
+	copy(out, f.items)
+	return out
 }
 
 func mergeClientSettings(cfg *config.ClientConfig) error {

@@ -86,6 +86,8 @@ On any machine you want to expose:
 ```bash
 expose login
 expose http 3000
+# or expose a directory directly
+expose static ./public
 ```
 
 Open the URL shown in the terminal - that's it.
@@ -97,7 +99,10 @@ Open the URL shown in the terminal - that's it.
 > consequence of public certificate issuance and Certificate Transparency
 > logging. Protect new tunnels immediately, especially if you are exposing
 > static files that could accidentally include `.env`, `.git`, backups, or
-> other secrets. See [TLS Modes](docs/tls-modes.md).
+> other secrets. `expose static` blocks hidden files/directories and common
+> backup suffixes by default. When the tunnel is public (no `--protect`), it
+> also limits serving to browser-friendly/static document asset types by
+> default. Use `--protect` for anything non-public. See [TLS Modes](docs/tls-modes.md).
 
 For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick Start](docs/quick-start.md).
 

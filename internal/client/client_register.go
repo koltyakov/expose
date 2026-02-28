@@ -161,6 +161,12 @@ func splitHostAndPort(hostport string) (string, bool) {
 }
 
 func resolveClientMachineID(hostname string) string {
+	return ResolveMachineID(hostname)
+}
+
+// ResolveMachineID returns a stable machine identifier for client-side naming
+// and registration metadata, falling back to the provided hostname.
+func ResolveMachineID(hostname string) string {
 	if v := strings.TrimSpace(os.Getenv("EXPOSE_CLIENT_MACHINE_ID")); v != "" {
 		return v
 	}

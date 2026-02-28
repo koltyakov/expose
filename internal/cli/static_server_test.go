@@ -201,6 +201,26 @@ func TestStaticHandlerServesDirectoryIndexWhenPresent(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerServesDirectoryREADMEWhenNoIndex(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "docs", "README.md"), "# Docs\n\nFolder readme\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/docs/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected directory README to be served, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<h1>Docs</h1>") || !strings.Contains(body, "Folder readme") {
+		t.Fatalf("expected directory README body, got %q", body)
+	}
+}
+
 func TestStaticHandlerRedirectsDirectoryToSlashWhenIndexExists(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +234,25 @@ func TestStaticHandlerRedirectsDirectoryToSlashWhenIndexExists(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusMovedPermanently {
 		t.Fatalf("expected slash redirect for directory, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Location"); got != "/docs/" {
+		t.Fatalf("expected redirect to /docs/, got %q", got)
+	}
+}
+
+func TestStaticHandlerRedirectsDirectoryToSlashWhenREADMEExists(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "docs", "README.md"), "# Docs\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/docs", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMovedPermanently {
+		t.Fatalf("expected slash redirect for directory README, got %d", rr.Code)
 	}
 	if got := rr.Header().Get("Location"); got != "/docs/" {
 		t.Fatalf("expected redirect to /docs/, got %q", got)
@@ -280,6 +319,27 @@ func TestStaticHandlerSPAFallbackDoesNotOverrideDirectoryIndex(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "docs app") {
 		t.Fatalf("expected directory index body, got %q", rr.Body.String())
+	}
+}
+
+func TestStaticHandlerSPAFallbackDoesNotOverrideDirectoryREADME(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "index.html"), "root app")
+	mustWriteStaticTestFile(t, filepath.Join(root, "docs", "README.md"), "# Docs\n\nreadme app\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{SPA: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/docs/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected directory README to win over SPA fallback, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<h1>Docs</h1>") || !strings.Contains(body, "readme app") {
+		t.Fatalf("expected directory README body, got %q", body)
 	}
 }
 

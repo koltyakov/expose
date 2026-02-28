@@ -154,15 +154,14 @@ func (h *staticHandler) serveResolvedPath(w http.ResponseWriter, r *http.Request
 	}
 	_ = file.Close()
 
-	indexPath := path.Join(cleanPath, "index.html")
-	if indexFile, indexInfo, ok := h.open(indexPath); ok && !indexInfo.IsDir() {
+	if defaultPath, defaultFile, defaultInfo, ok := h.openDirectoryDefaultFile(cleanPath); ok {
 		if staticNeedsDirRedirect(r.URL.Path) {
-			_ = indexFile.Close()
+			_ = defaultFile.Close()
 			redirectStaticDirectory(w, r)
 			return true
 		}
-		defer func() { _ = indexFile.Close() }()
-		serveStaticOpenedFile(w, r, indexFile, indexInfo)
+		defer func() { _ = defaultFile.Close() }()
+		serveStaticOpenedFileWithName(w, r, defaultPath, defaultFile, defaultInfo)
 		return true
 	}
 
@@ -189,6 +188,20 @@ func (h *staticHandler) serveSPAIndex(w http.ResponseWriter, r *http.Request) bo
 	defer func() { _ = file.Close() }()
 	serveStaticOpenedFile(w, r, file, info)
 	return true
+}
+
+func (h *staticHandler) openDirectoryDefaultFile(cleanPath string) (string, http.File, os.FileInfo, bool) {
+	for _, name := range []string{"index.html", "README.md", "README.markdown"} {
+		filePath := path.Join(cleanPath, name)
+		file, info, ok := h.open(filePath)
+		if ok && !info.IsDir() {
+			return filePath, file, info, true
+		}
+		if ok {
+			_ = file.Close()
+		}
+	}
+	return "", nil, nil, false
 }
 
 func (h *staticHandler) open(name string) (http.File, os.FileInfo, bool) {
@@ -242,12 +255,16 @@ func staticDirectoryPath(cleanPath string) string {
 }
 
 func serveStaticOpenedFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) {
+	serveStaticOpenedFileWithName(w, r, info.Name(), file, info)
+}
+
+func serveStaticOpenedFileWithName(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo) {
 	if staticShouldRenderMarkdown(r.Method, info.Name()) {
 		if serveRenderedMarkdownFile(w, r, file, info) {
 			return
 		}
 	}
-	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+	http.ServeContent(w, r, name, info.ModTime(), file)
 }
 
 func staticShouldRenderMarkdown(method, name string) bool {

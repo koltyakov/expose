@@ -70,6 +70,8 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		s.abortPendingRequest(sess, reqID, respCh)
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else if errors.Is(err, tunnelproto.ErrWSWritePumpBackpressure) {
+			http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
 		} else {
 			http.Error(w, "tunnel write failed", http.StatusBadGateway)
 		}

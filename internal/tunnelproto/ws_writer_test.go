@@ -1,8 +1,10 @@
 package tunnelproto
 
 import (
+	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
@@ -28,7 +30,7 @@ func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
 		order = append(order, label)
 		mu.Unlock()
 		return nil
-	}, 4, 4)
+	}, nil, 4, 4, time.Second, time.Second)
 	defer pump.Close()
 
 	errCh := make(chan error, 3)
@@ -81,10 +83,71 @@ func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
 func TestWSWritePumpCloseRejectsNewWrites(t *testing.T) {
 	t.Parallel()
 
-	pump := newWSWritePumpWithWriter(func(req wsWriteRequest) error { return nil }, 1, 1)
+	pump := newWSWritePumpWithWriter(func(req wsWriteRequest) error { return nil }, nil, 1, 1, time.Second, time.Second)
 	pump.Close()
 
 	if err := pump.WriteJSON(Message{Kind: KindPing}); err != ErrWSWritePumpClosed {
 		t.Fatalf("expected ErrWSWritePumpClosed, got %v", err)
+	}
+}
+
+func TestWSWritePumpBackpressureClosesPump(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	closeCalled := make(chan struct{}, 1)
+
+	pump := newWSWritePumpWithWriter(func(req wsWriteRequest) error {
+		if req.id == "in-flight" {
+			close(started)
+			<-release
+		}
+		return nil
+	}, func() {
+		select {
+		case closeCalled <- struct{}{}:
+		default:
+		}
+	}, 1, 1, time.Second, 10*time.Millisecond)
+
+	errCh := make(chan error, 3)
+	go func() {
+		errCh <- pump.WriteBinaryFrame(BinaryFrameRespBody, "in-flight", 0, []byte("a"))
+	}()
+
+	<-started
+
+	go func() {
+		errCh <- pump.WriteBinaryFrame(BinaryFrameRespBody, "queued", 0, []byte("b"))
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+
+	if err := pump.WriteBinaryFrame(BinaryFrameRespBody, "overflow", 0, []byte("c")); !errors.Is(err, ErrWSWritePumpBackpressure) {
+		t.Fatalf("expected ErrWSWritePumpBackpressure, got %v", err)
+	}
+
+	select {
+	case <-closeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("expected close callback to be invoked on backpressure")
+	}
+
+	close(release)
+
+	var sawClosed bool
+	for range 2 {
+		err := <-errCh
+		if errors.Is(err, ErrWSWritePumpClosed) {
+			sawClosed = true
+		}
+	}
+	if !sawClosed {
+		t.Fatal("expected queued writes to fail after backpressure closes the pump")
+	}
+
+	if err := pump.WriteJSON(Message{Kind: KindPing}); !errors.Is(err, ErrWSWritePumpClosed) {
+		t.Fatalf("expected closed pump after backpressure, got %v", err)
 	}
 }

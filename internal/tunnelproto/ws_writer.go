@@ -11,6 +11,12 @@ import (
 )
 
 var ErrWSWritePumpClosed = errors.New("websocket write pump closed")
+var ErrWSWritePumpBackpressure = errors.New("websocket write pump backpressure")
+
+const (
+	defaultWSWriteControlEnqueueTimeout = 2 * time.Second
+	defaultWSWriteDataEnqueueTimeout    = 500 * time.Millisecond
+)
 
 type wsWriteRequest struct {
 	msg           Message
@@ -25,13 +31,16 @@ type wsWriteRequest struct {
 // WSWritePump serializes websocket writes while prioritizing control traffic
 // ahead of bulk binary frames.
 type WSWritePump struct {
-	writeFn  func(wsWriteRequest) error
-	high     chan wsWriteRequest
-	low      chan wsWriteRequest
-	stop     chan struct{}
-	done     chan struct{}
-	closed   atomic.Bool
-	stopOnce sync.Once
+	writeFn     func(wsWriteRequest) error
+	closeFn     func()
+	high        chan wsWriteRequest
+	low         chan wsWriteRequest
+	stop        chan struct{}
+	done        chan struct{}
+	closed      atomic.Bool
+	stopOnce    sync.Once
+	highTimeout time.Duration
+	lowTimeout  time.Duration
 }
 
 func NewWSWritePump(conn *websocket.Conn, writeTimeout time.Duration, highCap, lowCap int) *WSWritePump {
@@ -68,22 +77,40 @@ func NewWSWritePump(conn *websocket.Conn, writeTimeout time.Duration, highCap, l
 			return err
 		}
 		return nil
-	}, highCap, lowCap)
+	}, func() {
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}, highCap, lowCap, defaultWSWriteControlEnqueueTimeout, defaultWSWriteDataEnqueueTimeout)
 }
 
-func newWSWritePumpWithWriter(writeFn func(wsWriteRequest) error, highCap, lowCap int) *WSWritePump {
+func newWSWritePumpWithWriter(
+	writeFn func(wsWriteRequest) error,
+	closeFn func(),
+	highCap, lowCap int,
+	highTimeout, lowTimeout time.Duration,
+) *WSWritePump {
 	if highCap <= 0 {
 		highCap = 1
 	}
 	if lowCap <= 0 {
 		lowCap = 1
 	}
+	if highTimeout <= 0 {
+		highTimeout = defaultWSWriteControlEnqueueTimeout
+	}
+	if lowTimeout <= 0 {
+		lowTimeout = defaultWSWriteDataEnqueueTimeout
+	}
 	p := &WSWritePump{
-		writeFn: writeFn,
-		high:    make(chan wsWriteRequest, highCap),
-		low:     make(chan wsWriteRequest, lowCap),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		writeFn:     writeFn,
+		closeFn:     closeFn,
+		high:        make(chan wsWriteRequest, highCap),
+		low:         make(chan wsWriteRequest, lowCap),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		highTimeout: highTimeout,
+		lowTimeout:  lowTimeout,
 	}
 	go p.run()
 	return p
@@ -119,14 +146,29 @@ func (p *WSWritePump) enqueue(req wsWriteRequest, high bool) error {
 	}
 
 	target := p.low
+	wait := p.lowTimeout
 	if high {
 		target = p.high
+		wait = p.highTimeout
 	}
+
+	if wait <= 0 {
+		wait = defaultWSWriteDataEnqueueTimeout
+		if high {
+			wait = defaultWSWriteControlEnqueueTimeout
+		}
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 
 	select {
 	case <-p.stop:
 		return ErrWSWritePumpClosed
 	case target <- req:
+	case <-timer.C:
+		p.triggerBackpressure()
+		return ErrWSWritePumpBackpressure
 	}
 
 	return <-req.done
@@ -147,6 +189,11 @@ func (p *WSWritePump) run() {
 			p.closed.Store(true)
 			p.signalStop()
 			p.failPending(err)
+			return
+		}
+		if p.closed.Load() {
+			p.signalStop()
+			p.failPending(ErrWSWritePumpClosed)
 			return
 		}
 	}
@@ -193,4 +240,14 @@ func (p *WSWritePump) signalStop() {
 	p.stopOnce.Do(func() {
 		close(p.stop)
 	})
+}
+
+func (p *WSWritePump) triggerBackpressure() {
+	if p.closed.Swap(true) {
+		return
+	}
+	if p.closeFn != nil {
+		p.closeFn()
+	}
+	p.signalStop()
 }

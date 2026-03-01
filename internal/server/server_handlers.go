@@ -62,6 +62,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if prepared.request.Password != "" {
+		if existingRoute, lookupErr := s.store.FindRouteByHost(r.Context(), domainRec.Hostname); lookupErr == nil {
+			reuseStableAccessPasswordHash(&prepared, existingRoute, keyID)
+		}
+	}
 
 	if err = s.store.SetTunnelAccessCredentials(r.Context(), tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash); err != nil {
 		http.Error(w, "failed to persist tunnel auth settings", http.StatusInternalServerError)

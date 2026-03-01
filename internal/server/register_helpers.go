@@ -23,6 +23,34 @@ type preparedRegisterRequest struct {
 	clientMachineID     string
 }
 
+func reuseStableAccessPasswordHash(prepared *preparedRegisterRequest, existing domain.TunnelRoute, keyID string) {
+	if prepared == nil {
+		return
+	}
+	if prepared.request.Password == "" || prepared.passwordHash == "" {
+		return
+	}
+	if strings.TrimSpace(existing.Domain.APIKeyID) != strings.TrimSpace(keyID) {
+		return
+	}
+
+	existingHash := strings.TrimSpace(existing.Tunnel.AccessPasswordHash)
+	if existingHash == "" {
+		return
+	}
+	if publicAccessExpectedUser(existing) != prepared.accessUser {
+		return
+	}
+	if publicAccessMode(existing) != prepared.accessMode {
+		return
+	}
+	if !auth.VerifyPasswordHash(existingHash, prepared.request.Password) {
+		return
+	}
+
+	prepared.passwordHash = existingHash
+}
+
 func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.Request) (preparedRegisterRequest, bool) {
 	var req registerRequest
 	if err := decodeJSONBody(w, r, maxRegisterBodyBytes, &req); err != nil {

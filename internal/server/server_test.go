@@ -122,6 +122,99 @@ func TestRegisterURLsNonDefaultPort(t *testing.T) {
 	}
 }
 
+func TestReuseStableAccessPasswordHashWhenCredentialsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	existingHash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newHash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newHash == existingHash {
+		t.Fatal("expected distinct bcrypt hashes for same password")
+	}
+
+	prepared := preparedRegisterRequest{
+		request:      registerRequest{Password: "secret"},
+		accessUser:   "admin",
+		accessMode:   "form",
+		passwordHash: newHash,
+	}
+	existing := domain.TunnelRoute{
+		Domain: domain.Domain{APIKeyID: "key-1"},
+		Tunnel: domain.Tunnel{AccessUser: "admin", AccessMode: "form", AccessPasswordHash: existingHash},
+	}
+
+	reuseStableAccessPasswordHash(&prepared, existing, "key-1")
+
+	if prepared.passwordHash != existingHash {
+		t.Fatal("expected previous access hash to be reused")
+	}
+}
+
+func TestReuseStableAccessPasswordHashSkipsWhenPasswordChanged(t *testing.T) {
+	t.Parallel()
+
+	existingHash, err := auth.HashPassword("old-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newHash, err := auth.HashPassword("new-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared := preparedRegisterRequest{
+		request:      registerRequest{Password: "new-secret"},
+		accessUser:   "admin",
+		accessMode:   "form",
+		passwordHash: newHash,
+	}
+	existing := domain.TunnelRoute{
+		Domain: domain.Domain{APIKeyID: "key-1"},
+		Tunnel: domain.Tunnel{AccessUser: "admin", AccessMode: "form", AccessPasswordHash: existingHash},
+	}
+
+	reuseStableAccessPasswordHash(&prepared, existing, "key-1")
+
+	if prepared.passwordHash != newHash {
+		t.Fatal("expected new access hash to remain when password changes")
+	}
+}
+
+func TestReuseStableAccessPasswordHashSkipsWhenKeyDiffers(t *testing.T) {
+	t.Parallel()
+
+	existingHash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newHash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared := preparedRegisterRequest{
+		request:      registerRequest{Password: "secret"},
+		accessUser:   "admin",
+		accessMode:   "form",
+		passwordHash: newHash,
+	}
+	existing := domain.TunnelRoute{
+		Domain: domain.Domain{APIKeyID: "other-key"},
+		Tunnel: domain.Tunnel{AccessUser: "admin", AccessMode: "form", AccessPasswordHash: existingHash},
+	}
+
+	reuseStableAccessPasswordHash(&prepared, existing, "key-1")
+
+	if prepared.passwordHash != newHash {
+		t.Fatal("expected new access hash to remain when api key differs")
+	}
+}
+
 func TestReadLimitedBodyReturnsTooLargeError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("123456")))
 	w := httptest.NewRecorder()

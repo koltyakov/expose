@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps fmt lint vet test test-race test-coverage build build-all release-check release-local ci run-server run-server-wizard run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps fmt lint vet test test-race test-coverage bench build build-all release-check release-local ci run-server run-server-wizard run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -20,6 +20,7 @@ help:
 	@echo "  make test           - Run tests"
 	@echo "  make test-race      - Run tests with race detector"
 	@echo "  make test-coverage  - Run tests with coverage output"
+	@echo "  make bench          - Run focused performance benchmarks"
 	@echo "  make build          - Build binary to ./$(BIN_DIR)/$(APP)"
 	@echo "  make build-all      - Cross-build common release binaries"
 	@echo "  make release-check  - Validate GoReleaser config"
@@ -63,6 +64,9 @@ test-race:
 test-coverage:
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
+
+bench:
+	go test ./internal/client ./internal/server ./internal/store/sqlite ./internal/tunnelproto -bench . -run ^$
 
 build:
 	@mkdir -p $(BIN_DIR)

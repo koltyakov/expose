@@ -81,7 +81,7 @@ type hub struct {
 type session struct {
 	tunnelID         string
 	conn             *websocket.Conn
-	writeMu          sync.Mutex
+	writer           *tunnelproto.WSWritePump
 	pendingMu        sync.RWMutex
 	pending          map[string]chan tunnelproto.Message
 	wsMu             sync.RWMutex
@@ -117,6 +117,8 @@ const (
 	wsDataDispatchWait          = 250 * time.Millisecond
 	wsControlDispatchWait       = 2 * time.Second
 	defaultWAFCounterRetention  = time.Hour
+	wsWriteControlQueueSize     = 64
+	wsWriteDataQueueSize        = 128
 )
 
 // Type aliases for the shared domain request/response types.

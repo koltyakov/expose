@@ -82,7 +82,7 @@ type clientSessionRuntime struct {
 	requestMu  sync.Mutex
 	reqCancel  map[string]context.CancelFunc
 
-	writeMu sync.Mutex
+	writer *tunnelproto.WSWritePump
 
 	pingSentMu sync.Mutex
 	pingSentAt time.Time
@@ -114,6 +114,7 @@ func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *ur
 		client:           c,
 		localBase:        localBase,
 		conn:             conn,
+		writer:           tunnelproto.NewWSWritePump(conn, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		ctx:              sessionCtx,
 		cancel:           cancel,
 		requestSem:       make(chan struct{}, maxConcurrentForwardsFor(c.cfg)),
@@ -143,6 +144,9 @@ func (rt *clientSessionRuntime) close() {
 	rt.closeOnce.Do(func() {
 		rt.cancel()
 		_ = rt.conn.Close()
+		if rt.writer != nil {
+			rt.writer.Close()
+		}
 
 		rt.wsMu.Lock()
 		for id, streamConn := range rt.wsConns {
@@ -279,47 +283,17 @@ func (rt *clientSessionRuntime) startReadLoop() {
 }
 
 func (rt *clientSessionRuntime) writeJSON(msg tunnelproto.Message) error {
-	rt.writeMu.Lock()
-	defer rt.writeMu.Unlock()
-
-	if err := rt.conn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout)); err != nil {
-		_ = rt.conn.Close()
-		return err
+	if rt.writer == nil {
+		return tunnelproto.ErrWSWritePumpClosed
 	}
-	defer func() { _ = rt.conn.SetWriteDeadline(time.Time{}) }()
-
-	err := rt.conn.WriteJSON(msg)
-	if err != nil {
-		_ = rt.conn.Close()
-	}
-	return err
+	return rt.writer.WriteJSON(msg)
 }
 
 func (rt *clientSessionRuntime) writeBinary(frameKind byte, id string, wsMessageType int, payload []byte) error {
-	rt.writeMu.Lock()
-	defer rt.writeMu.Unlock()
-
-	if err := rt.conn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout)); err != nil {
-		_ = rt.conn.Close()
-		return err
+	if rt.writer == nil {
+		return tunnelproto.ErrWSWritePumpClosed
 	}
-	defer func() { _ = rt.conn.SetWriteDeadline(time.Time{}) }()
-
-	w, err := rt.conn.NextWriter(websocket.BinaryMessage)
-	if err != nil {
-		_ = rt.conn.Close()
-		return err
-	}
-	if err := tunnelproto.WriteBinaryFrame(w, frameKind, id, wsMessageType, payload); err != nil {
-		_ = w.Close()
-		_ = rt.conn.Close()
-		return err
-	}
-	if err := w.Close(); err != nil {
-		_ = rt.conn.Close()
-		return err
-	}
-	return nil
+	return rt.writer.WriteBinaryFrame(frameKind, id, wsMessageType, payload)
 }
 
 func (rt *clientSessionRuntime) handleRequest(req *tunnelproto.HTTPRequest) {

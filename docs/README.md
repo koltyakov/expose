@@ -36,6 +36,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 ## Scenarios
 
 - [Local Testing](local-testing.md) - Single-machine E2E using `127.0.0.1.sslip.io`
+- [Performance Testing](performance-testing.md) - Focused benchmarks for server, client, store, and protocol hot paths
 
 ## Reference
 

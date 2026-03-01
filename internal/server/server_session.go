@@ -55,6 +55,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	sess := &session{
 		tunnelID:  tunnelID,
 		conn:      conn,
+		writer:    tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:   make(map[string]chan tunnelproto.Message),
 		wsPending: make(map[string]chan tunnelproto.Message),
 	}
@@ -80,6 +81,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readLoop(sess *session) {
 	defer func() {
 		_ = sess.conn.Close()
+		if sess.writer != nil {
+			sess.writer.Close()
+		}
 		sess.closePending()
 		sess.closeWSPending()
 		if s.removeSessionIfCurrent(sess) {
@@ -212,44 +216,17 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 }
 
 func (s *session) writeJSON(msg tunnelproto.Message) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
-		_ = s.conn.Close()
-		return err
+	if s.writer == nil {
+		return tunnelproto.ErrWSWritePumpClosed
 	}
-	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
-	err := s.conn.WriteJSON(msg)
-	if err != nil {
-		_ = s.conn.Close()
-	}
-	return err
+	return s.writer.WriteJSON(msg)
 }
 
 func (s *session) writeBinaryFrame(frameKind byte, id string, wsMessageType int, payload []byte) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
-		_ = s.conn.Close()
-		return err
+	if s.writer == nil {
+		return tunnelproto.ErrWSWritePumpClosed
 	}
-	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
-
-	w, err := s.conn.NextWriter(websocket.BinaryMessage)
-	if err != nil {
-		_ = s.conn.Close()
-		return err
-	}
-	if err := tunnelproto.WriteBinaryFrame(w, frameKind, id, wsMessageType, payload); err != nil {
-		_ = w.Close()
-		_ = s.conn.Close()
-		return err
-	}
-	if err := w.Close(); err != nil {
-		_ = s.conn.Close()
-		return err
-	}
-	return nil
+	return s.writer.WriteBinaryFrame(frameKind, id, wsMessageType, payload)
 }
 
 func (s *session) writeWSData(streamID string, messageType int, payload []byte) error {

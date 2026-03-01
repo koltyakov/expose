@@ -69,6 +69,8 @@ const (
 	streamingThreshold           = 256 * 1024
 	streamingChunkSize           = 256 * 1024
 	streamingReqBodyBufSize      = 64
+	wsWriteControlQueueSize      = 64
+	wsWriteDataQueueSize         = 128
 )
 
 // New creates a Client with the given configuration and logger.

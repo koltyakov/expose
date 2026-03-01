@@ -1014,6 +1014,55 @@ func TestHandlePublicRejectsTooLargeBody(t *testing.T) {
 	}
 }
 
+func TestHandlePublicReturnsServiceUnavailableWhenTunnelPendingLimitReached(t *testing.T) {
+	t.Parallel()
+
+	const host = "bench.example.com"
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: host},
+		Tunnel: domain.Tunnel{ID: "t-overloaded", State: domain.TunnelStateConnected},
+	}
+
+	sess := &session{
+		tunnelID: route.Tunnel.ID,
+		pending:  make(map[string]chan tunnelproto.Message),
+	}
+	sess.pendingCount.Store(1)
+
+	srv := &Server{
+		cfg: config.ServerConfig{MaxPendingPerTunnel: 1},
+		hub: &hub{
+			sessions: map[string]*session{
+				route.Tunnel.ID: sess,
+			},
+		},
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+	}
+	srv.routes.set(host, route)
+
+	req := httptest.NewRequest(http.MethodGet, "https://"+host+"/", nil)
+	req.Host = host
+	rr := httptest.NewRecorder()
+
+	srv.handlePublic(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "tunnel overloaded") {
+		t.Fatalf("expected overload response body, got %q", rr.Body.String())
+	}
+	if got := sess.pendingCount.Load(); got != 1 {
+		t.Fatalf("expected pending count to remain capped at 1, got %d", got)
+	}
+	if len(sess.pending) != 0 {
+		t.Fatalf("expected no pending requests to be stored, got %d", len(sess.pending))
+	}
+}
+
 func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 	t.Parallel()
 
@@ -1055,8 +1104,10 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 	sess := &session{
 		tunnelID: "test",
 		conn:     conn,
+		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:  make(map[string]chan tunnelproto.Message),
 	}
+	defer sess.writer.Close()
 
 	body := strings.NewReader("hello")
 	req := httptest.NewRequest(http.MethodPost, "/test", body)
@@ -1112,8 +1163,10 @@ func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
 	sess := &session{
 		tunnelID: "test",
 		conn:     conn,
+		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:  make(map[string]chan tunnelproto.Message),
 	}
+	defer sess.writer.Close()
 
 	largeBody := make([]byte, streamingThreshold+100)
 	for i := range largeBody {
@@ -1217,8 +1270,10 @@ func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
 	sess := &session{
 		tunnelID: "test",
 		conn:     conn,
+		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:  make(map[string]chan tunnelproto.Message),
 	}
+	defer sess.writer.Close()
 
 	limit := int64(streamingThreshold + 8*1024)
 	body := make([]byte, int(limit)+8*1024)
@@ -1313,7 +1368,8 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	sess := &session{tunnelID: "test", conn: conn, pending: make(map[string]chan tunnelproto.Message)}
+	sess := &session{tunnelID: "test", conn: conn, writer: tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize), pending: make(map[string]chan tunnelproto.Message)}
+	defer sess.writer.Close()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	headers := map[string][]string{}
 
@@ -1358,10 +1414,12 @@ func TestAbortPendingRequestSendsCancel(t *testing.T) {
 	sess := &session{
 		tunnelID: "t-1",
 		conn:     conn,
+		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending: map[string]chan tunnelproto.Message{
 			"req_1": make(chan tunnelproto.Message, 1),
 		},
 	}
+	defer sess.writer.Close()
 	sess.pendingCount.Store(1)
 
 	respCh := sess.pending["req_1"]

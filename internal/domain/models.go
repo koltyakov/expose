@@ -54,6 +54,7 @@ type Tunnel struct {
 	IsTemporary        bool
 	ClientMeta         string
 	AccessUser         string
+	AccessMode         string
 	AccessPasswordHash string
 	ConnectedAt        *time.Time
 	DisconnectedAt     *time.Time

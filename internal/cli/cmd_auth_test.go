@@ -28,10 +28,14 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-func TestFetchProtectedRouteCookieHeader(t *testing.T) {
+func TestFetchProtectedRouteAuthHeaderForm(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.Error(w, "sign in", http.StatusUnauthorized)
+			return
+		}
 		if r.Method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", r.Method)
+			t.Fatalf("expected POST after probe, got %s", r.Method)
 		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("parse form: %v", err)
@@ -58,22 +62,42 @@ func TestFetchProtectedRouteCookieHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := fetchProtectedRouteCookieHeader(context.Background(), srv.URL+"/private", "admin", "secret", true)
+	got, err := fetchProtectedRouteAuthHeader(context.Background(), srv.URL+"/private", "admin", "secret", true)
 	if err != nil {
-		t.Fatalf("fetchProtectedRouteCookieHeader error: %v", err)
+		t.Fatalf("fetchProtectedRouteAuthHeader error: %v", err)
 	}
 	if got != "Cookie: "+access.CookieName+"=cookie-token" {
 		t.Fatalf("unexpected cookie header: %q", got)
 	}
 }
 
-func TestFetchProtectedRouteCookieHeaderRejectsBadLogin(t *testing.T) {
+func TestFetchProtectedRouteAuthHeaderBasic(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="expose"`)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	got, err := fetchProtectedRouteAuthHeader(context.Background(), srv.URL+"/private", "admin", "secret", true)
+	if err != nil {
+		t.Fatalf("fetchProtectedRouteAuthHeader error: %v", err)
+	}
+	if !strings.HasPrefix(got, "Authorization: Basic ") {
+		t.Fatalf("unexpected basic header: %q", got)
+	}
+}
+
+func TestFetchProtectedRouteAuthHeaderRejectsBadLogin(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.Error(w, "sign in", http.StatusUnauthorized)
+			return
+		}
 		http.Error(w, "wrong password", http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 
-	_, err := fetchProtectedRouteCookieHeader(context.Background(), srv.URL+"/private", "admin", "wrong", true)
+	_, err := fetchProtectedRouteAuthHeader(context.Background(), srv.URL+"/private", "admin", "wrong", true)
 	if err == nil {
 		t.Fatal("expected login failure")
 	}

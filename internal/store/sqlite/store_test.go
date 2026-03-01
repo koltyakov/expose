@@ -66,7 +66,7 @@ func TestSetTunnelAccessPasswordHashAndRouteLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetTunnelAccessCredentials(ctx, tunnel.ID, "admin", "bcrypt-hash"); err != nil {
+	if err := store.SetTunnelAccessCredentials(ctx, tunnel.ID, "admin", "form", "bcrypt-hash"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,6 +79,9 @@ func TestSetTunnelAccessPasswordHashAndRouteLookup(t *testing.T) {
 	}
 	if route.Tunnel.AccessUser != "admin" {
 		t.Fatalf("expected access user to roundtrip, got %q", route.Tunnel.AccessUser)
+	}
+	if route.Tunnel.AccessMode != "form" {
+		t.Fatalf("expected access mode to roundtrip, got %q", route.Tunnel.AccessMode)
 	}
 }
 

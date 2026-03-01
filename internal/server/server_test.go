@@ -83,11 +83,30 @@ func TestParseAndValidateRegisterRequestDefaults(t *testing.T) {
 	if prepared.accessUser != "admin" {
 		t.Fatalf("expected access user admin when password is set, got %q", prepared.accessUser)
 	}
+	if prepared.accessMode != "form" {
+		t.Fatalf("expected default access mode form when password is set, got %q", prepared.accessMode)
+	}
 	if prepared.passwordHash == "" {
 		t.Fatal("expected password hash to be generated")
 	}
 	if prepared.clientMachineID != "host-a" {
 		t.Fatalf("expected fallback machine id from host, got %q", prepared.clientMachineID)
+	}
+}
+
+func TestParseAndValidateRegisterRequestBasicMode(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","password":"secret","access_mode":"basic"}`))
+	rr := httptest.NewRecorder()
+
+	prepared, ok := srv.parseAndValidateRegisterRequest(rr, req)
+	if !ok {
+		t.Fatalf("expected parseAndValidateRegisterRequest to succeed, status=%d", rr.Code)
+	}
+	if prepared.accessMode != "basic" {
+		t.Fatalf("expected access mode basic, got %q", prepared.accessMode)
 	}
 }
 
@@ -199,6 +218,7 @@ func TestPublicAccessCookieRoundTrip(t *testing.T) {
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
 			AccessUser:         "admin",
+			AccessMode:         "form",
 			AccessPasswordHash: hash,
 		},
 	}
@@ -228,6 +248,7 @@ func TestAuthorizePublicRequestRendersAccessForm(t *testing.T) {
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
 			AccessUser:         "admin",
+			AccessMode:         "form",
 			AccessPasswordHash: hash,
 		},
 	}
@@ -269,6 +290,7 @@ func TestAuthorizePublicRequestLoginSubmissionSetsCookie(t *testing.T) {
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
 			AccessUser:         "admin",
+			AccessMode:         "form",
 			AccessPasswordHash: hash,
 		},
 	}
@@ -321,6 +343,7 @@ func TestAuthorizePublicRequestAllowsValidCookie(t *testing.T) {
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
 			AccessUser:         "admin",
+			AccessMode:         "form",
 			AccessPasswordHash: hash,
 		},
 	}
@@ -334,6 +357,39 @@ func TestAuthorizePublicRequestAllowsValidCookie(t *testing.T) {
 
 	if !srv.authorizePublicRequest(rr, req, route) {
 		t.Fatal("expected valid cookie to authorize request")
+	}
+}
+
+func TestAuthorizePublicRequestBasicMode(t *testing.T) {
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{}
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: "demo.example.com"},
+		Tunnel: domain.Tunnel{
+			AccessUser:         "admin",
+			AccessMode:         "basic",
+			AccessPasswordHash: hash,
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/private", nil)
+	req.SetBasicAuth("admin", "session-pass")
+	rr := httptest.NewRecorder()
+
+	if !srv.authorizePublicRequest(rr, req, route) {
+		t.Fatal("expected valid basic auth to authorize request")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://demo.example.com/private", nil)
+	rr = httptest.NewRecorder()
+	if srv.authorizePublicRequest(rr, req, route) {
+		t.Fatal("expected missing basic auth to be rejected")
+	}
+	if got := rr.Header().Get("WWW-Authenticate"); got == "" {
+		t.Fatal("expected basic auth challenge header")
 	}
 }
 

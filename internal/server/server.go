@@ -26,7 +26,7 @@ type serverStore interface {
 	GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error)
 	IsHostnameActive(ctx context.Context, host string) (bool, error)
 	AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID, mode, subdomain, baseDomain, clientMeta string) (domain.Domain, domain.Tunnel, error)
-	SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, hash string) error
+	SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, mode, hash string) error
 	CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error)
 	ConsumeConnectToken(ctx context.Context, token string) (string, error)
 	SetTunnelConnected(ctx context.Context, tunnelID string) error

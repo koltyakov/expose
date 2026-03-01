@@ -63,7 +63,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = s.store.SetTunnelAccessCredentials(r.Context(), tunnelRec.ID, prepared.accessUser, prepared.passwordHash); err != nil {
+	if err = s.store.SetTunnelAccessCredentials(r.Context(), tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash); err != nil {
 		http.Error(w, "failed to persist tunnel auth settings", http.StatusInternalServerError)
 		return
 	}

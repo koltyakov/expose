@@ -19,6 +19,7 @@ func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.Tunnel
 	var disconnectedAt sql.NullTime
 	var clientMeta sql.NullString
 	var accessUser sql.NullString
+	var accessMode sql.NullString
 	var accessPasswordHash sql.NullString
 
 	stmt := s.findRouteByHostStmt
@@ -26,12 +27,12 @@ func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.Tunnel
 	if stmt == nil {
 		err = s.db.QueryRowContext(ctx, findRouteByHostQuery, host).Scan(
 			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
-			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessPasswordHash, &connectedAt, &disconnectedAt,
+			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
 		)
 	} else {
 		err = stmt.QueryRowContext(ctx, host).Scan(
 			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
-			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessPasswordHash, &connectedAt, &disconnectedAt,
+			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
 		)
 	}
 	if err != nil {
@@ -50,6 +51,9 @@ func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.Tunnel
 	}
 	if accessUser.Valid {
 		r.Tunnel.AccessUser = accessUser.String
+	}
+	if accessMode.Valid {
+		r.Tunnel.AccessMode = accessMode.String
 	}
 	if accessPasswordHash.Valid {
 		r.Tunnel.AccessPasswordHash = accessPasswordHash.String

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/domain"
 )
 
@@ -156,8 +157,8 @@ WHERE id = ?`, domain.DomainStatusActive, domainID); err != nil {
 		ClientMeta:  clientMeta,
 	}
 	if _, err = tx.ExecContext(ctx, `
-INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_password_hash, connected_at, disconnected_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
+INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_mode, access_password_hash, connected_at, disconnected_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
 		return domain.Tunnel{}, err
 	}
@@ -177,13 +178,13 @@ WHERE id = ?`,
 	return err
 }
 
-func (s *Store) SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, hash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_password_hash = ? WHERE id = ?`, nullableString(user), nullableString(hash), tunnelID)
+func (s *Store) SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, mode, hash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, nullableString(user), nullableString(mode), nullableString(hash), tunnelID)
 	return err
 }
 
 func (s *Store) SetTunnelAccessPasswordHash(ctx context.Context, tunnelID, hash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_password_hash = ? WHERE id = ?`, "admin", nullableString(hash), tunnelID)
+	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, "admin", access.ModeBasic, nullableString(hash), tunnelID)
 	return err
 }
 

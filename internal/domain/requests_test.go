@@ -12,6 +12,7 @@ func TestRegisterRequestJSONRoundTrip(t *testing.T) {
 		Mode:            "temporary",
 		Subdomain:       "myapp",
 		User:            "admin",
+		AccessMode:      "form",
 		Password:        "secret",
 		ClientHostname:  "workstation",
 		ClientMachineID: "abc123",

@@ -33,6 +33,14 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 	if route.Tunnel.AccessPasswordHash == "" {
 		return true
 	}
+	if publicAccessMode(route) == access.ModeBasic {
+		expectedUser := publicAccessExpectedUser(route)
+		if isAuthorizedBasicPassword(r, expectedUser, route.Tunnel.AccessPasswordHash) {
+			return true
+		}
+		writeBasicAuthChallenge(w)
+		return false
+	}
 
 	expectedUser := publicAccessExpectedUser(route)
 	if valid, present := hasValidPublicAccessCookie(r, route, expectedUser, time.Now()); valid {
@@ -56,6 +64,14 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 
 	writePublicAccessDenied(w)
 	return false
+}
+
+func publicAccessMode(route domain.TunnelRoute) string {
+	mode := strings.TrimSpace(route.Tunnel.AccessMode)
+	if mode == "" {
+		return access.ModeBasic
+	}
+	return mode
 }
 
 type publicAccessFormState struct {
@@ -502,4 +518,20 @@ func stripCookieValue(headerValue, cookieName string) string {
 		kept = append(kept, part)
 	}
 	return strings.Join(kept, "; ")
+}
+
+func isAuthorizedBasicPassword(r *http.Request, expectedUser, hash string) bool {
+	user, password, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	if user != expectedUser {
+		return false
+	}
+	return auth.VerifyPasswordHash(hash, password)
+}
+
+func writeBasicAuthChallenge(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="expose", charset="UTF-8"`)
+	http.Error(w, "authentication required", http.StatusUnauthorized)
 }

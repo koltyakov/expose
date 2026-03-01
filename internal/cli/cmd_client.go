@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/client"
 	"github.com/koltyakov/expose/internal/client/settings"
 	"github.com/koltyakov/expose/internal/config"
@@ -22,15 +23,17 @@ import (
 )
 
 func runHTTP(ctx context.Context, args []string) int {
+	args = configNormalizeProtectFlagArgs(args)
+
 	fs := flag.NewFlagSet("http", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	name := ""
-	protect := false
+	protectMode := ""
 	port := parseIntEnv("EXPOSE_PORT", 0)
 	fs.IntVar(&port, "port", port, "Local HTTP port on 127.0.0.1")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
-	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with the built-in access form")
+	fs.StringVar(&protectMode, "protect", protectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	if err := fs.Parse(args); err != nil {
@@ -60,27 +63,28 @@ func runHTTP(ctx context.Context, args []string) int {
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--domain", name)
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--server", serverURL)
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--api-key", apiKey)
-	if protect {
-		clientArgs = append(clientArgs, "--protect")
+	if strings.TrimSpace(protectMode) != "" {
+		clientArgs = append(clientArgs, "--protect", protectMode)
 	}
 	return runClient(ctx, clientArgs)
 }
 
 func runStatic(ctx context.Context, args []string) int {
+	args = configNormalizeProtectFlagArgs(args)
 	loadClientEnvFromDotEnv(".env")
 
 	fs := flag.NewFlagSet("static", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	name := ""
-	protect := false
+	protectMode := ""
 	folders := false
 	spa := false
 	root := "."
 	var allowPatterns stringListFlag
 	fs.StringVar(&root, "dir", root, "Local directory to serve")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
-	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with the built-in access form")
+	fs.StringVar(&protectMode, "protect", protectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.BoolVar(&folders, "folders", folders, "Allow directory listings when no index.html is present")
 	fs.BoolVar(&spa, "spa", spa, "Fallback unresolved GET/HEAD routes to /index.html")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
@@ -106,13 +110,14 @@ func runStatic(ctx context.Context, args []string) int {
 	}
 
 	cfg := config.ClientConfig{
-		ServerURL: serverURL,
-		APIKey:    apiKey,
-		User:      envOr("EXPOSE_USER", "admin"),
-		Password:  envOr("EXPOSE_PASSWORD", ""),
-		Protect:   protect,
-		Name:      name,
-		Timeout:   30 * time.Second,
+		ServerURL:   serverURL,
+		APIKey:      apiKey,
+		User:        envOr("EXPOSE_USER", "admin"),
+		Password:    envOr("EXPOSE_PASSWORD", ""),
+		Protect:     strings.TrimSpace(protectMode) != "",
+		ProtectMode: protectMode,
+		Name:        name,
+		Timeout:     30 * time.Second,
 	}
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
@@ -124,7 +129,16 @@ func runStatic(ctx context.Context, args []string) int {
 		cfg.Name = defaultStaticSubdomain(client.ResolveMachineID(hostname), absRoot)
 	}
 	cfg.Password = strings.TrimSpace(cfg.Password)
-	cfg.Protect = cfg.Protect || cfg.Password != ""
+	mode, err := access.NormalizeMode(cfg.ProtectMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return 2
+	}
+	cfg.ProtectMode = mode
+	if cfg.Password != "" && cfg.ProtectMode == "" {
+		cfg.ProtectMode = access.ModeForm
+	}
+	cfg.Protect = cfg.ProtectMode != ""
 	if len(cfg.Password) > 256 {
 		fmt.Fprintln(os.Stderr, "static command error: password must be at most 256 characters")
 		return 2
@@ -153,6 +167,26 @@ func runStatic(ctx context.Context, args []string) int {
 
 	cfg.LocalPort = port
 	return runConfiguredClient(ctx, cfg)
+}
+
+func configNormalizeProtectFlagArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--protect":
+			out = append(out, "--protect="+access.ModeForm)
+		case "--protect=true":
+			out = append(out, "--protect="+access.ModeForm)
+		case "--protect=false":
+			out = append(out, "--protect=off")
+		default:
+			out = append(out, arg)
+		}
+	}
+	return out
 }
 
 func runTunnel(ctx context.Context, args []string) int {

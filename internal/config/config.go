@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/netutil"
 )
 
@@ -21,6 +22,7 @@ type ClientConfig struct {
 	User         string
 	Password     string
 	Protect      bool
+	ProtectMode  string
 	LocalPort    int
 	Name         string
 	Timeout      time.Duration
@@ -69,6 +71,8 @@ const defaultServerCertCacheDir = "./cert"
 
 // ParseClientFlags parses CLI flags and env vars into a [ClientConfig].
 func ParseClientFlags(args []string) (ClientConfig, error) {
+	args = normalizeProtectFlagArgs(args)
+
 	cfg := ClientConfig{
 		ServerURL:    envOrDefault("EXPOSE_DOMAIN", ""),
 		APIKey:       envOrDefault("EXPOSE_API_KEY", ""),
@@ -83,7 +87,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
-	fs.BoolVar(&cfg.Protect, "protect", cfg.Protect, "Protect this tunnel with the built-in access form")
+	fs.StringVar(&cfg.ProtectMode, "protect", cfg.ProtectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	if err := fs.Parse(args); err != nil {
@@ -93,6 +97,11 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.User = trimOrDefault(cfg.User, "admin")
 	cfg.Password = strings.TrimSpace(cfg.Password)
+	mode, err := access.NormalizeMode(cfg.ProtectMode)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ProtectMode = mode
 	if cfg.LocalPort == 0 {
 		return cfg, errors.New("missing --port or EXPOSE_PORT")
 	}
@@ -102,9 +111,32 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	if len(cfg.Password) > 256 {
 		return cfg, errors.New("password must be at most 256 characters")
 	}
-	cfg.Protect = cfg.Protect || cfg.Password != ""
+	if cfg.Password != "" && cfg.ProtectMode == "" {
+		cfg.ProtectMode = access.ModeForm
+	}
+	cfg.Protect = cfg.ProtectMode != ""
 
 	return cfg, nil
+}
+
+func normalizeProtectFlagArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--protect":
+			out = append(out, "--protect="+access.ModeForm)
+		case "--protect=true":
+			out = append(out, "--protect="+access.ModeForm)
+		case "--protect=false":
+			out = append(out, "--protect=off")
+		default:
+			out = append(out, arg)
+		}
+	}
+	return out
 }
 
 // ParseServerFlags parses CLI flags and env vars into a [ServerConfig].

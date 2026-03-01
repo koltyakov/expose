@@ -47,7 +47,7 @@ const isHostnameActiveQuery = `SELECT 1 FROM domains WHERE hostname = ? AND stat
 const findRouteByHostQuery = `
 SELECT
  d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
- t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_password_hash, t.connected_at, t.disconnected_at
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.connected_at, t.disconnected_at
 FROM domains d
 JOIN tunnels t ON t.id = (
 	SELECT id
@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	is_temporary INTEGER NOT NULL,
 	client_meta TEXT NULL,
 	access_user TEXT NULL,
+	access_mode TEXT NULL,
 	access_password_hash TEXT NULL,
 	connected_at DATETIME NULL,
 	disconnected_at DATETIME NULL
@@ -240,6 +241,11 @@ CREATE INDEX IF NOT EXISTS idx_connect_tokens_used_at ON connect_tokens(used_at)
 		}
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_user TEXT NULL`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_mode TEXT NULL`); err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return err
 		}

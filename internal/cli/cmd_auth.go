@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -102,7 +103,7 @@ func runAuthCurl(ctx context.Context, args []string) int {
 		}
 	}
 
-	cookieHeader, err := fetchProtectedRouteCookieHeader(ctx, targetURL, user, password, insecure)
+	authHeader, err := fetchProtectedRouteAuthHeader(ctx, targetURL, user, password, insecure)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "auth curl error:", err)
 		return 1
@@ -116,14 +117,19 @@ func runAuthCurl(ctx context.Context, args []string) int {
 			b.WriteString("-k ")
 		}
 		b.WriteString("-H ")
-		b.WriteString(shellQuote(cookieHeader))
+		b.WriteString(shellQuote(authHeader))
 		b.WriteString(" ")
 		b.WriteString(shellQuote(targetURL))
 		fmt.Println(b.String())
 	case "header":
-		fmt.Println(cookieHeader)
+		fmt.Println(authHeader)
 	case "cookie":
-		fmt.Println(strings.TrimPrefix(cookieHeader, "Cookie: "))
+		if strings.HasPrefix(authHeader, "Cookie: ") {
+			fmt.Println(strings.TrimPrefix(authHeader, "Cookie: "))
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, "auth curl error: cookie output is only available for form-based protection")
+		return 2
 	default:
 		fmt.Fprintln(os.Stderr, "auth curl error: format must be one of curl, header, cookie")
 		return 2
@@ -156,7 +162,33 @@ func normalizeProtectedURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func fetchProtectedRouteCookieHeader(ctx context.Context, targetURL, user, password string, insecure bool) (string, error) {
+func fetchProtectedRouteAuthHeader(ctx context.Context, targetURL, user, password string, insecure bool) (string, error) {
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if insecure {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized && strings.Contains(strings.ToLower(resp.Header.Get("WWW-Authenticate")), "basic") {
+		token := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+		return "Authorization: Basic " + token, nil
+	}
+
 	parsed, err := url.Parse(targetURL)
 	if err != nil {
 		return "", err
@@ -172,25 +204,13 @@ func fetchProtectedRouteCookieHeader(ctx context.Context, targetURL, user, passw
 		access.FormPasswordField: {password},
 		access.FormNextField:     {next},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(form.Encode()))
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	if insecure {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
-
-	resp, err := client.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		return "", err
 	}

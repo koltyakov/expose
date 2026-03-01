@@ -72,6 +72,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 		Mode:            mode,
 		Subdomain:       strings.TrimSpace(c.cfg.Name),
 		User:            user,
+		AccessMode:      strings.TrimSpace(c.cfg.ProtectMode),
 		Password:        strings.TrimSpace(c.cfg.Password),
 		ClientHostname:  strings.TrimSpace(hostname),
 		ClientMachineID: machineID,

@@ -23,7 +23,7 @@ Complete reference for all client flags, environment variables, and credential m
 | `--domain`  | `EXPOSE_SUBDOMAIN`  | Requested subdomain label (e.g. `myapp`)           |
 | `--server`  | `EXPOSE_DOMAIN`     | Server URL (e.g. `example.com`)                    |
 | `--api-key` | `EXPOSE_API_KEY`    | API key for authentication                         |
-| `--protect` | -                   | Enable the built-in access form for this tunnel    |
+| `--protect` | -                   | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
 | `--allow`   | -                   | Allow blocked static paths matching a glob pattern |
 | -           | `EXPOSE_USER`       | Access-form username (default: `admin`)            |
 | -           | `EXPOSE_PASSWORD`   | Access-form password                               |
@@ -83,17 +83,20 @@ expose http --domain=myapp 3000
 
 ## Password Protection
 
-Add the built-in access form in front of your tunnel:
+Add protection in front of your tunnel:
 
 ```bash
-# Interactive - prompts for password
+# Interactive - default form-based protection
 expose http --domain=myapp --protect 3000
 
 # Non-interactive - password from env
 EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
+
+# Legacy compatibility - explicit Basic Auth
+expose http --domain=myapp --protect=basic 3000
 ```
 
-> **Note**: `--protect` adds a separate edge login before requests reach your app. The access session uses a dedicated cookie and does not consume your app's `Authorization` header, but it is still an extra gate in front of the route.
+> **Note**: `--protect` defaults to the edge access form and avoids consuming your app's `Authorization` header. Use `--protect=basic` only when you explicitly want legacy Basic Auth behavior.
 
 For CLI testing, use:
 

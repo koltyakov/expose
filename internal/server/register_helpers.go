@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/domain"
 )
@@ -16,6 +17,7 @@ var errRegisterSwapInactive = errors.New("register swap inactive tunnel session"
 type preparedRegisterRequest struct {
 	request             registerRequest
 	accessUser          string
+	accessMode          string
 	passwordHash        string
 	autoStableSubdomain bool
 	clientMachineID     string
@@ -59,11 +61,26 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 		http.Error(w, "password must be at most 256 characters", http.StatusBadRequest)
 		return preparedRegisterRequest{}, false
 	}
+	mode, err := access.NormalizeMode(req.AccessMode)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return preparedRegisterRequest{}, false
+	}
+	req.AccessMode = mode
+	if req.Password != "" && req.AccessMode == "" {
+		req.AccessMode = access.ModeForm
+	}
+	if req.AccessMode != "" && req.Password == "" {
+		http.Error(w, "protect mode requires password", http.StatusBadRequest)
+		return preparedRegisterRequest{}, false
+	}
 
 	accessUser := ""
+	accessMode := ""
 	passwordHash := ""
 	if req.Password != "" {
 		accessUser = req.User
+		accessMode = req.AccessMode
 		hashed, hashErr := auth.HashPassword(req.Password)
 		if hashErr != nil {
 			http.Error(w, "failed to hash password", http.StatusInternalServerError)
@@ -83,6 +100,7 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 	return preparedRegisterRequest{
 		request:             req,
 		accessUser:          accessUser,
+		accessMode:          accessMode,
 		passwordHash:        passwordHash,
 		autoStableSubdomain: autoStableSubdomain,
 		clientMachineID:     normalizedClientMachineID(req.ClientMachineID, req.ClientHostname),

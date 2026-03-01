@@ -51,6 +51,22 @@ func TestParseClientFlagsProtectFlag(t *testing.T) {
 	if !cfg.Protect {
 		t.Fatal("expected --protect to enable protection")
 	}
+	if cfg.ProtectMode != "form" {
+		t.Fatalf("expected --protect to default to form mode, got %q", cfg.ProtectMode)
+	}
+}
+
+func TestParseClientFlagsProtectBasicMode(t *testing.T) {
+	cfg, err := ParseClientFlags([]string{"--port", "8080", "--protect=basic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Protect {
+		t.Fatal("expected --protect=basic to enable protection")
+	}
+	if cfg.ProtectMode != "basic" {
+		t.Fatalf("expected basic mode, got %q", cfg.ProtectMode)
+	}
 }
 
 func TestParseClientFlagsPasswordEnablesProtect(t *testing.T) {
@@ -61,6 +77,9 @@ func TestParseClientFlagsPasswordEnablesProtect(t *testing.T) {
 	}
 	if !cfg.Protect {
 		t.Fatal("expected password to imply protection enabled")
+	}
+	if cfg.ProtectMode != "form" {
+		t.Fatalf("expected password to imply form mode, got %q", cfg.ProtectMode)
 	}
 }
 

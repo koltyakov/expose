@@ -14,6 +14,7 @@ Expose local HTTP ports to the internet through your own server.
 Usage:
   expose http <port>                    Expose local port (temporary subdomain)
   expose http --domain=myapp <port>     Expose with a named subdomain
+                                        --protect enables form protection, --protect=basic opts into Basic Auth
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
   expose auth curl --url URL            Login to a protected route and print curl-ready auth output
@@ -41,7 +42,7 @@ Quick Start:
 Environment Variables:
   EXPOSE_DOMAIN           Server base domain (e.g. example.com)
   EXPOSE_API_KEY          API key for client authentication
-  EXPOSE_USER             Access-form username for protected tunnel (default: admin)
+  EXPOSE_USER             Protected-route username (default: admin)
   EXPOSE_PASSWORD         Optional public access password for this tunnel session
   EXPOSE_PORT             Local port to expose
   EXPOSE_SUBDOMAIN        Requested subdomain name

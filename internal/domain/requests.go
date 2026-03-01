@@ -7,6 +7,7 @@ type RegisterRequest struct {
 	Mode            string `json:"mode"`
 	Subdomain       string `json:"subdomain,omitempty"`
 	User            string `json:"user,omitempty"`
+	AccessMode      string `json:"access_mode,omitempty"`
 	Password        string `json:"password,omitempty"`
 	ClientHostname  string `json:"client_hostname,omitempty"`
 	ClientMachineID string `json:"client_machine_id,omitempty"`

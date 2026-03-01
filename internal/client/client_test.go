@@ -564,6 +564,7 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 
 	var gotAuth string
 	var gotUser string
+	var gotMode string
 	var gotPassword string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/tunnels/register" {
@@ -578,17 +579,19 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 		}
 		gotPassword = req.Password
 		gotUser = req.User
+		gotMode = req.AccessMode
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc"}`)
 	}))
 	defer srv.Close()
 
 	c := New(config.ClientConfig{
-		ServerURL: srv.URL,
-		APIKey:    "key123",
-		User:      "admin",
-		Password:  "session-pass",
-		LocalPort: 8080,
+		ServerURL:   srv.URL,
+		APIKey:      "key123",
+		User:        "admin",
+		Password:    "session-pass",
+		ProtectMode: "form",
+		LocalPort:   8080,
 	}, nil)
 
 	_, err := c.register(context.Background())
@@ -600,6 +603,9 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 	}
 	if gotUser != "admin" {
 		t.Fatalf("expected user in register payload, got %q", gotUser)
+	}
+	if gotMode != "form" {
+		t.Fatalf("expected access mode in register payload, got %q", gotMode)
 	}
 	if !strings.HasPrefix(gotAuth, "Bearer ") {
 		t.Fatalf("expected bearer auth header, got %q", gotAuth)

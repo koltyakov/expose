@@ -66,9 +66,10 @@ flowchart TD
 
 **Symptom**: Client gets `429 Too Many Requests` with error code `tunnel_limit`.
 
-- Each API key is limited to **5 simultaneous active tunnels**.
+- Active tunnel limits are configured per API key. By default, API keys have an **unlimited** tunnel limit.
+- If a limit has been set for the key in use, the client cannot open more than that number of simultaneous active tunnels.
 - List active tunnels or disconnect unused ones.
-- Create additional API keys if you need more concurrent tunnels.
+- Increase the key's tunnel limit or create additional API keys if you need more concurrent tunnels.
 
 ## WebSocket disconnects / frequent reconnects
 

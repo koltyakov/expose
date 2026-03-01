@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
@@ -40,23 +39,6 @@ func (s *Server) resolvePublicSession(route domain.TunnelRoute) (*session, int, 
 	return nil, http.StatusNotFound, "unknown host", false
 }
 
-func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute) bool {
-	if route.Tunnel.AccessPasswordHash == "" {
-		return true
-	}
-
-	expectedUser := strings.TrimSpace(route.Tunnel.AccessUser)
-	if expectedUser == "" {
-		expectedUser = "admin"
-	}
-	if isAuthorizedBasicPassword(r, expectedUser, route.Tunnel.AccessPasswordHash) {
-		return true
-	}
-
-	writeBasicAuthChallenge(w)
-	return false
-}
-
 func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
 	if s.cfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
@@ -70,6 +52,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 
 	requestHeaders := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
+	stripPublicAccessCookie(requestHeaders)
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 

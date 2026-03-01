@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,40 +189,173 @@ func TestRemoveTunnelCertCacheBatch(t *testing.T) {
 	}
 }
 
-func TestWriteBasicAuthChallenge(t *testing.T) {
-	rr := httptest.NewRecorder()
-	writeBasicAuthChallenge(rr)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rr.Code)
-	}
-	if got := rr.Header().Get("WWW-Authenticate"); got == "" {
-		t.Fatal("expected WWW-Authenticate header")
-	}
-}
-
-func TestIsAuthorizedBasicPassword(t *testing.T) {
+func TestPublicAccessCookieRoundTrip(t *testing.T) {
 	hash, err := auth.HashPassword("session-pass")
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: "demo.example.com"},
+		Tunnel: domain.Tunnel{
+			AccessUser:         "admin",
+			AccessPasswordHash: hash,
+		},
+	}
+	expectedUser := publicAccessExpectedUser(route)
+	now := time.Unix(1_700_000_000, 0)
+	cookieValue := publicAccessCookieValue(route, expectedUser, now)
+
 	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
-	req.SetBasicAuth("admin", "session-pass")
-	if !isAuthorizedBasicPassword(req, "admin", hash) {
-		t.Fatal("expected valid basic auth password to pass")
+	req.AddCookie(&http.Cookie{Name: publicAccessCookieName, Value: cookieValue})
+	if valid, present := hasValidPublicAccessCookie(req, route, expectedUser, now.Add(time.Hour)); !present || !valid {
+		t.Fatal("expected valid public access cookie to pass")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
-	req.SetBasicAuth("user", "wrong")
-	if isAuthorizedBasicPassword(req, "admin", hash) {
-		t.Fatal("expected wrong basic auth password to fail")
+	if valid, present := hasValidPublicAccessCookie(req, route, expectedUser, now.Add(publicAccessCookieTTL+time.Second)); !present || valid {
+		t.Fatal("expected expired public access cookie to fail")
+	}
+}
+
+func TestAuthorizePublicRequestRendersAccessForm(t *testing.T) {
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
-	req.SetBasicAuth("other", "session-pass")
-	if isAuthorizedBasicPassword(req, "admin", hash) {
-		t.Fatal("expected wrong basic auth username to fail")
+	srv := &Server{}
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: "demo.example.com"},
+		Tunnel: domain.Tunnel{
+			AccessUser:         "admin",
+			AccessPasswordHash: hash,
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/private/docs?tab=1", nil)
+	rr := httptest.NewRecorder()
+
+	if srv.authorizePublicRequest(rr, req, route) {
+		t.Fatal("expected unauthenticated request to be blocked")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("WWW-Authenticate"); got != "" {
+		t.Fatalf("expected no basic auth challenge header, got %q", got)
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("expected html response, got %q", got)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Protected route") {
+		t.Fatal("expected protected route heading in access form")
+	}
+	if !strings.Contains(body, "demo.example.com") {
+		t.Fatal("expected hostname in access form")
+	}
+	if !strings.Contains(body, publicAccessFormPasswordField) {
+		t.Fatal("expected password field in access form")
+	}
+}
+
+func TestAuthorizePublicRequestLoginSubmissionSetsCookie(t *testing.T) {
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{}
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: "demo.example.com"},
+		Tunnel: domain.Tunnel{
+			AccessUser:         "admin",
+			AccessPasswordHash: hash,
+		},
+	}
+	form := url.Values{
+		publicAccessFormActionField:   {"login"},
+		publicAccessFormUserField:     {"admin"},
+		publicAccessFormPasswordField: {"session-pass"},
+		publicAccessFormNextField:     {"/private/docs?tab=1"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://demo.example.com/private/docs?tab=1", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	if srv.authorizePublicRequest(rr, req, route) {
+		t.Fatal("expected login form request to be handled by access gate")
+	}
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Location"); got != "/private/docs?tab=1" {
+		t.Fatalf("expected redirect to original path, got %q", got)
+	}
+
+	found := false
+	for _, cookie := range rr.Result().Cookies() {
+		if cookie.Name != publicAccessCookieName {
+			continue
+		}
+		found = true
+		if cookie.Value == "" {
+			t.Fatal("expected non-empty access cookie value")
+		}
+		if !cookie.HttpOnly || !cookie.Secure {
+			t.Fatal("expected secure httpOnly access cookie")
+		}
+	}
+	if !found {
+		t.Fatal("expected access cookie to be set")
+	}
+}
+
+func TestAuthorizePublicRequestAllowsValidCookie(t *testing.T) {
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{}
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: "demo.example.com"},
+		Tunnel: domain.Tunnel{
+			AccessUser:         "admin",
+			AccessPasswordHash: hash,
+		},
+	}
+	now := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/private", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  publicAccessCookieName,
+		Value: publicAccessCookieValue(route, publicAccessExpectedUser(route), now),
+	})
+	rr := httptest.NewRecorder()
+
+	if !srv.authorizePublicRequest(rr, req, route) {
+		t.Fatal("expected valid cookie to authorize request")
+	}
+}
+
+func TestStripPublicAccessCookie(t *testing.T) {
+	headers := http.Header{
+		"Cookie": {
+			"theme=light; " + publicAccessCookieName + "=secret; session=abc",
+			"other=1",
+		},
+	}
+
+	stripPublicAccessCookie(headers)
+
+	values := headers.Values("Cookie")
+	if len(values) != 2 {
+		t.Fatalf("expected 2 cookie headers, got %d", len(values))
+	}
+	if strings.Contains(strings.Join(values, "; "), publicAccessCookieName+"=") {
+		t.Fatal("expected public access cookie to be stripped")
+	}
+	if !strings.Contains(strings.Join(values, "; "), "session=abc") {
+		t.Fatal("expected application cookies to be preserved")
 	}
 }
 

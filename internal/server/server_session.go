@@ -199,22 +199,6 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 	return keyID, true
 }
 
-func isAuthorizedBasicPassword(r *http.Request, expectedUser, hash string) bool {
-	user, password, ok := r.BasicAuth()
-	if !ok {
-		return false
-	}
-	if user != expectedUser {
-		return false
-	}
-	return auth.VerifyPasswordHash(hash, password)
-}
-
-func writeBasicAuthChallenge(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="expose", charset="UTF-8"`)
-	http.Error(w, "authentication required", http.StatusUnauthorized)
-}
-
 func (s *session) writeJSON(msg tunnelproto.Message) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

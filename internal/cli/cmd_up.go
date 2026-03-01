@@ -382,8 +382,8 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 	}
 
 	protectAll, err := askWizardYesNo(ctx, reader, out,
-		"Protect all routes with basic auth",
-		"Applies the same auth challenge to every tunnel started by this config.",
+		"Protect all routes with an access form",
+		"Applies the same password gate to every tunnel started by this config.",
 		false,
 	)
 	if err != nil {
@@ -393,7 +393,7 @@ func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defa
 	if protectAll {
 		user, err := askWizardValue(ctx, reader, out,
 			"Auth user",
-			"Username shown by the password challenge.",
+			"Username required by the access form.",
 			"Default: admin",
 			"admin",
 			strings.TrimSpace,

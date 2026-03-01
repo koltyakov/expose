@@ -83,7 +83,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
-	fs.BoolVar(&cfg.Protect, "protect", cfg.Protect, "Protect this tunnel with a password challenge")
+	fs.BoolVar(&cfg.Protect, "protect", cfg.Protect, "Protect this tunnel with the built-in access form")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	if err := fs.Parse(args); err != nil {

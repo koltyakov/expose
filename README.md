@@ -12,7 +12,7 @@
 - **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
 - **Auto-update** - server and client can self-update in the background with zero downtime
-- **Password-protected tunnels** with HTTP Basic Auth (per-tunnel or per-config)
+- **Password-protected tunnels** with a built-in access form and edge session cookie (per-tunnel or per-config)
 - **Env-first configuration** - minimal CLI flags, `.env` support, and interactive setup wizards
 - **Rate limiting** on tunnel registration to prevent abuse
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally

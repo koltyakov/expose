@@ -61,12 +61,12 @@ Top-level fields:
 - `version` (optional, defaults to `1`; only `1` is supported)
 - `server` (optional) - explicit server URL, e.g. `https://example.com`
 - `api_key` (optional) - client API key
-- `protect` (optional) - shared Basic Auth for all routes in this file (`access` is also accepted for compatibility)
+- `protect` (optional) - shared access-form protection for all routes in this file (`access` is also accepted for compatibility)
 - `tunnels` (required) - one or more routes
 
 ### `protect`
 
-Applies the same HTTP Basic Auth challenge to every tunnel started by this config.
+Applies the same built-in access form and edge session cookie to every tunnel started by this config.
 
 - `user` (optional, default `admin`)
 - `password` (optional) - literal password or env var name

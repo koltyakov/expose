@@ -30,7 +30,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	port := parseIntEnv("EXPOSE_PORT", 0)
 	fs.IntVar(&port, "port", port, "Local HTTP port on 127.0.0.1")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
-	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with a password challenge")
+	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with the built-in access form")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	if err := fs.Parse(args); err != nil {
@@ -80,7 +80,7 @@ func runStatic(ctx context.Context, args []string) int {
 	var allowPatterns stringListFlag
 	fs.StringVar(&root, "dir", root, "Local directory to serve")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
-	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with a password challenge")
+	fs.BoolVar(&protect, "protect", protect, "Protect this tunnel with the built-in access form")
 	fs.BoolVar(&folders, "folders", folders, "Allow directory listings when no index.html is present")
 	fs.BoolVar(&spa, "spa", spa, "Fallback unresolved GET/HEAD routes to /index.html")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")

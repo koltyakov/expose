@@ -26,7 +26,7 @@ Static mode starts a local loopback web server, then tunnels it the same way `ex
 | `--domain`  | Requested public subdomain                                       |
 | `--server`  | Server URL                                                       |
 | `--api-key` | API key                                                          |
-| `--protect` | Enable HTTP Basic Auth for the tunnel                            |
+| `--protect` | Enable the built-in access form for the tunnel                   |
 | `--allow`   | Allow blocked paths matching a glob pattern                      |
 | `--folders` | Enable directory listings when no `index.html` exists            |
 | `--spa`     | Fallback unresolved `GET`/`HEAD` routes to the root `index.html` |

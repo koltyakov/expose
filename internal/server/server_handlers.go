@@ -131,6 +131,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 
 	headers := tunnelproto.CloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
+	stripPublicAccessCookie(headers)
 	injectForwardedProxyHeaders(headers, r)
 	injectForwardedFor(headers, r.RemoteAddr)
 	openMsg := tunnelproto.Message{

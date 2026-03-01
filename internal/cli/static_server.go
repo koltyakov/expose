@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const staticServerShutdownTimeout = 5 * time.Second
@@ -842,30 +843,98 @@ func renderMarkdownDelimited(s, delim, openTag, closeTag string) string {
 		return s
 	}
 	var out strings.Builder
+	cursor := 0
 	for {
-		start := strings.Index(s, delim)
+		start := strings.Index(s[cursor:], delim)
 		if start < 0 {
-			out.WriteString(s)
+			out.WriteString(s[cursor:])
 			return out.String()
 		}
-		end := strings.Index(s[start+len(delim):], delim)
-		if end < 0 {
-			out.WriteString(s)
-			return out.String()
+		start += cursor
+		if !markdownDelimiterCanOpen(s, start, delim) {
+			out.WriteString(s[cursor : start+len(delim)])
+			cursor = start + len(delim)
+			continue
 		}
-		end += start + len(delim)
-		out.WriteString(s[:start])
+
+		end := -1
+		searchFrom := start + len(delim)
+		for {
+			next := strings.Index(s[searchFrom:], delim)
+			if next < 0 {
+				out.WriteString(s[cursor:])
+				return out.String()
+			}
+			next += searchFrom
+			if markdownDelimiterCanClose(s, next, delim) {
+				end = next
+				break
+			}
+			searchFrom = next + len(delim)
+		}
+
+		out.WriteString(s[cursor:start])
 		content := s[start+len(delim) : end]
 		if strings.TrimSpace(content) == "" {
-			out.WriteString(s[:end+len(delim)])
-			s = s[end+len(delim):]
+			out.WriteString(s[start : end+len(delim)])
+			cursor = end + len(delim)
 			continue
 		}
 		out.WriteString(openTag)
 		out.WriteString(content)
 		out.WriteString(closeTag)
-		s = s[end+len(delim):]
+		cursor = end + len(delim)
 	}
+}
+
+func markdownDelimiterCanOpen(s string, idx int, delim string) bool {
+	if !strings.Contains(delim, "_") {
+		return true
+	}
+	prev, hasPrev := markdownPrevRune(s, idx)
+	next, hasNext := markdownNextRune(s, idx+len(delim))
+	if !hasNext || unicode.IsSpace(next) {
+		return false
+	}
+	return !(hasPrev && isMarkdownWordRune(prev) && isMarkdownWordRune(next))
+}
+
+func markdownDelimiterCanClose(s string, idx int, delim string) bool {
+	if !strings.Contains(delim, "_") {
+		return true
+	}
+	prev, hasPrev := markdownPrevRune(s, idx)
+	next, hasNext := markdownNextRune(s, idx+len(delim))
+	if !hasPrev || unicode.IsSpace(prev) {
+		return false
+	}
+	return !(hasNext && isMarkdownWordRune(prev) && isMarkdownWordRune(next))
+}
+
+func markdownPrevRune(s string, idx int) (rune, bool) {
+	if idx <= 0 || idx > len(s) {
+		return 0, false
+	}
+	r, _ := utf8.DecodeLastRuneInString(s[:idx])
+	if r == utf8.RuneError {
+		return 0, false
+	}
+	return r, true
+}
+
+func markdownNextRune(s string, idx int) (rune, bool) {
+	if idx < 0 || idx >= len(s) {
+		return 0, false
+	}
+	r, _ := utf8.DecodeRuneInString(s[idx:])
+	if r == utf8.RuneError {
+		return 0, false
+	}
+	return r, true
+}
+
+func isMarkdownWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func extractInlineCodeSpans(s string) (string, []string) {

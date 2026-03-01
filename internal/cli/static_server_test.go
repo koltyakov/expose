@@ -492,6 +492,49 @@ func TestStaticHandlerKeepsUnderscoresInsideInlineCode(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerDoesNotEmphasizeIntrawordUnderscores(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "intraword.md"), "**pg_dump/pg_restore.** Works for initial loads.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/intraword.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<strong>pg_dump/pg_restore.</strong>") {
+		t.Fatalf("expected intraword underscores to remain literal, got %q", body)
+	}
+	if strings.Contains(body, "<em>dump/pg</em>") || strings.Contains(body, "<em>restore.</em>") {
+		t.Fatalf("did not expect intraword underscores to become emphasis, got %q", body)
+	}
+}
+
+func TestStaticHandlerRendersUnderscoreEmphasisAtWordBoundaries(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "emphasis.md"), "This is _important_.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/emphasis.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<em>important</em>") {
+		t.Fatalf("expected underscore emphasis at word boundaries, got %q", body)
+	}
+}
+
 func TestStaticHandlerUsesFirstH1AsPageTitle(t *testing.T) {
 	t.Parallel()
 

@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -800,7 +799,7 @@ func TestRecordWAFBlockQueueOverflowNonBlocking(t *testing.T) {
 	if !ok {
 		t.Fatal("expected host counter to exist")
 	}
-	if got := val.(*atomic.Int64).Load(); got != 5000 {
+	if got := val.(*wafCounter).total.Load(); got != 5000 {
 		t.Fatalf("expected 5000 blocked count, got %d", got)
 	}
 }
@@ -841,6 +840,31 @@ func TestRunWAFAuditWorkerStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("waf audit worker did not stop after context cancellation")
+	}
+}
+
+func TestCleanupStaleWAFCounters(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	stale := &wafCounter{}
+	stale.total.Store(4)
+	stale.lastSeenUnixNano.Store(now.Add(-2 * time.Hour).UnixNano())
+	fresh := &wafCounter{}
+	fresh.total.Store(7)
+	fresh.lastSeenUnixNano.Store(now.UnixNano())
+
+	srv := &Server{cfg: config.ServerConfig{WAFCounterRetention: time.Hour}}
+	srv.wafBlocks.Store("stale.example.com", stale)
+	srv.wafBlocks.Store("fresh.example.com", fresh)
+
+	srv.cleanupStaleWAFCounters()
+
+	if _, ok := srv.wafBlocks.Load("stale.example.com"); ok {
+		t.Fatal("expected stale WAF counter to be removed")
+	}
+	if _, ok := srv.wafBlocks.Load("fresh.example.com"); !ok {
+		t.Fatal("expected fresh WAF counter to remain")
 	}
 }
 
@@ -1206,6 +1230,74 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 	}
 }
 
+func TestAbortPendingRequestSendsCancel(t *testing.T) {
+	t.Parallel()
+
+	msgCh := make(chan tunnelproto.Message, 1)
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		var msg tunnelproto.Message
+		if err := tunnelproto.ReadWSMessage(conn, &msg); err != nil {
+			t.Errorf("read cancel message: %v", err)
+			return
+		}
+		msgCh <- msg
+	}))
+	defer srvHTTP.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srvHTTP.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	sess := &session{
+		tunnelID: "t-1",
+		conn:     conn,
+		pending: map[string]chan tunnelproto.Message{
+			"req_1": make(chan tunnelproto.Message, 1),
+		},
+	}
+	sess.pendingCount.Store(1)
+
+	respCh := sess.pending["req_1"]
+	s := &Server{}
+	s.abortPendingRequest(sess, "req_1", respCh)
+
+	select {
+	case _, ok := <-respCh:
+		if ok {
+			t.Fatal("expected pending response channel to be closed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending response channel was not closed")
+	}
+
+	select {
+	case msg := <-msgCh:
+		if msg.Kind != tunnelproto.KindReqCancel {
+			t.Fatalf("expected kind %q, got %q", tunnelproto.KindReqCancel, msg.Kind)
+		}
+		if msg.ReqCancel == nil || msg.ReqCancel.ID != "req_1" {
+			t.Fatalf("unexpected cancel payload: %#v", msg.ReqCancel)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not receive cancel message")
+	}
+
+	if got := sess.pendingCount.Load(); got != 0 {
+		t.Fatalf("expected pending count 0, got %d", got)
+	}
+}
+
 func TestWriteStreamedResponseBody(t *testing.T) {
 	t.Parallel()
 
@@ -1230,7 +1322,9 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	s.writeStreamedResponseBody(w, req, respCh, 5*time.Second)
+	if ok := s.writeStreamedResponseBody(w, req, respCh, 5*time.Second); !ok {
+		t.Fatal("expected streamed response to complete")
+	}
 
 	if got := w.Body.String(); got != "hello world" {
 		t.Fatalf("expected %q, got %q", "hello world", got)
@@ -1252,7 +1346,9 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 	start := time.Now()
-	s.writeStreamedResponseBody(w, req, respCh, 100*time.Millisecond)
+	if ok := s.writeStreamedResponseBody(w, req, respCh, 100*time.Millisecond); ok {
+		t.Fatal("expected streamed response to time out")
+	}
 	elapsed := time.Since(start)
 
 	if elapsed < 80*time.Millisecond {

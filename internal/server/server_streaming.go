@@ -135,7 +135,8 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 
 // writeStreamedResponseBody reads body chunks from the pending channel and
 // writes them to the HTTP response writer, flushing after each chunk.
-func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, respCh <-chan tunnelproto.Message, chunkTimeout time.Duration) {
+// It returns true when the upstream stream completed normally.
+func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, respCh <-chan tunnelproto.Message, chunkTimeout time.Duration) bool {
 	flusher, canFlush := w.(http.Flusher)
 	timer := time.NewTimer(chunkTimeout)
 	defer func() {
@@ -151,7 +152,7 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 		select {
 		case msg, ok := <-respCh:
 			if !ok {
-				return // tunnel closed
+				return false // tunnel closed
 			}
 			if !timer.Stop() {
 				select {
@@ -169,19 +170,19 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 				b, err := msg.BodyChunk.Payload()
 				if err == nil && len(b) > 0 {
 					if _, wErr := w.Write(b); wErr != nil {
-						return
+						return false
 					}
 					if canFlush {
 						flusher.Flush()
 					}
 				}
 			case tunnelproto.KindRespBodyEnd:
-				return
+				return true
 			}
 		case <-timer.C:
-			return // chunk timeout
+			return false // chunk timeout
 		case <-r.Context().Done():
-			return // client disconnected
+			return false // client disconnected
 		}
 	}
 }

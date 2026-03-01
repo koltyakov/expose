@@ -17,16 +17,17 @@ import (
 
 // ClientConfig holds all settings required by the tunnel client.
 type ClientConfig struct {
-	ServerURL    string
-	APIKey       string
-	User         string
-	Password     string
-	Protect      bool
-	ProtectMode  string
-	LocalPort    int
-	Name         string
-	Timeout      time.Duration
-	PingInterval time.Duration
+	ServerURL             string
+	APIKey                string
+	User                  string
+	Password              string
+	Protect               bool
+	ProtectMode           string
+	LocalPort             int
+	Name                  string
+	Timeout               time.Duration
+	PingInterval          time.Duration
+	MaxConcurrentForwards int
 }
 
 // ServerConfig holds all settings required by the expose HTTPS server.
@@ -49,6 +50,9 @@ type ServerConfig struct {
 	CleanupInterval        time.Duration
 	TempRetention          time.Duration
 	WAFEnabled             bool
+	MaxPendingPerTunnel    int
+	RouteCacheTTL          time.Duration
+	WAFCounterRetention    time.Duration
 
 	// Timeout and pool tuning (optional - zero values fall back to sane
 	// defaults defined in the server package).
@@ -74,14 +78,15 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	args = normalizeProtectFlagArgs(args)
 
 	cfg := ClientConfig{
-		ServerURL:    envOrDefault("EXPOSE_DOMAIN", ""),
-		APIKey:       envOrDefault("EXPOSE_API_KEY", ""),
-		User:         envOrDefault("EXPOSE_USER", "admin"),
-		Password:     envOrDefault("EXPOSE_PASSWORD", ""),
-		LocalPort:    envIntOrDefault("EXPOSE_PORT", 0),
-		Name:         envOrDefault("EXPOSE_SUBDOMAIN", ""),
-		Timeout:      30 * time.Second,
-		PingInterval: defaultClientPingInterval,
+		ServerURL:             envOrDefault("EXPOSE_DOMAIN", ""),
+		APIKey:                envOrDefault("EXPOSE_API_KEY", ""),
+		User:                  envOrDefault("EXPOSE_USER", "admin"),
+		Password:              envOrDefault("EXPOSE_PASSWORD", ""),
+		LocalPort:             envIntOrDefault("EXPOSE_PORT", 0),
+		Name:                  envOrDefault("EXPOSE_SUBDOMAIN", ""),
+		Timeout:               30 * time.Second,
+		PingInterval:          defaultClientPingInterval,
+		MaxConcurrentForwards: envIntOrDefault("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
 	}
 
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
@@ -110,6 +115,9 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 	if len(cfg.Password) > 256 {
 		return cfg, errors.New("password must be at most 256 characters")
+	}
+	if cfg.MaxConcurrentForwards <= 0 {
+		return cfg, errors.New("max concurrent forwards must be > 0")
 	}
 	if cfg.Password != "" && cfg.ProtectMode == "" {
 		cfg.ProtectMode = access.ModeForm
@@ -160,6 +168,9 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		CleanupInterval:        defaultServerCleanupInterval,
 		TempRetention:          defaultServerTempRetention,
 		WAFEnabled:             envBoolOrDefault("EXPOSE_WAF_ENABLE", true),
+		MaxPendingPerTunnel:    envIntOrDefault("EXPOSE_MAX_PENDING_PER_TUNNEL", 32),
+		RouteCacheTTL:          envDurationOrDefault("EXPOSE_ROUTE_CACHE_TTL", time.Minute),
+		WAFCounterRetention:    envDurationOrDefault("EXPOSE_WAF_COUNTER_RETENTION", time.Hour),
 	}
 
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -202,6 +213,15 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	if cfg.TempRetention <= 0 {
 		return cfg, errors.New("temp retention must be > 0")
 	}
+	if cfg.MaxPendingPerTunnel <= 0 {
+		return cfg, errors.New("max pending per tunnel must be > 0")
+	}
+	if cfg.RouteCacheTTL <= 0 {
+		return cfg, errors.New("route cache ttl must be > 0")
+	}
+	if cfg.WAFCounterRetention <= 0 {
+		return cfg, errors.New("waf counter retention must be > 0")
+	}
 
 	return cfg, nil
 }
@@ -223,6 +243,18 @@ func envIntOrDefault(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envDurationOrDefault(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
 }
 
 func trimOrDefault(v, def string) string {

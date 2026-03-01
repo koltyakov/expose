@@ -57,18 +57,18 @@ func (c *Client) SetAutoUpdate(enabled bool) {
 }
 
 const (
-	reconnectInitialDelay      = 2 * time.Second
-	reconnectMaxDelay          = 30 * time.Second
-	maxConcurrentForwards      = 32
-	wsMessageBufferSize        = 64
-	clientWSWriteTimeout       = 15 * time.Second
-	clientWSReadLimit          = 64 * 1024 * 1024
-	localForwardResponseMaxB64 = 10 * 1024 * 1024
-	wsHandshakeTimeout         = 10 * time.Second
-	tlsProvisioningInfoRetries = 3
-	streamingThreshold         = 256 * 1024
-	streamingChunkSize         = 256 * 1024
-	streamingReqBodyBufSize    = 64
+	reconnectInitialDelay        = 2 * time.Second
+	reconnectMaxDelay            = 30 * time.Second
+	defaultMaxConcurrentForwards = 32
+	wsMessageBufferSize          = 64
+	clientWSWriteTimeout         = 15 * time.Second
+	clientWSReadLimit            = 64 * 1024 * 1024
+	localForwardResponseMaxB64   = 10 * 1024 * 1024
+	wsHandshakeTimeout           = 10 * time.Second
+	tlsProvisioningInfoRetries   = 3
+	streamingThreshold           = 256 * 1024
+	streamingChunkSize           = 256 * 1024
+	streamingReqBodyBufSize      = 64
 )
 
 // New creates a Client with the given configuration and logger.
@@ -80,18 +80,25 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 			Timeout: cfg.Timeout,
 		},
 		fwdClient: &http.Client{
-			Transport: newForwardHTTPTransport(),
+			Transport: newForwardHTTPTransport(cfg),
 		},
 	}
 }
 
-func newForwardHTTPTransport() *http.Transport {
+func newForwardHTTPTransport(cfg config.ClientConfig) *http.Transport {
 	base, _ := http.DefaultTransport.(*http.Transport)
 	tr := base.Clone()
 	tr.MaxIdleConns = 100
 	tr.MaxIdleConnsPerHost = 100
-	tr.MaxConnsPerHost = maxConcurrentForwards
+	tr.MaxConnsPerHost = maxConcurrentForwardsFor(cfg)
 	tr.IdleConnTimeout = 90 * time.Second
 	tr.ResponseHeaderTimeout = 2 * time.Minute
 	return tr
+}
+
+func maxConcurrentForwardsFor(cfg config.ClientConfig) int {
+	if cfg.MaxConcurrentForwards > 0 {
+		return cfg.MaxConcurrentForwards
+	}
+	return defaultMaxConcurrentForwards
 }

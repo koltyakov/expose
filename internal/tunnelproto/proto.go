@@ -18,6 +18,7 @@ import (
 const (
 	KindRequest     = "request"
 	KindResponse    = "response"
+	KindReqCancel   = "req_cancel"
 	KindReqBody     = "req_body"
 	KindReqBodyEnd  = "req_body_end"
 	KindRespBody    = "resp_body"
@@ -48,16 +49,17 @@ const (
 
 // Message is the top-level envelope exchanged on the tunnel WebSocket.
 type Message struct {
-	Kind      string        `json:"kind"`
-	Request   *HTTPRequest  `json:"request,omitempty"`
-	Response  *HTTPResponse `json:"response,omitempty"`
-	BodyChunk *BodyChunk    `json:"body_chunk,omitempty"`
-	WSOpen    *WSOpen       `json:"ws_open,omitempty"`
-	WSOpenAck *WSOpenAck    `json:"ws_open_ack,omitempty"`
-	WSData    *WSData       `json:"ws_data,omitempty"`
-	WSClose   *WSClose      `json:"ws_close,omitempty"`
-	Stats     *Stats        `json:"stats,omitempty"`
-	Error     string        `json:"error,omitempty"`
+	Kind      string         `json:"kind"`
+	Request   *HTTPRequest   `json:"request,omitempty"`
+	Response  *HTTPResponse  `json:"response,omitempty"`
+	ReqCancel *RequestCancel `json:"req_cancel,omitempty"`
+	BodyChunk *BodyChunk     `json:"body_chunk,omitempty"`
+	WSOpen    *WSOpen        `json:"ws_open,omitempty"`
+	WSOpenAck *WSOpenAck     `json:"ws_open_ack,omitempty"`
+	WSData    *WSData        `json:"ws_data,omitempty"`
+	WSClose   *WSClose       `json:"ws_close,omitempty"`
+	Stats     *Stats         `json:"stats,omitempty"`
+	Error     string         `json:"error,omitempty"`
 }
 
 // HTTPRequest represents an inbound public HTTP request forwarded to the client.
@@ -78,6 +80,12 @@ type HTTPResponse struct {
 	Headers  map[string][]string `json:"headers,omitempty"`
 	BodyB64  string              `json:"body_b64,omitempty"`
 	Streamed bool                `json:"streamed,omitempty"`
+}
+
+// RequestCancel instructs the client to cancel an in-flight forwarded HTTP
+// request identified by ID.
+type RequestCancel struct {
+	ID string `json:"id"`
 }
 
 // BodyChunk carries a chunk of request or response body data for streamed

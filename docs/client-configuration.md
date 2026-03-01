@@ -27,6 +27,7 @@ Complete reference for all client flags, environment variables, and credential m
 | `--allow`   | -                   | Allow blocked static paths matching a glob pattern |
 | -           | `EXPOSE_USER`       | Access-form username (default: `admin`)            |
 | -           | `EXPOSE_PASSWORD`   | Access-form password                               |
+| -           | `EXPOSE_MAX_CONCURRENT_FORWARDS` | Max concurrent local upstream forwards per client process (default: `32`) |
 | -           | `EXPOSE_AUTOUPDATE` | Enable automatic self-update (`true`/`1`/`yes`)    |
 
 ## Credential Resolution

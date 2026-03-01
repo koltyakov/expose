@@ -14,6 +14,7 @@ type routeCache struct {
 	mu            sync.RWMutex
 	entries       map[string]routeCacheEntry
 	hostsByTunnel map[string]map[string]struct{}
+	ttl           time.Duration
 }
 
 type routeCacheEntry struct {
@@ -21,7 +22,7 @@ type routeCacheEntry struct {
 	expiresAtUnixNano int64
 }
 
-const routeCacheTTL = 5 * time.Second
+const defaultRouteCacheTTL = time.Minute
 
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
 	nowUnix := time.Now().UnixNano()
@@ -50,7 +51,7 @@ func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	}
 	c.entries[host] = routeCacheEntry{
 		route:             route,
-		expiresAtUnixNano: time.Now().Add(routeCacheTTL).UnixNano(),
+		expiresAtUnixNano: time.Now().Add(c.cacheTTL()).UnixNano(),
 	}
 	c.trackHostLocked(route.Tunnel.ID, host)
 	c.mu.Unlock()
@@ -119,4 +120,11 @@ func (c *routeCache) untrackHostLocked(tunnelID, host string) {
 	if len(hosts) == 0 {
 		delete(c.hostsByTunnel, tunnelID)
 	}
+}
+
+func (c *routeCache) cacheTTL() time.Duration {
+	if c.ttl > 0 {
+		return c.ttl
+	}
+	return defaultRouteCacheTTL
 }

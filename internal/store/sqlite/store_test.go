@@ -930,6 +930,47 @@ func TestSetAPIKeyTunnelLimitNonExistent(t *testing.T) {
 	}
 }
 
+func TestTrySetTunnelConnectedEnforcesLimitAtomically(t *testing.T) {
+	t.Parallel()
+
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	key, err := store.CreateAPIKeyWithLimit(ctx, "limited", "hash_try_connect_limit", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, tunnelA, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "permanent", "alpha", "example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TrySetTunnelConnected(ctx, tunnelA.ID); err != nil {
+		t.Fatalf("expected first tunnel connect to succeed, got %v", err)
+	}
+
+	_, tunnelB, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "permanent", "beta", "example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.TrySetTunnelConnected(ctx, tunnelB.ID)
+	if !errors.Is(err, domain.ErrTunnelLimitReached) {
+		t.Fatalf("expected tunnel limit error, got %v", err)
+	}
+
+	active, err := store.ActiveTunnelCountByKey(ctx, key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 {
+		t.Fatalf("expected 1 active tunnel after rejected connect, got %d", active)
+	}
+}
+
 func TestListAPIKeysIncludesTunnelLimit(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {

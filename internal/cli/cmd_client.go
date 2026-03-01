@@ -110,14 +110,15 @@ func runStatic(ctx context.Context, args []string) int {
 	}
 
 	cfg := config.ClientConfig{
-		ServerURL:   serverURL,
-		APIKey:      apiKey,
-		User:        envOr("EXPOSE_USER", "admin"),
-		Password:    envOr("EXPOSE_PASSWORD", ""),
-		Protect:     strings.TrimSpace(protectMode) != "",
-		ProtectMode: protectMode,
-		Name:        name,
-		Timeout:     30 * time.Second,
+		ServerURL:             serverURL,
+		APIKey:                apiKey,
+		User:                  envOr("EXPOSE_USER", "admin"),
+		Password:              envOr("EXPOSE_PASSWORD", ""),
+		Protect:               strings.TrimSpace(protectMode) != "",
+		ProtectMode:           protectMode,
+		Name:                  name,
+		Timeout:               30 * time.Second,
+		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
 	}
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)

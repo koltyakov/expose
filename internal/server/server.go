@@ -30,6 +30,7 @@ type serverStore interface {
 	CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error)
 	ConsumeConnectToken(ctx context.Context, token string) (string, error)
 	SetTunnelConnected(ctx context.Context, tunnelID string) error
+	TrySetTunnelConnected(ctx context.Context, tunnelID string) error
 	SetTunnelDisconnected(ctx context.Context, tunnelID string) error
 	FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error)
 	TouchDomain(ctx context.Context, domainID string) error
@@ -57,13 +58,18 @@ type Server struct {
 	domainTouches chan string
 	domainTouchMu sync.Mutex
 	domainTouched map[string]struct{}
-	wafBlocks     sync.Map // hostname → *atomic.Int64
+	wafBlocks     sync.Map // hostname → *wafCounter
 	wafAuditQueue chan wafAuditEvent
 }
 
 type wafAuditEvent struct {
 	event       waf.BlockEvent
 	totalBlocks int64
+}
+
+type wafCounter struct {
+	total            atomic.Int64
+	lastSeenUnixNano atomic.Int64
 }
 
 type hub struct {
@@ -86,30 +92,31 @@ type session struct {
 }
 
 const (
-	tlsModeAuto           = "auto"
-	tlsModeDynamic        = "dynamic"
-	tlsModeWildcard       = "wildcard"
-	maxRegisterBodyBytes  = 64 * 1024
-	minWSReadLimit        = 32 * 1024 * 1024
-	maxPendingPerSession  = 32
-	streamingThreshold    = 256 * 1024
-	streamingChunkSize    = 256 * 1024
-	streamingChanSize     = 16
-	streamBodySendTimeout = 5 * time.Second
-	wsWriteTimeout        = 15 * time.Second
-	httpsReadTimeout      = 30 * time.Second
-	httpsWriteTimeout     = 60 * time.Second
-	httpsIdleTimeout      = 120 * time.Second
-	httpsMaxHeaderBytes   = 1 << 20
-	httpIdleTimeout       = 60 * time.Second
-	usedTokenRetention    = 1 * time.Hour
-	tokenPurgeBatchLimit  = 1000
-	domainTouchQueueSize  = 2048
-	domainTouchTimeout    = 3 * time.Second
-	wafAuditQueueSize     = 2048
-	wafAuditLookupTimeout = 250 * time.Millisecond
-	wsDataDispatchWait    = 250 * time.Millisecond
-	wsControlDispatchWait = 2 * time.Second
+	tlsModeAuto                 = "auto"
+	tlsModeDynamic              = "dynamic"
+	tlsModeWildcard             = "wildcard"
+	maxRegisterBodyBytes        = 64 * 1024
+	minWSReadLimit              = 32 * 1024 * 1024
+	defaultMaxPendingPerSession = 32
+	streamingThreshold          = 256 * 1024
+	streamingChunkSize          = 256 * 1024
+	streamingChanSize           = 16
+	streamBodySendTimeout       = 5 * time.Second
+	wsWriteTimeout              = 15 * time.Second
+	httpsReadTimeout            = 30 * time.Second
+	httpsWriteTimeout           = 60 * time.Second
+	httpsIdleTimeout            = 120 * time.Second
+	httpsMaxHeaderBytes         = 1 << 20
+	httpIdleTimeout             = 60 * time.Second
+	usedTokenRetention          = 1 * time.Hour
+	tokenPurgeBatchLimit        = 1000
+	domainTouchQueueSize        = 2048
+	domainTouchTimeout          = 3 * time.Second
+	wafAuditQueueSize           = 2048
+	wafAuditLookupTimeout       = 250 * time.Millisecond
+	wsDataDispatchWait          = 250 * time.Millisecond
+	wsControlDispatchWait       = 2 * time.Second
+	defaultWAFCounterRetention  = time.Hour
 )
 
 // Type aliases for the shared domain request/response types.
@@ -136,7 +143,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		hub:           &hub{sessions: map[string]*session{}},
 		version:       version,
 		regLimiter:    newRateLimiter(),
-		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{})},
+		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
 		domainTouches: make(chan string, domainTouchQueueSize),
 		domainTouched: make(map[string]struct{}),
 		wafAuditQueue: make(chan wafAuditEvent, wafAuditQueueSize),
@@ -149,4 +156,15 @@ func durationOr(d, fallback time.Duration) time.Duration {
 		return d
 	}
 	return fallback
+}
+
+func maxPendingPerSessionFor(cfg config.ServerConfig) int64 {
+	if cfg.MaxPendingPerTunnel > 0 {
+		return int64(cfg.MaxPendingPerTunnel)
+	}
+	return defaultMaxPendingPerSession
+}
+
+func wafCounterRetentionFor(cfg config.ServerConfig) time.Duration {
+	return durationOr(cfg.WAFCounterRetention, defaultWAFCounterRetention)
 }

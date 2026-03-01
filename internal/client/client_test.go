@@ -73,8 +73,8 @@ func TestNewUsesClonedForwardTransportWithSafeDefaults(t *testing.T) {
 	if tr.MaxIdleConnsPerHost != 100 {
 		t.Fatalf("expected MaxIdleConnsPerHost=100, got %d", tr.MaxIdleConnsPerHost)
 	}
-	if tr.MaxConnsPerHost != maxConcurrentForwards {
-		t.Fatalf("expected MaxConnsPerHost=%d, got %d", maxConcurrentForwards, tr.MaxConnsPerHost)
+	if tr.MaxConnsPerHost != defaultMaxConcurrentForwards {
+		t.Fatalf("expected MaxConnsPerHost=%d, got %d", defaultMaxConcurrentForwards, tr.MaxConnsPerHost)
 	}
 	if tr.ResponseHeaderTimeout != 2*time.Minute {
 		t.Fatalf("expected ResponseHeaderTimeout=2m, got %s", tr.ResponseHeaderTimeout)
@@ -905,5 +905,62 @@ func TestForwardAndSendUpstreamUnavailable(t *testing.T) {
 	}
 	if msgs[0].Response.Status != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", msgs[0].Response.Status)
+	}
+}
+
+func TestForwardAndSendCancelsLocalRequest(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.forwardAndSend(ctx, base, &tunnelproto.HTTPRequest{
+			ID:     "req_cancel",
+			Method: http.MethodGet,
+			Path:   "/slow",
+		}, nil, func(tunnelproto.Message) error { return nil }, nil)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("local upstream request did not start")
+	}
+
+	cancel()
+
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected local upstream request context to be canceled")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("forwardAndSend did not return after cancellation")
 	}
 }

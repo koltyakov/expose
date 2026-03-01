@@ -81,6 +81,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
 			s.routes.cleanup()
+			s.cleanupStaleWAFCounters()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
 		}
@@ -231,6 +232,22 @@ func shouldDeleteCertCacheEntry(name string, hostSet map[string]struct{}) bool {
 		return ok
 	}
 	return false
+}
+
+func (s *Server) cleanupStaleWAFCounters() {
+	retention := wafCounterRetentionFor(s.cfg)
+	cutoffUnix := time.Now().Add(-retention).UnixNano()
+	s.wafBlocks.Range(func(key, value any) bool {
+		counter, ok := value.(*wafCounter)
+		if !ok {
+			s.wafBlocks.Delete(key)
+			return true
+		}
+		if counter.lastSeenUnixNano.Load() < cutoffUnix {
+			s.wafBlocks.Delete(key)
+		}
+		return true
+	})
 }
 
 func isHostnameInUseError(err error) bool {

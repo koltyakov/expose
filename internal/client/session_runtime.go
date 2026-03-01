@@ -79,6 +79,8 @@ type clientSessionRuntime struct {
 
 	requestWG  sync.WaitGroup
 	requestSem chan struct{}
+	requestMu  sync.Mutex
+	reqCancel  map[string]context.CancelFunc
 
 	writeMu sync.Mutex
 
@@ -114,7 +116,8 @@ func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *ur
 		conn:             conn,
 		ctx:              sessionCtx,
 		cancel:           cancel,
-		requestSem:       make(chan struct{}, maxConcurrentForwards),
+		requestSem:       make(chan struct{}, maxConcurrentForwardsFor(c.cfg)),
+		reqCancel:        make(map[string]context.CancelFunc),
 		msgCh:            make(chan tunnelproto.Message, wsMessageBufferSize),
 		readErr:          make(chan error, 1),
 		keepaliveErr:     make(chan error, 1),
@@ -159,6 +162,17 @@ func (rt *clientSessionRuntime) close() {
 			state.close()
 		}
 
+		rt.requestMu.Lock()
+		cancels := make([]context.CancelFunc, 0, len(rt.reqCancel))
+		for id, cancel := range rt.reqCancel {
+			delete(rt.reqCancel, id)
+			cancels = append(cancels, cancel)
+		}
+		rt.requestMu.Unlock()
+		for _, cancel := range cancels {
+			cancel()
+		}
+
 		rt.requestWG.Wait()
 	})
 }
@@ -194,6 +208,8 @@ func (rt *clientSessionRuntime) handleMessage(msg tunnelproto.Message) error {
 		return rt.handleReqBody(msg.BodyChunk)
 	case tunnelproto.KindReqBodyEnd:
 		rt.handleReqBodyEnd(msg.BodyChunk)
+	case tunnelproto.KindReqCancel:
+		rt.handleRequestCancel(msg.ReqCancel)
 	case tunnelproto.KindWSOpen:
 		rt.handleWSOpen(msg.WSOpen)
 	case tunnelproto.KindWSData:
@@ -323,13 +339,17 @@ func (rt *clientSessionRuntime) handleRequest(req *tunnelproto.HTTPRequest) {
 	if reqCopy.Streamed {
 		bodyCh = rt.openStreamedRequest(reqCopy.ID)
 	}
+	reqCtx, cancel := context.WithCancel(rt.ctx)
+	rt.storeRequestCancel(reqCopy.ID, cancel)
 
 	go func(forwardReq tunnelproto.HTTPRequest, streamedBody <-chan []byte) {
 		defer rt.requestWG.Done()
 		defer func() { <-rt.requestSem }()
+		defer rt.deleteRequestCancel(forwardReq.ID)
 		defer rt.closeAndRemoveStreamedRequest(forwardReq.ID)
+		defer cancel()
 
-		rt.client.forwardAndSend(rt.ctx, rt.localBase, &forwardReq, streamedBody, rt.writeJSON, func(id string, payload []byte) error {
+		rt.client.forwardAndSend(reqCtx, rt.localBase, &forwardReq, streamedBody, rt.writeJSON, func(id string, payload []byte) error {
 			return rt.writeBinary(tunnelproto.BinaryFrameRespBody, id, 0, payload)
 		})
 	}(reqCopy, bodyCh)
@@ -404,6 +424,58 @@ func (rt *clientSessionRuntime) closeAndRemoveStreamedRequest(id string) {
 	rt.streamedMu.Unlock()
 	if ok {
 		state.close()
+	}
+}
+
+func (rt *clientSessionRuntime) handleRequestCancel(cancelMsg *tunnelproto.RequestCancel) {
+	if cancelMsg == nil {
+		return
+	}
+	rt.cancelRequest(cancelMsg.ID)
+}
+
+func (rt *clientSessionRuntime) storeRequestCancel(id string, cancel context.CancelFunc) {
+	id = strings.TrimSpace(id)
+	if id == "" || cancel == nil {
+		return
+	}
+
+	rt.requestMu.Lock()
+	if prev, exists := rt.reqCancel[id]; exists {
+		delete(rt.reqCancel, id)
+		prev()
+	}
+	rt.reqCancel[id] = cancel
+	rt.requestMu.Unlock()
+}
+
+func (rt *clientSessionRuntime) deleteRequestCancel(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+
+	rt.requestMu.Lock()
+	delete(rt.reqCancel, id)
+	rt.requestMu.Unlock()
+}
+
+func (rt *clientSessionRuntime) cancelRequest(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+
+	rt.requestMu.Lock()
+	cancel, ok := rt.reqCancel[id]
+	if ok {
+		delete(rt.reqCancel, id)
+	}
+	rt.requestMu.Unlock()
+
+	rt.closeAndRemoveStreamedRequest(id)
+	if ok {
+		cancel()
 	}
 }
 

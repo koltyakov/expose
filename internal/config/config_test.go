@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeDomainHost(t *testing.T) {
@@ -151,5 +152,37 @@ func TestParseClientFlagsUserDefaultAndOverride(t *testing.T) {
 	}
 	if cfg.User != "admin" {
 		t.Fatalf("expected empty EXPOSE_USER to fallback to admin, got %q", cfg.User)
+	}
+}
+
+func TestParseClientFlagsMaxConcurrentForwardsFromEnv(t *testing.T) {
+	t.Setenv("EXPOSE_MAX_CONCURRENT_FORWARDS", "64")
+
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxConcurrentForwards != 64 {
+		t.Fatalf("expected max concurrent forwards 64, got %d", cfg.MaxConcurrentForwards)
+	}
+}
+
+func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
+	t.Setenv("EXPOSE_MAX_PENDING_PER_TUNNEL", "96")
+	t.Setenv("EXPOSE_ROUTE_CACHE_TTL", "2m")
+	t.Setenv("EXPOSE_WAF_COUNTER_RETENTION", "30m")
+
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxPendingPerTunnel != 96 {
+		t.Fatalf("expected max pending per tunnel 96, got %d", cfg.MaxPendingPerTunnel)
+	}
+	if cfg.RouteCacheTTL != 2*time.Minute {
+		t.Fatalf("expected route cache ttl 2m, got %s", cfg.RouteCacheTTL)
+	}
+	if cfg.WAFCounterRetention != 30*time.Minute {
+		t.Fatalf("expected waf counter retention 30m, got %s", cfg.WAFCounterRetention)
 	}
 }

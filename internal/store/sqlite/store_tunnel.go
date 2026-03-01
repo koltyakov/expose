@@ -178,6 +178,53 @@ WHERE id = ?`,
 	return err
 }
 
+func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) error {
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var keyID string
+	var state string
+	if err = tx.QueryRowContext(ctx, `SELECT api_key_id, state FROM tunnels WHERE id = ?`, tunnelID).Scan(&keyID, &state); err != nil {
+		return err
+	}
+	if state == domain.TunnelStateConnected {
+		return tx.Commit()
+	}
+
+	var limit int
+	if err = tx.QueryRowContext(ctx, `SELECT tunnel_limit FROM api_keys WHERE id = ?`, keyID).Scan(&limit); err != nil {
+		return err
+	}
+	if limit >= 0 {
+		var active int
+		if err = tx.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM tunnels
+WHERE api_key_id = ? AND state = ?`, keyID, domain.TunnelStateConnected).Scan(&active); err != nil {
+			return err
+		}
+		if active >= limit {
+			return domain.ErrTunnelLimitReached
+		}
+	}
+
+	if _, err = tx.ExecContext(ctx, `
+UPDATE tunnels
+SET state = ?, connected_at = ?, disconnected_at = NULL
+WHERE id = ?`,
+		domain.TunnelStateConnected, time.Now().UTC(), tunnelID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func (s *Store) SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, mode, hash string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, nullableString(user), nullableString(mode), nullableString(hash), tunnelID)
 	return err

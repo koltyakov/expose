@@ -36,6 +36,9 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`        | -             | Explicit pepper for API key hashing            |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`             | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`|
 | -                         | `EXPOSE_WAF_ENABLE`            | `true`        | Enable/disable the Web Application Firewall    |
+| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`| `32`          | Max in-flight public HTTP requests per active tunnel |
+| -                         | `EXPOSE_ROUTE_CACHE_TTL`       | `1m`          | Positive hostname route cache TTL before DB revalidation |
+| -                         | `EXPOSE_WAF_COUNTER_RETENTION` | `1h`          | Retention window for in-memory per-host WAF counters |
 | -                         | `EXPOSE_AUTOUPDATE`            | `false`       | Enable automatic self-update (`true`/`1`/`yes`)|
 
 ## `.env` File Support

@@ -46,9 +46,13 @@ Environment Variables:
   EXPOSE_PASSWORD         Optional public access password for this tunnel session
   EXPOSE_PORT             Local port to expose
   EXPOSE_SUBDOMAIN        Requested subdomain name
+  EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 32)
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
   EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
   EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
+  EXPOSE_MAX_PENDING_PER_TUNNEL   Per-tunnel in-flight request cap on the server (default: 32)
+  EXPOSE_ROUTE_CACHE_TTL          Positive route cache TTL on the server (default: 1m)
+  EXPOSE_WAF_COUNTER_RETENTION    Retention window for in-memory WAF counters (default: 1h)
   EXPOSE_AUTOUPDATE       Enable automatic self-update (true|1|yes)
 
 For detailed documentation, see: https://github.com/koltyakov/expose`)

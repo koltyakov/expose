@@ -2,14 +2,15 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/koltyakov/expose/internal/auth"
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/waf"
 )
@@ -32,7 +33,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.SetTunnelConnected(r.Context(), tunnelID); err != nil {
+	if err := s.store.TrySetTunnelConnected(r.Context(), tunnelID); err != nil {
+		if errors.Is(err, domain.ErrTunnelLimitReached) {
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, domain.ErrTunnelLimitReached.Error()),
+				time.Now().Add(5*time.Second),
+			)
+			_ = conn.Close()
+			s.log.Warn("refused tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
+			return
+		}
 		_ = conn.Close()
 		s.log.Error("failed to mark tunnel connected", "tunnel_id", tunnelID, "err", err)
 		return
@@ -129,6 +140,7 @@ func (s *Server) readLoop(sess *session) {
 					if sess.pendingDelete(msg.BodyChunk.ID) {
 						sess.releasePending()
 						close(ch)
+						_ = sess.cancelRequest(msg.BodyChunk.ID)
 					}
 				}
 			}
@@ -244,6 +256,19 @@ func (s *session) writeWSData(streamID string, messageType int, payload []byte) 
 	return s.writeBinaryFrame(tunnelproto.BinaryFrameWSData, streamID, messageType, payload)
 }
 
+func (s *session) cancelRequest(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	if s.conn == nil {
+		return nil
+	}
+	return s.writeJSON(tunnelproto.Message{
+		Kind:      tunnelproto.KindReqCancel,
+		ReqCancel: &tunnelproto.RequestCancel{ID: id},
+	})
+}
+
 func (s *session) touch(t time.Time) {
 	s.lastSeenUnixNano.Store(t.UnixNano())
 }
@@ -357,8 +382,11 @@ func (s *session) closeWSPending() {
 // and emits a structured audit log entry that identifies the protected
 // tunnel endpoint.
 func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
-	val, _ := s.wafBlocks.LoadOrStore(evt.Host, &atomic.Int64{})
-	count := val.(*atomic.Int64).Add(1)
+	nowUnix := time.Now().UnixNano()
+	val, _ := s.wafBlocks.LoadOrStore(evt.Host, &wafCounter{})
+	counter := val.(*wafCounter)
+	counter.lastSeenUnixNano.Store(nowUnix)
+	count := counter.total.Add(1)
 
 	event := wafAuditEvent{
 		event:       evt,
@@ -438,7 +466,7 @@ func (s *Server) wafBlocksForTunnel(tunnelID string) int64 {
 	var total int64
 	for _, h := range hostnames {
 		if val, ok := s.wafBlocks.Load(h); ok {
-			total += val.(*atomic.Int64).Load()
+			total += val.(*wafCounter).total.Load()
 		}
 	}
 	return total

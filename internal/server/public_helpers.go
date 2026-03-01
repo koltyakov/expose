@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
@@ -45,7 +46,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	}
 
 	reqID := s.nextRequestID()
-	if !sess.tryAcquirePending(maxPendingPerSession) {
+	if !sess.tryAcquirePending(maxPendingPerSessionFor(s.cfg)) {
 		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
 		return
 	}
@@ -60,10 +61,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	sess.pendingStore(reqID, respCh)
 
 	if _, err := s.sendRequestBody(sess, reqID, r, requestHeaders); err != nil {
-		if sess.pendingDelete(reqID) {
-			sess.releasePending()
-			close(respCh)
-		}
+		s.abortPendingRequest(sess, reqID, respCh)
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else {
@@ -99,7 +97,9 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		}
 		w.WriteHeader(resp.Status)
 		if resp.Streamed {
-			s.writeStreamedResponseBody(w, r, respCh, s.cfg.RequestTimeout)
+			if !s.writeStreamedResponseBody(w, r, respCh, s.cfg.RequestTimeout) {
+				s.abortPendingRequest(sess, reqID, respCh)
+			}
 		} else {
 			b, err := tunnelproto.DecodeBody(resp.BodyB64)
 			if err == nil && len(b) > 0 {
@@ -108,17 +108,24 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		}
 		s.queueDomainTouch(route.Domain.ID)
 	case <-timer.C:
-		if sess.pendingDelete(reqID) {
-			sess.releasePending()
-			close(respCh)
-		}
+		s.abortPendingRequest(sess, reqID, respCh)
 		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
 	case <-r.Context().Done():
-		if sess.pendingDelete(reqID) {
-			sess.releasePending()
+		s.abortPendingRequest(sess, reqID, respCh)
+	}
+}
+
+func (s *Server) abortPendingRequest(sess *session, reqID string, respCh chan tunnelproto.Message) {
+	if sess == nil || strings.TrimSpace(reqID) == "" {
+		return
+	}
+	if sess.pendingDelete(reqID) {
+		sess.releasePending()
+		if respCh != nil {
 			close(respCh)
 		}
 	}
+	_ = sess.cancelRequest(reqID)
 }
 
 func publicRouteLookupErrorStatus(err error) (int, string) {

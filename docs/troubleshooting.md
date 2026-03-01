@@ -43,6 +43,25 @@ flowchart TD
 - Key was created with a different pepper - if `EXPOSE_API_KEY_PEPPER` changed, all old keys are invalid
 - Credentials file is stale - re-run `expose login`
 
+## Protected route testing
+
+**Symptom**: You want to script requests against a `--protect` route without manually posting the access form.
+
+Use:
+
+```bash
+expose auth curl --url https://myapp.example.com --password "$EXPOSE_PASSWORD"
+```
+
+To inject the access cookie into your own curl command:
+
+```bash
+curl -H "$(expose auth curl --url https://myapp.example.com --password "$EXPOSE_PASSWORD" --format header)" \
+  https://myapp.example.com
+```
+
+Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.sslip.io`.
+
 ## Tunnel registers but no traffic arrives
 
 **Checks**:

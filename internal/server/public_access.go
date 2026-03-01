@@ -13,18 +13,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/domain"
 )
 
 const (
-	publicAccessCookieName        = "__Host-expose_access"
+	publicAccessCookieName        = access.CookieName
 	publicAccessCookieVersion     = "v1"
 	publicAccessCookieTTL         = 24 * time.Hour
-	publicAccessFormActionField   = "__expose_access_action"
-	publicAccessFormUserField     = "__expose_access_user"
-	publicAccessFormPasswordField = "__expose_access_password"
-	publicAccessFormNextField     = "__expose_access_next"
+	publicAccessFormActionField   = access.FormActionField
+	publicAccessFormUserField     = access.FormUserField
+	publicAccessFormPasswordField = access.FormPasswordField
+	publicAccessFormNextField     = access.FormNextField
 	maxPublicAccessFormBytes      = 8 * 1024
 )
 

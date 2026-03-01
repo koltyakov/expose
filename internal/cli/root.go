@@ -19,6 +19,8 @@ func Run(args []string) int {
 	}
 
 	switch args[0] {
+	case "auth":
+		return runAuth(ctx, args[1:])
 	case "login":
 		return runClientLogin(ctx, args[1:])
 	case "http":

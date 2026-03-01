@@ -61,15 +61,16 @@ Notes:
 - If `--protect` is set and `EXPOSE_PASSWORD` is missing, CLI prompts interactively.
 - Client reads `.env` automatically when present.
 
-## 6) Verify auth behavior
+## 6) Verify protected access behavior
 
 ```bash
 curl -k -i https://myapp.127.0.0.1.sslip.io:10443/
-curl -k -i -u admin:wrong https://myapp.127.0.0.1.sslip.io:10443/
-curl -k -i -u admin:123 https://myapp.127.0.0.1.sslip.io:10443/
+./bin/expose auth curl --url https://myapp.127.0.0.1.sslip.io:10443/ --password 123 --insecure
+curl -k -i -H "$(./bin/expose auth curl --url https://myapp.127.0.0.1.sslip.io:10443/ --password 123 --insecure --format header)" \
+  https://myapp.127.0.0.1.sslip.io:10443/
 ```
 
 Expected:
-- first request: `401 Unauthorized`
-- wrong credentials: `401 Unauthorized`
-- correct credentials: upstream `200` response
+- first request: `401 Unauthorized` with the HTML access form
+- `expose auth curl`: prints a ready-to-run `curl` command with the access cookie
+- curl with helper-provided header: upstream `200` response

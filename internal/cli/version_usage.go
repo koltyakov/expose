@@ -16,6 +16,7 @@ Usage:
   expose http --domain=myapp <port>     Expose with a named subdomain
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
+  expose auth curl --url URL            Login to a protected route and print curl-ready auth output
   expose login                          Save server URL and API key
   expose up                             Start routes from ./expose.yml
   expose up -f expose.yml               Start routes from YAML config

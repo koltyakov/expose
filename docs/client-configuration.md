@@ -95,6 +95,14 @@ EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
 
 > **Note**: `--protect` adds a separate edge login before requests reach your app. The access session uses a dedicated cookie and does not consume your app's `Authorization` header, but it is still an extra gate in front of the route.
 
+For CLI testing, use:
+
+```bash
+expose auth curl --url https://myapp.example.com --password "$EXPOSE_PASSWORD"
+```
+
+Add `--format header` to print a `Cookie:` header you can pass directly to `curl -H`.
+
 ## Static Files
 
 Use `expose static` for local folders, docs sites, and SPAs:

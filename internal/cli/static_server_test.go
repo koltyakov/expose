@@ -383,7 +383,7 @@ func TestStaticHandlerRendersMarkdownAsHTML(t *testing.T) {
 	if !strings.Contains(body, "<h1>Guide</h1>") {
 		t.Fatalf("expected heading render, got %q", body)
 	}
-	if !strings.Contains(body, `<img src="./assets/client-tunnel.png" alt="expose client">`) {
+	if !strings.Contains(body, `<img src="/assets/client-tunnel.png" alt="expose client">`) {
 		t.Fatalf("expected image render, got %q", body)
 	}
 	if !strings.Contains(body, `<a href="https://example.com">site</a>`) {
@@ -391,6 +391,52 @@ func TestStaticHandlerRendersMarkdownAsHTML(t *testing.T) {
 	}
 	if !strings.Contains(body, "<li>one</li>") || !strings.Contains(body, "<code>code</code>") {
 		t.Fatalf("expected list/code render, got %q", body)
+	}
+}
+
+func TestStaticHandlerResolvesNestedMarkdownRelativeLinksAndImages(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n\n![cover](../assets/cover.png)\n\nSee [server config](server-configuration.md#env).\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/docs/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected nested markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<img src="/assets/cover.png" alt="cover">`) {
+		t.Fatalf("expected nested image path resolved against request path, got %q", body)
+	}
+	if !strings.Contains(body, `<a href="/docs/server-configuration.md#env">server config</a>`) {
+		t.Fatalf("expected nested doc link resolved against request path, got %q", body)
+	}
+}
+
+func TestStaticHandlerResolvesDirectoryReadmeRelativeLinksAndImages(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "project", "README.md"), "# Project\n\n![cover](../assets/cover.png)\n\nSee [performance](docs/performance-testing.md).\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/project/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected directory README render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<img src="/assets/cover.png" alt="cover">`) {
+		t.Fatalf("expected README image path resolved against directory path, got %q", body)
+	}
+	if !strings.Contains(body, `<a href="/project/docs/performance-testing.md">performance</a>`) {
+		t.Fatalf("expected README doc link resolved against directory path, got %q", body)
 	}
 }
 

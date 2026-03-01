@@ -281,7 +281,7 @@ func serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http
 	if err != nil {
 		return false
 	}
-	rendered, title, hasMermaid := renderMarkdownDocument(string(body))
+	rendered, title, hasMermaid := renderMarkdownDocument(string(body), r.URL.Path)
 	if strings.TrimSpace(title) == "" {
 		title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 	}
@@ -552,7 +552,7 @@ func buildMarkdownHTMLPage(data markdownPageData) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func renderMarkdownDocument(src string) (string, string, bool) {
+func renderMarkdownDocument(src, requestPath string) (string, string, bool) {
 	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
 	var out strings.Builder
 	var paragraph []string
@@ -571,7 +571,7 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 		}
 		text := strings.Join(paragraph, " ")
 		out.WriteString("<p>")
-		out.WriteString(renderMarkdownInline(strings.TrimSpace(text)))
+		out.WriteString(renderMarkdownInline(strings.TrimSpace(text), requestPath))
 		out.WriteString("</p>\n")
 		paragraph = nil
 	}
@@ -586,7 +586,7 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 		out.WriteString("<" + tag + ">\n")
 		for _, item := range listItems {
 			out.WriteString("<li>")
-			out.WriteString(renderMarkdownInline(item))
+			out.WriteString(renderMarkdownInline(item, requestPath))
 			out.WriteString("</li>\n")
 		}
 		out.WriteString("</" + tag + ">\n")
@@ -600,7 +600,7 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 		out.WriteString("<table>\n<thead>\n<tr>")
 		for _, cell := range headers {
 			out.WriteString("<th>")
-			out.WriteString(renderMarkdownInline(cell))
+			out.WriteString(renderMarkdownInline(cell, requestPath))
 			out.WriteString("</th>")
 		}
 		out.WriteString("</tr>\n</thead>\n")
@@ -610,7 +610,7 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 				out.WriteString("<tr>")
 				for _, cell := range row {
 					out.WriteString("<td>")
-					out.WriteString(renderMarkdownInline(cell))
+					out.WriteString(renderMarkdownInline(cell, requestPath))
 					out.WriteString("</td>")
 				}
 				out.WriteString("</tr>\n")
@@ -625,7 +625,7 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 		}
 		text := strings.Join(quote, " ")
 		out.WriteString("<blockquote><p>")
-		out.WriteString(renderMarkdownInline(strings.TrimSpace(text)))
+		out.WriteString(renderMarkdownInline(strings.TrimSpace(text), requestPath))
 		out.WriteString("</p></blockquote>\n")
 		quote = nil
 	}
@@ -693,7 +693,7 @@ func renderMarkdownDocument(src string) (string, string, bool) {
 			out.WriteString("<h")
 			out.WriteString(strconv.Itoa(level))
 			out.WriteString(">")
-			out.WriteString(renderMarkdownInline(text))
+			out.WriteString(renderMarkdownInline(text, requestPath))
 			out.WriteString("</h")
 			out.WriteString(strconv.Itoa(level))
 			out.WriteString(">\n")
@@ -786,11 +786,11 @@ func parseMarkdownListItem(line string) (string, string, bool) {
 	return "", "", false
 }
 
-func renderMarkdownInline(s string) string {
+func renderMarkdownInline(s, requestPath string) string {
 	s = html.EscapeString(strings.TrimSpace(s))
 	s, codeSpans := extractInlineCodeSpans(s)
-	s = renderMarkdownImages(s)
-	s = renderMarkdownLinks(s)
+	s = renderMarkdownImages(s, requestPath)
+	s = renderMarkdownLinks(s, requestPath)
 	s = renderMarkdownDelimited(s, "**", "<strong>", "</strong>")
 	s = renderMarkdownDelimited(s, "__", "<strong>", "</strong>")
 	s = renderMarkdownDelimited(s, "*", "<em>", "</em>")
@@ -802,7 +802,7 @@ func renderMarkdownInline(s string) string {
 var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
 var markdownLinkPattern = regexp.MustCompile(`\[(.*?)\]\((.*?)\)`)
 
-func renderMarkdownImages(s string) string {
+func renderMarkdownImages(s, requestPath string) string {
 	return markdownImagePattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := markdownImagePattern.FindStringSubmatch(match)
 		if len(parts) != 3 {
@@ -815,12 +815,13 @@ func renderMarkdownImages(s string) string {
 		if u, err := url.Parse(src); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "data") {
 			return match
 		}
+		src = resolveMarkdownURL(requestPath, src)
 		alt := html.EscapeString(html.UnescapeString(parts[1]))
 		return `<img src="` + html.EscapeString(src) + `" alt="` + alt + `">`
 	})
 }
 
-func renderMarkdownLinks(s string) string {
+func renderMarkdownLinks(s, requestPath string) string {
 	return markdownLinkPattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := markdownLinkPattern.FindStringSubmatch(match)
 		if len(parts) != 3 {
@@ -833,9 +834,57 @@ func renderMarkdownLinks(s string) string {
 		if u, err := url.Parse(href); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "mailto") {
 			return match
 		}
-		text := renderMarkdownInline(html.UnescapeString(parts[1]))
+		href = resolveMarkdownURL(requestPath, href)
+		text := renderMarkdownInline(html.UnescapeString(parts[1]), requestPath)
 		return `<a href="` + html.EscapeString(href) + `">` + text + `</a>`
 	})
+}
+
+func resolveMarkdownURL(requestPath, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	if strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "?") || strings.HasPrefix(raw, "//") {
+		return raw
+	}
+
+	ref, err := url.Parse(raw)
+	if err != nil || ref == nil {
+		return raw
+	}
+	if ref.Scheme != "" {
+		return raw
+	}
+
+	basePath := strings.TrimSpace(requestPath)
+	if basePath == "" {
+		return raw
+	}
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+
+	base := &url.URL{Path: basePath}
+	resolved := base.ResolveReference(ref)
+	if resolved == nil {
+		return raw
+	}
+
+	out := resolved.EscapedPath()
+	if out == "" {
+		out = resolved.Path
+	}
+	if out == "" {
+		out = "/"
+	}
+	if resolved.RawQuery != "" {
+		out += "?" + resolved.RawQuery
+	}
+	if resolved.Fragment != "" {
+		out += "#" + resolved.Fragment
+	}
+	return out
 }
 
 func renderMarkdownDelimited(s, delim, openTag, closeTag string) string {

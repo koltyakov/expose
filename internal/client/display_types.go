@@ -46,6 +46,7 @@ const (
 	displayLocalHealthCacheTTL = 2 * time.Second
 	displayLocalHealthTimeout  = 200 * time.Millisecond
 	displayLatencySampleMax    = 1024
+	displayLockIcon            = "🔒"
 )
 
 // requestEntry stores one logged HTTP request for the rolling display.
@@ -83,6 +84,7 @@ type Display struct {
 	status        string // "online", "reconnecting", …
 	tunnelID      string
 	publicURL     string
+	protected     bool
 	localAddr     string
 	tlsMode       string
 	serverVersion string

@@ -46,7 +46,7 @@ func TestDisplayBannerColor(t *testing.T) {
 func TestDisplayTunnelInfo(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
-	d.ShowTunnelInfo("https://myapp.example.com", "http://localhost:3000", "autocert", "tun_abc123")
+	d.ShowTunnelInfo("https://myapp.example.com", "http://localhost:3000", "autocert", "tun_abc123", true)
 	out := buf.String()
 	if !strings.Contains(out, "online") {
 		t.Fatal("expected 'online' status")
@@ -56,6 +56,9 @@ func TestDisplayTunnelInfo(t *testing.T) {
 	}
 	if !strings.Contains(out, "https://myapp.example.com") {
 		t.Fatal("expected public URL")
+	}
+	if !strings.Contains(out, "🔒 https://myapp.example.com") {
+		t.Fatal("expected lock icon before protected public URL")
 	}
 	if !strings.Contains(out, "http://localhost:3000") {
 		t.Fatal("expected local address")
@@ -77,10 +80,13 @@ func TestDisplayTunnelInfo(t *testing.T) {
 func TestDisplayTunnelInfoNoTLSMode(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
-	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz", false)
 	out := buf.String()
 	if strings.Contains(out, "TLS Mode") {
 		t.Fatal("did not expect separate TLS Mode field")
+	}
+	if strings.Contains(out, displayLockIcon) {
+		t.Fatal("did not expect lock icon for unprotected tunnel")
 	}
 	if !strings.Contains(out, "(ID: tun_xyz)") {
 		t.Fatal("expected tunnel ID in Session")
@@ -281,7 +287,7 @@ func TestDisplayTotalHTTPCounter(t *testing.T) {
 func TestDisplayWaitingMessage(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
-	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz", false)
 	out := buf.String()
 	if !strings.Contains(out, "Waiting for requests") {
 		t.Fatal("expected waiting message when no requests logged")
@@ -709,7 +715,7 @@ func TestDisplaySessionUptime(t *testing.T) {
 	d.ShowBanner("dev")
 
 	// First connection sets session start.
-	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false)
 
 	// Advance 5 minutes and trigger redraw.
 	now = now.Add(5 * time.Minute)
@@ -743,7 +749,7 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	d.ShowBanner("dev")
 
 	// First connection.
-	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false)
 
 	// Advance 10 minutes, simulate reconnect.
 	now = now.Add(10 * time.Minute)
@@ -751,7 +757,7 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 
 	// Advance another minute and reconnect.
 	now = now.Add(1 * time.Minute)
-	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false)
 
 	// Advance 3 more minutes and check display.
 	now = now.Add(3 * time.Minute)

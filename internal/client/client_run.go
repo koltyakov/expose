@@ -77,7 +77,7 @@ func (c *Client) Run(ctx context.Context) error {
 		if c.display != nil {
 			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
-			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID)
+			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID, c.cfg.Protect)
 			c.display.ShowVersions(c.version, versionutil.EnsureVPrefix(reg.ServerVersion), reg.WAFEnabled)
 		} else {
 			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)

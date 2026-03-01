@@ -98,8 +98,12 @@ func (d *Display) redraw() {
 	}
 	if d.publicURL != "" {
 		arrow := d.styled(ansiDim, "→")
+		publicURL := d.styled(ansiCyan, d.publicURL)
+		if d.protected {
+			publicURL = d.styled(ansiYellow, displayLockIcon) + " " + publicURL
+		}
 		d.writeField(&b, "Forwarding", fmt.Sprintf("%s %s %s",
-			d.styled(ansiCyan, d.publicURL), arrow, d.localTargetWithHealth(d.localAddr)))
+			publicURL, arrow, d.localTargetWithHealth(d.localAddr)))
 	} else {
 		d.writeField(&b, "Forwarding", placeholder)
 	}

@@ -31,7 +31,7 @@ func (d *Display) Cleanup() {
 }
 
 // ShowTunnelInfo updates the tunnel connection details and redraws.
-func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string) {
+func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string, protected bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := d.now()
@@ -42,6 +42,7 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string)
 	}
 	d.setStatusLocked("online", now)
 	d.publicURL = publicURL
+	d.protected = protected
 	d.localAddr = localAddr
 	d.tlsMode = tlsMode
 	d.tunnelID = tunnelID

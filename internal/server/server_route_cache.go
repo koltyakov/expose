@@ -7,9 +7,10 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
-// routeCache stores recently resolved hostname→TunnelRoute mappings with a
-// short TTL. Entries are explicitly invalidated on connect/disconnect to keep
-// the data fresh; the TTL is a safety-net for any missed invalidation.
+// routeCache stores recently resolved hostname lookups with a short TTL. Both
+// hits and misses are cached. Entries are explicitly invalidated on
+// connect/disconnect to keep the data fresh; the TTL is a safety-net for any
+// missed invalidation.
 type routeCache struct {
 	mu            sync.RWMutex
 	entries       map[string]routeCacheEntry
@@ -19,18 +20,27 @@ type routeCache struct {
 
 type routeCacheEntry struct {
 	route             domain.TunnelRoute
+	found             bool
 	expiresAtUnixNano int64
 }
 
 const defaultRouteCacheTTL = time.Minute
 
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
+	route, found, cached := c.lookup(host)
+	if !cached || !found {
+		return domain.TunnelRoute{}, false
+	}
+	return route, true
+}
+
+func (c *routeCache) lookup(host string) (domain.TunnelRoute, bool, bool) {
 	nowUnix := time.Now().UnixNano()
 	c.mu.RLock()
 	e, ok := c.entries[host]
 	c.mu.RUnlock()
 	if !ok {
-		return domain.TunnelRoute{}, false
+		return domain.TunnelRoute{}, false, false
 	}
 	if nowUnix > e.expiresAtUnixNano {
 		c.mu.Lock()
@@ -39,9 +49,9 @@ func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
 			c.untrackHostLocked(stale.route.Tunnel.ID, host)
 		}
 		c.mu.Unlock()
-		return domain.TunnelRoute{}, false
+		return domain.TunnelRoute{}, false, false
 	}
-	return e.route, true
+	return e.route, e.found, true
 }
 
 func (c *routeCache) set(host string, route domain.TunnelRoute) {
@@ -51,9 +61,25 @@ func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	}
 	c.entries[host] = routeCacheEntry{
 		route:             route,
+		found:             true,
 		expiresAtUnixNano: time.Now().Add(c.cacheTTL()).UnixNano(),
 	}
 	c.trackHostLocked(route.Tunnel.ID, host)
+	c.mu.Unlock()
+}
+
+func (c *routeCache) setMiss(host string) {
+	if host == "" {
+		return
+	}
+	c.mu.Lock()
+	if prev, exists := c.entries[host]; exists {
+		c.untrackHostLocked(prev.route.Tunnel.ID, host)
+	}
+	c.entries[host] = routeCacheEntry{
+		found:             false,
+		expiresAtUnixNano: time.Now().Add(c.cacheTTL()).UnixNano(),
+	}
 	c.mu.Unlock()
 }
 

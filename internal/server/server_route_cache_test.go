@@ -86,6 +86,28 @@ func TestRouteCacheTTLExpiry(t *testing.T) {
 	}
 }
 
+func TestRouteCacheMissCaching(t *testing.T) {
+	t.Parallel()
+
+	c := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+	}
+
+	c.setMiss("missing.example.com")
+
+	if _, ok := c.get("missing.example.com"); ok {
+		t.Fatal("expected negative cache entry not to be treated as route hit")
+	}
+	if _, found, cached := c.lookup("missing.example.com"); !cached || found {
+		t.Fatal("expected cached negative lookup")
+	}
+	c.deleteHost("missing.example.com")
+	if _, _, cached := c.lookup("missing.example.com"); cached {
+		t.Fatal("expected miss entry to be deleted")
+	}
+}
+
 func TestRouteCacheConcurrent(t *testing.T) {
 	t.Parallel()
 

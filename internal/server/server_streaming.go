@@ -37,15 +37,17 @@ var (
 // Streamed=true followed by KindReqBody chunks and a KindReqBodyEnd.
 // Returns whether the request was streamed and any write error.
 func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, headers map[string][]string) (bool, error) {
+	requestTimeoutMs := s.requestTimeoutMillis()
 	if r.Body == nil || r.Body == http.NoBody {
 		return false, sess.writeJSON(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{
-				ID:      reqID,
-				Method:  r.Method,
-				Path:    r.URL.Path,
-				Query:   r.URL.RawQuery,
-				Headers: headers,
+				ID:        reqID,
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Query:     r.URL.RawQuery,
+				Headers:   headers,
+				TimeoutMs: requestTimeoutMs,
 			},
 		})
 	}
@@ -68,12 +70,13 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 		return false, sess.writeJSON(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{
-				ID:      reqID,
-				Method:  r.Method,
-				Path:    r.URL.Path,
-				Query:   r.URL.RawQuery,
-				Headers: headers,
-				BodyB64: tunnelproto.EncodeBody(firstBuf[:n]),
+				ID:        reqID,
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Query:     r.URL.RawQuery,
+				Headers:   headers,
+				BodyB64:   tunnelproto.EncodeBody(firstBuf[:n]),
+				TimeoutMs: requestTimeoutMs,
 			},
 		})
 	}
@@ -85,12 +88,13 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	if err := sess.writeJSON(tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
 		Request: &tunnelproto.HTTPRequest{
-			ID:       reqID,
-			Method:   r.Method,
-			Path:     r.URL.Path,
-			Query:    r.URL.RawQuery,
-			Headers:  headers,
-			Streamed: true,
+			ID:        reqID,
+			Method:    r.Method,
+			Path:      r.URL.Path,
+			Query:     r.URL.RawQuery,
+			Headers:   headers,
+			Streamed:  true,
+			TimeoutMs: requestTimeoutMs,
 		},
 	}); err != nil {
 		return true, err
@@ -131,6 +135,14 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 		Kind:      tunnelproto.KindReqBodyEnd,
 		BodyChunk: &tunnelproto.BodyChunk{ID: reqID},
 	})
+}
+
+func (s *Server) requestTimeoutMillis() int {
+	timeout := s.cfg.RequestTimeout
+	if timeout <= 0 {
+		return 0
+	}
+	return int(timeout / time.Millisecond)
 }
 
 // writeStreamedResponseBody reads body chunks from the pending channel and

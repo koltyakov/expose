@@ -339,7 +339,7 @@ func (rt *clientSessionRuntime) handleRequest(req *tunnelproto.HTTPRequest) {
 	if reqCopy.Streamed {
 		bodyCh = rt.openStreamedRequest(reqCopy.ID)
 	}
-	reqCtx, cancel := context.WithCancel(rt.ctx)
+	reqCtx, cancel := requestContext(rt.ctx, &reqCopy)
 	rt.storeRequestCancel(reqCopy.ID, cancel)
 
 	go func(forwardReq tunnelproto.HTTPRequest, streamedBody <-chan []byte) {
@@ -477,6 +477,13 @@ func (rt *clientSessionRuntime) cancelRequest(id string) {
 	if ok {
 		cancel()
 	}
+}
+
+func requestContext(parent context.Context, req *tunnelproto.HTTPRequest) (context.Context, context.CancelFunc) {
+	if req != nil && req.TimeoutMs > 0 {
+		return context.WithTimeout(parent, time.Duration(req.TimeoutMs)*time.Millisecond)
+	}
+	return context.WithCancel(parent)
 }
 
 func (rt *clientSessionRuntime) handlePingPong(msg tunnelproto.Message) error {

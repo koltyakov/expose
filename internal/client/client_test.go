@@ -964,3 +964,22 @@ func TestForwardAndSendCancelsLocalRequest(t *testing.T) {
 		t.Fatal("forwardAndSend did not return after cancellation")
 	}
 }
+
+func TestRequestContextAppliesMessageTimeout(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := requestContext(context.Background(), &tunnelproto.HTTPRequest{TimeoutMs: 25})
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("request context canceled too early")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected request context to time out")
+	}
+}

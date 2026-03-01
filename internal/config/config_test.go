@@ -168,6 +168,8 @@ func TestParseClientFlagsMaxConcurrentForwardsFromEnv(t *testing.T) {
 }
 
 func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
+	t.Setenv("EXPOSE_DB_MAX_OPEN_CONNS", "24")
+	t.Setenv("EXPOSE_DB_MAX_IDLE_CONNS", "12")
 	t.Setenv("EXPOSE_MAX_PENDING_PER_TUNNEL", "96")
 	t.Setenv("EXPOSE_ROUTE_CACHE_TTL", "2m")
 	t.Setenv("EXPOSE_WAF_COUNTER_RETENTION", "30m")
@@ -178,6 +180,12 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 	if cfg.MaxPendingPerTunnel != 96 {
 		t.Fatalf("expected max pending per tunnel 96, got %d", cfg.MaxPendingPerTunnel)
+	}
+	if cfg.DBMaxOpenConns != 24 {
+		t.Fatalf("expected db max open conns 24, got %d", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 12 {
+		t.Fatalf("expected db max idle conns 12, got %d", cfg.DBMaxIdleConns)
 	}
 	if cfg.RouteCacheTTL != 2*time.Minute {
 		t.Fatalf("expected route cache ttl 2m, got %s", cfg.RouteCacheTTL)

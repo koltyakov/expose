@@ -10,6 +10,8 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
+const getAPIKeyTunnelLimitQuery = `SELECT tunnel_limit FROM api_keys WHERE id = ?`
+
 func (s *Store) CreateAPIKey(ctx context.Context, name, keyHash string) (domain.APIKey, error) {
 	return s.CreateAPIKeyWithLimit(ctx, name, keyHash, -1)
 }
@@ -89,7 +91,12 @@ func (s *Store) ResolveAPIKeyID(ctx context.Context, keyHash string) (string, er
 // A value of -1 means unlimited.
 func (s *Store) GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error) {
 	var limit int
-	err := s.db.QueryRowContext(ctx, `SELECT tunnel_limit FROM api_keys WHERE id = ?`, keyID).Scan(&limit)
+	stmt := s.getAPIKeyTunnelLimitStmt
+	if stmt == nil {
+		err := s.db.QueryRowContext(ctx, getAPIKeyTunnelLimitQuery, keyID).Scan(&limit)
+		return limit, err
+	}
+	err := stmt.QueryRowContext(ctx, keyID).Scan(&limit)
 	return limit, err
 }
 

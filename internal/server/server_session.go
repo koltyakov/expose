@@ -421,8 +421,9 @@ func (s *Server) runWAFAuditWorker(ctx context.Context) {
 func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent) {
 	tunnelID := "unknown"
 	domainName := audit.event.Host
-	route, ok := s.routes.get(audit.event.Host)
-	if !ok && s.store != nil {
+	route, found, cached := s.routes.lookup(audit.event.Host)
+	ok := cached && found
+	if !cached && s.store != nil {
 		lookupCtx, cancel := context.WithTimeout(parentCtx, wafAuditLookupTimeout)
 		r, err := s.store.FindRouteByHost(lookupCtx, audit.event.Host)
 		cancel()

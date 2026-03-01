@@ -49,6 +49,8 @@ Environment Variables:
   EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 32)
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
   EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
+  EXPOSE_DB_MAX_OPEN_CONNS  SQLite max open connections (default: 10)
+  EXPOSE_DB_MAX_IDLE_CONNS  SQLite max idle connections (default: 10)
   EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
   EXPOSE_MAX_PENDING_PER_TUNNEL   Per-tunnel in-flight request cap on the server (default: 32)
   EXPOSE_ROUTE_CACHE_TTL          Positive route cache TTL on the server (default: 1m)

@@ -22,10 +22,11 @@ var ErrHostnameInUse = errors.New("hostname already in use")
 type Store struct {
 	db *sql.DB
 
-	resolveAPIKeyIDStmt   *sql.Stmt
-	activeTunnelCountStmt *sql.Stmt
-	isHostnameActiveStmt  *sql.Stmt
-	findRouteByHostStmt   *sql.Stmt
+	resolveAPIKeyIDStmt      *sql.Stmt
+	activeTunnelCountStmt    *sql.Stmt
+	getAPIKeyTunnelLimitStmt *sql.Stmt
+	isHostnameActiveStmt     *sql.Stmt
+	findRouteByHostStmt      *sql.Stmt
 
 	connectMu            sync.Mutex
 	touchMu              sync.Mutex
@@ -150,6 +151,10 @@ func (s *Store) prepareStatements(ctx context.Context) error {
 		closeErr := s.closePreparedStatements()
 		return errors.Join(fmt.Errorf("prepare active tunnel count query: %w", err), closeErr)
 	}
+	if s.getAPIKeyTunnelLimitStmt, err = s.db.PrepareContext(ctx, getAPIKeyTunnelLimitQuery); err != nil {
+		closeErr := s.closePreparedStatements()
+		return errors.Join(fmt.Errorf("prepare api key tunnel limit query: %w", err), closeErr)
+	}
 	if s.isHostnameActiveStmt, err = s.db.PrepareContext(ctx, isHostnameActiveQuery); err != nil {
 		closeErr := s.closePreparedStatements()
 		return errors.Join(fmt.Errorf("prepare hostname active query: %w", err), closeErr)
@@ -165,6 +170,7 @@ func (s *Store) closePreparedStatements() error {
 	var err error
 	err = errors.Join(err, closeStmt(&s.resolveAPIKeyIDStmt))
 	err = errors.Join(err, closeStmt(&s.activeTunnelCountStmt))
+	err = errors.Join(err, closeStmt(&s.getAPIKeyTunnelLimitStmt))
 	err = errors.Join(err, closeStmt(&s.isHostnameActiveStmt))
 	err = errors.Join(err, closeStmt(&s.findRouteByHostStmt))
 	return err

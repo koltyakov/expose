@@ -29,6 +29,8 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--listen`                | `EXPOSE_LISTEN_HTTPS`          | `:10443`      | HTTPS listen address                           |
 | `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE` | `:10080`      | ACME HTTP-01 challenge listener                |
 | `--db`                    | `EXPOSE_DB_PATH`               | `./expose.db` | SQLite database path                           |
+| `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`     | `10`          | SQLite max open connections                    |
+| `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`     | `10`          | SQLite max idle connections                    |
 | `--tls-mode`              | `EXPOSE_TLS_MODE`              | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`     |
 | `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`        | `./cert`      | ACME certificate cache directory               |
 | `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`         | -             | Static PEM certificate (for wildcard/auto)     |

@@ -1185,7 +1185,7 @@ done:
 func TestSendRequestBodyEmptyBody(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{cfg: config.ServerConfig{MaxBodyBytes: 10 * 1024 * 1024}}
+	s := &Server{cfg: config.ServerConfig{MaxBodyBytes: 10 * 1024 * 1024, RequestTimeout: 2500 * time.Millisecond}}
 
 	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := wsUpgrader.Upgrade(w, r, nil)
@@ -1206,6 +1206,9 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 		}
 		if msg.Request.BodyB64 != "" {
 			t.Error("expected empty BodyB64 for empty body")
+		}
+		if msg.Request.TimeoutMs != 2500 {
+			t.Errorf("expected timeout 2500ms, got %d", msg.Request.TimeoutMs)
 		}
 	}))
 	defer srvHTTP.Close()

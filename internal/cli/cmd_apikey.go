@@ -133,7 +133,10 @@ func defaultDBPath() string {
 }
 
 func openSQLiteStoreOrExit(dbPath string) (*sqlite.Store, int) {
-	store, err := sqlite.Open(dbPath)
+	store, err := sqlite.OpenWithOptions(dbPath, sqlite.OpenOptions{
+		MaxOpenConns: parseIntEnv("EXPOSE_DB_MAX_OPEN_CONNS", 10),
+		MaxIdleConns: parseIntEnv("EXPOSE_DB_MAX_IDLE_CONNS", 10),
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "db error:", err)
 		return nil, 1

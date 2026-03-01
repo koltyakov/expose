@@ -64,13 +64,14 @@ type Message struct {
 
 // HTTPRequest represents an inbound public HTTP request forwarded to the client.
 type HTTPRequest struct {
-	ID       string              `json:"id"`
-	Method   string              `json:"method"`
-	Path     string              `json:"path"`
-	Query    string              `json:"query,omitempty"`
-	Headers  map[string][]string `json:"headers,omitempty"`
-	BodyB64  string              `json:"body_b64,omitempty"`
-	Streamed bool                `json:"streamed,omitempty"`
+	ID        string              `json:"id"`
+	Method    string              `json:"method"`
+	Path      string              `json:"path"`
+	Query     string              `json:"query,omitempty"`
+	Headers   map[string][]string `json:"headers,omitempty"`
+	BodyB64   string              `json:"body_b64,omitempty"`
+	Streamed  bool                `json:"streamed,omitempty"`
+	TimeoutMs int                 `json:"timeout_ms,omitempty"`
 }
 
 // HTTPResponse is the client's reply to a forwarded [HTTPRequest].

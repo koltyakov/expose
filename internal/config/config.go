@@ -35,6 +35,8 @@ type ServerConfig struct {
 	ListenHTTPS            string
 	ListenHTTP             string
 	DBPath                 string
+	DBMaxOpenConns         int
+	DBMaxIdleConns         int
 	BaseDomain             string
 	APIKeyPepper           string
 	TLSMode                string
@@ -153,6 +155,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		ListenHTTPS:            envOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
 		ListenHTTP:             envOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
 		DBPath:                 envOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
+		DBMaxOpenConns:         envIntOrDefault("EXPOSE_DB_MAX_OPEN_CONNS", 10),
+		DBMaxIdleConns:         envIntOrDefault("EXPOSE_DB_MAX_IDLE_CONNS", 10),
 		BaseDomain:             envOrDefault("EXPOSE_DOMAIN", ""),
 		APIKeyPepper:           envOrDefault("EXPOSE_API_KEY_PEPPER", ""),
 		TLSMode:                envOrDefault("EXPOSE_TLS_MODE", "auto"),
@@ -177,6 +181,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.ListenHTTPS, "listen", cfg.ListenHTTPS, "HTTPS listen address")
 	fs.StringVar(&cfg.ListenHTTP, "http-challenge-listen", cfg.ListenHTTP, "HTTP-01 challenge listen address")
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
+	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "SQLite max open connections")
+	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "SQLite max idle connections")
 	fs.StringVar(&cfg.BaseDomain, "domain", cfg.BaseDomain, "Public base domain, e.g. example.com")
 	fs.StringVar(&cfg.APIKeyPepper, "api-key-pepper", cfg.APIKeyPepper, "API key hash pepper override")
 	fs.StringVar(&cfg.TLSMode, "tls-mode", cfg.TLSMode, "TLS mode: auto|dynamic|wildcard")
@@ -212,6 +218,15 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 	if cfg.TempRetention <= 0 {
 		return cfg, errors.New("temp retention must be > 0")
+	}
+	if cfg.DBMaxOpenConns <= 0 {
+		return cfg, errors.New("db max open conns must be > 0")
+	}
+	if cfg.DBMaxIdleConns <= 0 {
+		return cfg, errors.New("db max idle conns must be > 0")
+	}
+	if cfg.DBMaxIdleConns > cfg.DBMaxOpenConns {
+		return cfg, errors.New("db max idle conns must be <= db max open conns")
 	}
 	if cfg.MaxPendingPerTunnel <= 0 {
 		return cfg, errors.New("max pending per tunnel must be > 0")

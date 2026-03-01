@@ -14,13 +14,19 @@ import (
 )
 
 func (s *Server) resolvePublicRoute(ctx context.Context, host string) (domain.TunnelRoute, error) {
-	route, ok := s.routes.get(host)
-	if ok {
-		return route, nil
+	route, found, cached := s.routes.lookup(host)
+	if cached {
+		if found {
+			return route, nil
+		}
+		return domain.TunnelRoute{}, sql.ErrNoRows
 	}
 
 	route, err := s.store.FindRouteByHost(ctx, host)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.routes.setMiss(host)
+		}
 		return domain.TunnelRoute{}, err
 	}
 	s.routes.set(host, route)

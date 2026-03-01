@@ -43,7 +43,10 @@ func runServer(ctx context.Context, args []string) int {
 		}
 	}
 
-	store, err := sqlite.Open(cfg.DBPath)
+	store, err := sqlite.OpenWithOptions(cfg.DBPath, sqlite.OpenOptions{
+		MaxOpenConns: cfg.DBMaxOpenConns,
+		MaxIdleConns: cfg.DBMaxIdleConns,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "db error:", err)
 		return 1

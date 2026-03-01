@@ -17,6 +17,7 @@ Usage:
                                         --protect enables form protection, --protect=basic opts into Basic Auth
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
+  expose soak --port 3000               Run a multi-tunnel client soak test against one local port
   expose auth curl --url URL            Login to a protected route and print curl-ready auth output
   expose login                          Save server URL and API key
   expose up                             Start routes from ./expose.yml
@@ -46,6 +47,7 @@ Environment Variables:
   EXPOSE_PASSWORD         Optional public access password for this tunnel session
   EXPOSE_PORT             Local port to expose
   EXPOSE_SUBDOMAIN        Requested subdomain name
+  EXPOSE_PPROF_LISTEN     Optional pprof listen address (e.g. 127.0.0.1:6060)
   EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 32)
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
   EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)

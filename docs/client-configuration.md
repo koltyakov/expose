@@ -10,6 +10,7 @@ Complete reference for all client flags, environment variables, and credential m
 | `expose http --domain=myapp <port>` | Expose with a named subdomain             |
 | `expose http --protect <port>`      | Expose with password protection           |
 | `expose static [dir]`               | Expose a static directory                 |
+| `expose soak --port 3000`           | Run many temporary clients against one local port |
 | `expose login`                      | Save server URL and API key               |
 | `expose up`                         | Start routes from `expose.yml`            |
 | `expose up init`                    | Create `expose.yml` via wizard            |
@@ -23,6 +24,7 @@ Complete reference for all client flags, environment variables, and credential m
 | `--domain`  | `EXPOSE_SUBDOMAIN`  | Requested subdomain label (e.g. `myapp`)           |
 | `--server`  | `EXPOSE_DOMAIN`     | Server URL (e.g. `example.com`)                    |
 | `--api-key` | `EXPOSE_API_KEY`    | API key for authentication                         |
+| `--pprof-listen` | `EXPOSE_PPROF_LISTEN` | Optional pprof listen address for the client process |
 | `--protect` | -                   | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
 | `--allow`   | -                   | Allow blocked static paths matching a glob pattern |
 | -           | `EXPOSE_USER`       | Access-form username (default: `admin`)            |
@@ -174,6 +176,38 @@ The client automatically reconnects when the connection drops:
 - Exponential backoff between retry attempts
 - Periodic keepalive pings maintain the connection
 - Server version changes trigger an update check (when auto-update is enabled)
+
+## Debug Profiling
+
+Enable Go `pprof` endpoints for a client process when diagnosing live overloads or memory growth:
+
+```bash
+EXPOSE_PPROF_LISTEN=127.0.0.1:6060 expose http 3000
+```
+
+The client exposes the standard endpoints under `/debug/pprof/`, for example:
+
+```bash
+go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+```
+
+`expose up` also honors `EXPOSE_PPROF_LISTEN`, but the listener is process-level, not per route.
+
+## Soak Testing
+
+Use `expose soak` to measure connected tunnel ceilings and reconnect behavior with many client sessions in one process:
+
+```bash
+expose soak --port 3000 --count 200 --duration 10m
+```
+
+To add churn:
+
+```bash
+expose soak --port 3000 --count 200 --duration 10m --churn-interval 30s --churn-batch 10
+```
+
+The soak runner creates unique temporary named tunnels, prints rolling active/peak/error counters, and exits non-zero if no tunnel ever becomes ready.
 
 ## See Also
 

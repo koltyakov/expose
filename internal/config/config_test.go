@@ -167,12 +167,25 @@ func TestParseClientFlagsMaxConcurrentForwardsFromEnv(t *testing.T) {
 	}
 }
 
+func TestParseClientFlagsPprofListenFromEnv(t *testing.T) {
+	t.Setenv("EXPOSE_PPROF_LISTEN", "127.0.0.1:6060")
+
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PprofListen != "127.0.0.1:6060" {
+		t.Fatalf("expected pprof listen 127.0.0.1:6060, got %q", cfg.PprofListen)
+	}
+}
+
 func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	t.Setenv("EXPOSE_DB_MAX_OPEN_CONNS", "24")
 	t.Setenv("EXPOSE_DB_MAX_IDLE_CONNS", "12")
 	t.Setenv("EXPOSE_MAX_PENDING_PER_TUNNEL", "96")
 	t.Setenv("EXPOSE_ROUTE_CACHE_TTL", "2m")
 	t.Setenv("EXPOSE_WAF_COUNTER_RETENTION", "30m")
+	t.Setenv("EXPOSE_PPROF_LISTEN", "127.0.0.1:6060")
 
 	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
 	if err != nil {
@@ -192,5 +205,8 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 	if cfg.WAFCounterRetention != 30*time.Minute {
 		t.Fatalf("expected waf counter retention 30m, got %s", cfg.WAFCounterRetention)
+	}
+	if cfg.PprofListen != "127.0.0.1:6060" {
+		t.Fatalf("expected pprof listen 127.0.0.1:6060, got %q", cfg.PprofListen)
 	}
 }

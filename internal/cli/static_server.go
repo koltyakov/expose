@@ -896,7 +896,7 @@ func markdownDelimiterCanOpen(s string, idx int, delim string) bool {
 	if !hasNext || unicode.IsSpace(next) {
 		return false
 	}
-	return !(hasPrev && isMarkdownWordRune(prev) && isMarkdownWordRune(next))
+	return !hasPrev || !isMarkdownWordRune(prev) || !isMarkdownWordRune(next)
 }
 
 func markdownDelimiterCanClose(s string, idx int, delim string) bool {
@@ -908,7 +908,7 @@ func markdownDelimiterCanClose(s string, idx int, delim string) bool {
 	if !hasPrev || unicode.IsSpace(prev) {
 		return false
 	}
-	return !(hasNext && isMarkdownWordRune(prev) && isMarkdownWordRune(next))
+	return !hasNext || !isMarkdownWordRune(prev) || !isMarkdownWordRune(next)
 }
 
 func markdownPrevRune(s string, idx int) (rune, bool) {

@@ -17,6 +17,7 @@ import (
 	"github.com/koltyakov/expose/internal/client"
 	"github.com/koltyakov/expose/internal/client/settings"
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/debughttp"
 	ilog "github.com/koltyakov/expose/internal/log"
 	"github.com/koltyakov/expose/internal/selfupdate"
 	"github.com/koltyakov/expose/internal/versionutil"
@@ -119,6 +120,7 @@ func runStatic(ctx context.Context, args []string) int {
 		Name:                  name,
 		Timeout:               30 * time.Second,
 		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
 	}
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
@@ -299,6 +301,10 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 		logger = ilog.New("info")
 	}
 	c.SetLogger(logger)
+	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "client"); err != nil {
+		fmt.Fprintln(os.Stderr, "client config error: pprof:", err)
+		return 2
+	}
 
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
 	if isAutoUpdateEnabled() {

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/debughttp"
 	ilog "github.com/koltyakov/expose/internal/log"
 	"github.com/koltyakov/expose/internal/server"
 	"github.com/koltyakov/expose/internal/store/sqlite"
@@ -35,6 +36,10 @@ func runServer(ctx context.Context, args []string) int {
 		return 2
 	}
 	logger := ilog.New(cfg.LogLevel)
+	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "server"); err != nil {
+		fmt.Fprintln(os.Stderr, "server config error: pprof:", err)
+		return 2
+	}
 
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
 	if isAutoUpdateEnabled() {

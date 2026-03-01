@@ -29,6 +29,8 @@ func Run(args []string) int {
 		return runStatic(ctx, args[1:])
 	case "up":
 		return runUp(ctx, args[1:])
+	case "soak":
+		return runSoak(ctx, args[1:])
 	case "tunnel":
 		return runTunnel(ctx, args[1:])
 	case "client":
@@ -59,6 +61,8 @@ func runClientCommand(ctx context.Context, args []string) int {
 			return runHTTP(ctx, args[1:])
 		case "static":
 			return runStatic(ctx, args[1:])
+		case "soak":
+			return runSoak(ctx, args[1:])
 		case "tunnel":
 			return runTunnel(ctx, args[1:])
 		}

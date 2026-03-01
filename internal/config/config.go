@@ -25,15 +25,18 @@ type ClientConfig struct {
 	ProtectMode           string
 	LocalPort             int
 	Name                  string
+	RegistrationMode      string
 	Timeout               time.Duration
 	PingInterval          time.Duration
 	MaxConcurrentForwards int
+	PprofListen           string
 }
 
 // ServerConfig holds all settings required by the expose HTTPS server.
 type ServerConfig struct {
 	ListenHTTPS            string
 	ListenHTTP             string
+	PprofListen            string
 	DBPath                 string
 	DBMaxOpenConns         int
 	DBMaxIdleConns         int
@@ -89,6 +92,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		Timeout:               30 * time.Second,
 		PingInterval:          defaultClientPingInterval,
 		MaxConcurrentForwards: envIntOrDefault("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		PprofListen:           strings.TrimSpace(envOrDefault("EXPOSE_PPROF_LISTEN", "")),
 	}
 
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
@@ -97,6 +101,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs.StringVar(&cfg.ProtectMode, "protect", cfg.ProtectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
+	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -104,6 +109,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.User = trimOrDefault(cfg.User, "admin")
 	cfg.Password = strings.TrimSpace(cfg.Password)
+	cfg.PprofListen = strings.TrimSpace(cfg.PprofListen)
 	mode, err := access.NormalizeMode(cfg.ProtectMode)
 	if err != nil {
 		return cfg, err
@@ -154,6 +160,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	cfg := ServerConfig{
 		ListenHTTPS:            envOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
 		ListenHTTP:             envOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
+		PprofListen:            strings.TrimSpace(envOrDefault("EXPOSE_PPROF_LISTEN", "")),
 		DBPath:                 envOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
 		DBMaxOpenConns:         envIntOrDefault("EXPOSE_DB_MAX_OPEN_CONNS", 10),
 		DBMaxIdleConns:         envIntOrDefault("EXPOSE_DB_MAX_IDLE_CONNS", 10),
@@ -180,6 +187,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.StringVar(&cfg.ListenHTTPS, "listen", cfg.ListenHTTPS, "HTTPS listen address")
 	fs.StringVar(&cfg.ListenHTTP, "http-challenge-listen", cfg.ListenHTTP, "HTTP-01 challenge listen address")
+	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
 	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "SQLite max open connections")
 	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "SQLite max idle connections")
@@ -196,6 +204,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 
 	cfg.ListenHTTPS = normalizeListenAddr(cfg.ListenHTTPS)
 	cfg.ListenHTTP = normalizeListenAddr(cfg.ListenHTTP)
+	cfg.PprofListen = normalizeListenAddr(cfg.PprofListen)
 
 	cfg.BaseDomain = normalizeDomainHost(cfg.BaseDomain)
 	if cfg.BaseDomain == "" {

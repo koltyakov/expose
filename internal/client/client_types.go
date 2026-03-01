@@ -16,6 +16,37 @@ import (
 type registerRequest = domain.RegisterRequest
 type registerResponse = domain.RegisterResponse
 
+// TunnelReadyEvent is emitted when a client successfully registers and has an
+// active tunnel session ready.
+type TunnelReadyEvent struct {
+	TunnelID      string
+	PublicURL     string
+	ServerVersion string
+	ServerTLSMode string
+	WAFEnabled    bool
+}
+
+// RegisterFailureEvent is emitted when tunnel registration fails.
+type RegisterFailureEvent struct {
+	Err       error
+	RetryIn   time.Duration
+	WillRetry bool
+}
+
+// SessionDisconnectEvent is emitted when an active tunnel session drops and
+// the client will attempt to reconnect.
+type SessionDisconnectEvent struct {
+	Err error
+}
+
+// LifecycleHooks allows callers to observe client lifecycle transitions
+// without scraping log output.
+type LifecycleHooks struct {
+	OnTunnelReady     func(TunnelReadyEvent)
+	OnRegisterFailure func(RegisterFailureEvent)
+	OnSessionDrop     func(SessionDisconnectEvent)
+}
+
 // ErrAutoUpdated is returned from [Client.Run] when the binary was replaced
 // by the auto-updater and the caller should restart the process.
 var ErrAutoUpdated = errors.New("binary updated; restart required")
@@ -29,6 +60,7 @@ type Client struct {
 	apiClient  *http.Client // for registration API calls
 	fwdClient  *http.Client // for local upstream forwarding
 	autoUpdate bool         // when true, periodically self-update and restart
+	hooks      LifecycleHooks
 }
 
 // SetDisplay configures the interactive terminal display.
@@ -54,6 +86,11 @@ func (c *Client) SetVersion(v string) {
 // method returns [ErrAutoUpdated].
 func (c *Client) SetAutoUpdate(enabled bool) {
 	c.autoUpdate = enabled
+}
+
+// SetLifecycleHooks configures optional callbacks for tunnel lifecycle events.
+func (c *Client) SetLifecycleHooks(hooks LifecycleHooks) {
+	c.hooks = hooks
 }
 
 const (

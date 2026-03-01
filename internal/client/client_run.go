@@ -28,6 +28,14 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		reg, err := c.register(ctx)
 		if err != nil {
+			willRetry := !isNonRetriableRegisterError(err)
+			if hook := c.hooks.OnRegisterFailure; hook != nil {
+				hook(RegisterFailureEvent{
+					Err:       err,
+					RetryIn:   backoff,
+					WillRetry: willRetry,
+				})
+			}
 			if isNonRetriableRegisterError(err) {
 				return err
 			}
@@ -80,6 +88,15 @@ func (c *Client) Run(ctx context.Context) error {
 				c.log.Info("versions", "client", c.version, "server", versionutil.EnsureVPrefix(reg.ServerVersion), "waf_enabled", reg.WAFEnabled)
 			}
 		}
+		if hook := c.hooks.OnTunnelReady; hook != nil {
+			hook(TunnelReadyEvent{
+				TunnelID:      reg.TunnelID,
+				PublicURL:     reg.PublicURL,
+				ServerVersion: reg.ServerVersion,
+				ServerTLSMode: reg.ServerTLSMode,
+				WAFEnabled:    reg.WAFEnabled,
+			})
+		}
 
 		// Check for updates in the background (non-blocking).
 		if !isNonReleaseVersion(c.version) {
@@ -106,6 +123,9 @@ func (c *Client) Run(ctx context.Context) error {
 		err = c.runSession(ctx, localBase, reg)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if hook := c.hooks.OnSessionDrop; hook != nil {
+			hook(SessionDisconnectEvent{Err: err})
 		}
 		if c.display != nil {
 			reason := "unknown"

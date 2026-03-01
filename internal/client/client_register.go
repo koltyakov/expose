@@ -58,8 +58,11 @@ func (c *Client) openLocalWebSocket(ctx context.Context, base *url.URL, req *tun
 }
 
 func (c *Client) register(ctx context.Context) (registerResponse, error) {
-	mode := "temporary"
-	if c.cfg.Name != "" {
+	mode := strings.TrimSpace(c.cfg.RegistrationMode)
+	if mode == "" {
+		mode = "temporary"
+	}
+	if c.cfg.Name != "" && mode == "temporary" && strings.TrimSpace(c.cfg.RegistrationMode) == "" {
 		mode = "permanent"
 	}
 	hostname, _ := os.Hostname()

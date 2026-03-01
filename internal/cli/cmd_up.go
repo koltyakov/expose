@@ -17,6 +17,7 @@ import (
 	"github.com/koltyakov/expose/internal/client"
 	"github.com/koltyakov/expose/internal/client/settings"
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/debughttp"
 	ilog "github.com/koltyakov/expose/internal/log"
 )
 
@@ -104,6 +105,10 @@ func runUpFromFile(ctx context.Context, path string) int {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if err := debughttp.StartPprofServer(runCtx, strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")), ilog.New("info"), "client"); err != nil {
+		fmt.Fprintln(os.Stderr, "up config error: pprof:", err)
+		return 2
+	}
 
 	interactiveDashboard := isInteractiveOutput()
 	var ui *upDashboard

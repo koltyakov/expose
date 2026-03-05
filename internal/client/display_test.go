@@ -802,6 +802,39 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	}
 }
 
+func TestDisplaySessionUptimePreservedAcrossMicroReconnect(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	now = now.Add(10 * time.Minute)
+	d.ShowReconnecting("server updating")
+
+	now = now.Add(4 * time.Second)
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	now = now.Add(1 * time.Minute)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+
+	if !strings.Contains(out, "online") {
+		t.Fatalf("expected online status, got: %s", out)
+	}
+	if !strings.Contains(out, "for 11 minutes") {
+		t.Fatalf("expected micro reconnect to preserve online duration, got: %s", out)
+	}
+	if strings.Contains(out, "for 1 minute") {
+		t.Fatalf("did not expect micro reconnect to reset online duration, got: %s", out)
+	}
+}
+
 func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)

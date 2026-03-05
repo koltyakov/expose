@@ -48,7 +48,11 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string,
 	now := d.now()
 	if d.sessionStart.IsZero() {
 		d.sessionStart = now
-	} else {
+	}
+	if d.onlineSince.IsZero() || !d.shouldPreserveOnlineSinceLocked(now) {
+		d.onlineSince = now
+	}
+	if !d.sessionStart.IsZero() && d.status != "" {
 		d.lastReconnect = now
 	}
 	d.setStatusLocked("online", now)
@@ -103,6 +107,13 @@ func (d *Display) ShowReconnecting(reason string) {
 	d.ensureRefreshLoopLocked()
 	d.setStatusLocked("reconnecting", d.now())
 	d.redraw()
+}
+
+func (d *Display) shouldPreserveOnlineSinceLocked(now time.Time) bool {
+	if d.status != "reconnecting" || d.statusChangedAt.IsZero() || d.onlineSince.IsZero() {
+		return false
+	}
+	return now.Sub(d.statusChangedAt) < displayMicroDisconnectMax
 }
 
 func (d *Display) ensureRefreshLoopLocked() {

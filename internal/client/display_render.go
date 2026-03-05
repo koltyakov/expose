@@ -45,6 +45,9 @@ func (d *Display) redraw() {
 		}
 		statusText := d.styled(statusColor, d.status)
 		statusSince := d.statusChangedAt
+		if d.status == "online" && !d.onlineSince.IsZero() {
+			statusSince = d.onlineSince
+		}
 		if statusSince.IsZero() {
 			statusSince = d.sessionStart
 		}

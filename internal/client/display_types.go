@@ -47,6 +47,7 @@ const (
 	displayLocalHealthTimeout  = 200 * time.Millisecond
 	displayLatencySampleMax    = 1024
 	displayAutoRefreshInterval = 5 * time.Second
+	displayMicroDisconnectMax  = 5 * time.Second
 	displayLockIcon            = "🔒"
 )
 
@@ -99,6 +100,7 @@ type Display struct {
 
 	// session timing
 	sessionStart    time.Time // when the first successful connection happened
+	onlineSince     time.Time // when the current logical online streak began
 	lastReconnect   time.Time // when the most recent reconnection happened (zero if none)
 	statusChangedAt time.Time // when the current status was set
 

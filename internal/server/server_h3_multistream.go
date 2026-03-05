@@ -23,6 +23,7 @@ type h3StreamPool struct {
 	ready     chan *http3.Stream
 	closed    chan struct{}
 	closeOnce sync.Once
+	enqueueMu sync.RWMutex
 }
 
 func newH3StreamPool(queueDepth int) *h3StreamPool {
@@ -39,19 +40,24 @@ func (p *h3StreamPool) enqueue(stream *http3.Stream) bool {
 	if p == nil || stream == nil {
 		return false
 	}
+	p.enqueueMu.RLock()
 	select {
 	case <-p.closed:
+		p.enqueueMu.RUnlock()
 		closeH3Stream(stream)
 		return false
 	default:
 	}
 	select {
 	case p.ready <- stream:
+		p.enqueueMu.RUnlock()
 		return true
 	case <-p.closed:
+		p.enqueueMu.RUnlock()
 		closeH3Stream(stream)
 		return false
 	default:
+		p.enqueueMu.RUnlock()
 		closeH3Stream(stream)
 		return false
 	}
@@ -87,8 +93,10 @@ func (p *h3StreamPool) close() {
 		return
 	}
 	p.closeOnce.Do(func() {
+		p.enqueueMu.Lock()
 		close(p.closed)
 		close(p.ready)
+		p.enqueueMu.Unlock()
 		for stream := range p.ready {
 			closeH3Stream(stream)
 		}

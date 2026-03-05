@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,9 +31,6 @@ func ReadStreamMessage(r io.Reader, maxPayloadBytes int64, dst *Message) error {
 
 	recordType := header[1]
 	payloadLen := int64(binary.BigEndian.Uint32(header[2:6]))
-	if payloadLen < 0 {
-		return errors.New("invalid stream payload length")
-	}
 	if maxPayloadBytes > 0 && payloadLen > maxPayloadBytes {
 		return fmt.Errorf("stream payload exceeds read limit: %d > %d", payloadLen, maxPayloadBytes)
 	}

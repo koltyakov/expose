@@ -127,9 +127,6 @@ func (s *Server) handleConnectH3Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionToken := strings.TrimSpace(r.Header.Get(h3SessionHeader))
-	if sessionToken == "" {
-		sessionToken = strings.TrimSpace(r.URL.Query().Get("session"))
-	}
 	sess := s.lookupSessionByH3Token(sessionToken)
 	if sess == nil || sess.closing.Load() || !sess.hasH3MultiStream() {
 		http.Error(w, "invalid h3 session", http.StatusUnauthorized)

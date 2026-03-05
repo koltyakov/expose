@@ -735,6 +735,24 @@ func TestSessionReplacementPreventsStaleEviction(t *testing.T) {
 	}
 }
 
+func TestHandleConnectH3StreamRejectsSessionTokenQueryParam(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	sess := &session{
+		h3StreamPool: newH3StreamPool(1),
+	}
+	srv.registerH3SessionToken("h3_query_token", sess)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/connect-h3/stream?session=h3_query_token", nil)
+	rr := httptest.NewRecorder()
+	srv.handleConnectH3Stream(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized for query-param session token, got %d", rr.Code)
+	}
+}
+
 func TestInjectForwardedFor(t *testing.T) {
 	headers := map[string][]string{
 		"X-Forwarded-For": {"1.2.3.4"},

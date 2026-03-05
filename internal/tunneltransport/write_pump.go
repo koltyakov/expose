@@ -36,6 +36,7 @@ type WritePump struct {
 	done        chan struct{}
 	closed      atomic.Bool
 	stopOnce    sync.Once
+	enqueueMu   sync.RWMutex
 	highTimeout time.Duration
 	lowTimeout  time.Duration
 }
@@ -100,6 +101,17 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	if p.closed.Load() {
 		return ErrWritePumpClosed
 	}
+	p.enqueueMu.RLock()
+	if p.closed.Load() {
+		p.enqueueMu.RUnlock()
+		return ErrWritePumpClosed
+	}
+	select {
+	case <-p.stop:
+		p.enqueueMu.RUnlock()
+		return ErrWritePumpClosed
+	default:
+	}
 
 	target := p.low
 	wait := p.lowTimeout
@@ -111,10 +123,10 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	defer timer.Stop()
 
 	select {
-	case <-p.stop:
-		return ErrWritePumpClosed
 	case target <- req:
+		p.enqueueMu.RUnlock()
 	case <-timer.C:
+		p.enqueueMu.RUnlock()
 		p.triggerBackpressure()
 		return ErrWritePumpBackpressure
 	}
@@ -172,7 +184,9 @@ func (p *WritePump) write(req writeRequest) error {
 
 func (p *WritePump) signalStop() {
 	p.stopOnce.Do(func() {
+		p.enqueueMu.Lock()
 		close(p.stop)
+		p.enqueueMu.Unlock()
 		if p.closeFn != nil {
 			p.closeFn()
 		}

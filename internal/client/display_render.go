@@ -64,6 +64,9 @@ func (d *Display) redraw() {
 		}
 		d.writeField(&b, "Session", statusText)
 	}
+	if !d.sessionStart.IsZero() {
+		d.writeField(&b, "Started", displayFormatStartedAt(d.sessionStart))
+	}
 	sv := d.serverVersion
 	if sv == "" {
 		sv = "--"
@@ -319,6 +322,10 @@ func displayFormatDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%.2fs", d.Seconds())
 	}
+}
+
+func displayFormatStartedAt(t time.Time) string {
+	return t.Format("2006-01-02 15:04:05 MST")
 }
 
 type displayLatencyPercentilesValues struct {

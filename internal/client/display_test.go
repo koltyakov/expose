@@ -47,6 +47,8 @@ func TestDisplayBannerColor(t *testing.T) {
 func TestDisplayTunnelInfo(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
+	now := time.Date(2026, time.March, 5, 16, 26, 54, 0, time.FixedZone("CST", -6*60*60))
+	d.nowFunc = func() time.Time { return now }
 	d.ShowTunnelInfo("https://myapp.example.com", "http://localhost:3000", "autocert", "tun_abc123", true, "ws")
 	out := buf.String()
 	if !strings.Contains(out, "online") {
@@ -78,6 +80,12 @@ func TestDisplayTunnelInfo(t *testing.T) {
 	}
 	if !strings.Contains(out, "Clients") {
 		t.Fatal("expected Clients counter")
+	}
+	if !strings.Contains(out, "Started") {
+		t.Fatal("expected Started field")
+	}
+	if !strings.Contains(out, "2026-03-05 16:26:54 CST") {
+		t.Fatal("expected local tunnel start timestamp")
 	}
 }
 
@@ -747,7 +755,7 @@ func TestDisplaySessionUptime(t *testing.T) {
 
 func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	t.Parallel()
-	now := time.Now()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
 	d, buf := newTestDisplay(false)
 	d.nowFunc = func() time.Time { return now }
 	d.ShowBanner("dev")
@@ -786,6 +794,12 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	if strings.Contains(out, "14 minutes") {
 		t.Fatal("expected no total session uptime in status line")
 	}
+	if !strings.Contains(out, "Started") {
+		t.Fatal("expected Started field")
+	}
+	if !strings.Contains(out, "2026-03-05 16:00:00 CST") {
+		t.Fatal("expected Started to remain at original session start")
+	}
 }
 
 func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
@@ -795,6 +809,9 @@ func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
 	out := buf.String()
 	if strings.Contains(out, "online for ") || strings.Contains(out, "reconnecting for ") {
 		t.Fatal("expected no status duration before first connection")
+	}
+	if strings.Contains(out, "Started") {
+		t.Fatal("expected no Started field before first connection")
 	}
 }
 

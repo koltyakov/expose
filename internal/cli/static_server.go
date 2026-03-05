@@ -24,6 +24,9 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	xhtml "golang.org/x/net/html"
+	xatom "golang.org/x/net/html/atom"
 )
 
 const staticServerShutdownTimeout = 5 * time.Second
@@ -677,6 +680,14 @@ func renderMarkdownDocument(src, requestPath string) (string, string, bool) {
 			codeFence = append(codeFence, line)
 			continue
 		}
+		if renderedHTML, consumed, ok := renderAllowedMarkdownRawHTMLBlock(lines, i, requestPath); ok {
+			flushParagraph()
+			flushList()
+			flushQuote()
+			out.WriteString(renderedHTML)
+			i += consumed - 1
+			continue
+		}
 		if trimmed == "" {
 			flushParagraph()
 			flushList()
@@ -773,6 +784,33 @@ func parseMarkdownHeading(line string) (int, string, bool) {
 }
 
 var orderedListPattern = regexp.MustCompile(`^\d+\.\s+(.+)$`)
+var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
+var markdownLinkPattern = regexp.MustCompile(`\[(.*?)\]\((.*?)\)`)
+var markdownImageDimensionPattern = regexp.MustCompile(`^[1-9]\d{0,3}$`)
+var markdownAllowedRawHTMLTags = map[string]struct{}{
+	"a": {}, "abbr": {}, "b": {}, "blockquote": {}, "br": {}, "code": {}, "del": {}, "details": {},
+	"div": {}, "em": {}, "i": {}, "img": {}, "kbd": {}, "li": {}, "ol": {}, "p": {}, "pre": {},
+	"s": {}, "small": {}, "span": {}, "strong": {}, "sub": {}, "summary": {}, "sup": {},
+	"table": {}, "tbody": {}, "td": {}, "th": {}, "thead": {}, "tr": {}, "ul": {},
+}
+var markdownAllowedRawHTMLGlobalAttrs = map[string]struct{}{
+	"align": {}, "title": {},
+}
+var markdownAllowedRawHTMLTagAttrs = map[string]map[string]struct{}{
+	"a":       {"href": {}},
+	"details": {"open": {}},
+	"img":     {"src": {}, "alt": {}, "width": {}, "height": {}},
+	"ol":      {"start": {}},
+	"td":      {"colspan": {}, "rowspan": {}, "align": {}},
+	"th":      {"colspan": {}, "rowspan": {}, "align": {}},
+}
+var markdownAllowedAlignValues = map[string]struct{}{
+	"left": {}, "center": {}, "right": {}, "justify": {},
+}
+var markdownRawHTMLVoidTags = map[string]struct{}{
+	"area": {}, "base": {}, "br": {}, "col": {}, "embed": {}, "hr": {}, "img": {}, "input": {},
+	"link": {}, "meta": {}, "param": {}, "source": {}, "track": {}, "wbr": {},
+}
 
 func parseMarkdownListItem(line string) (string, string, bool) {
 	for _, prefix := range []string{"- ", "* ", "+ "} {
@@ -786,21 +824,321 @@ func parseMarkdownListItem(line string) (string, string, bool) {
 	return "", "", false
 }
 
+func renderAllowedMarkdownRawHTMLBlock(lines []string, start int, requestPath string) (string, int, bool) {
+	if start < 0 || start >= len(lines) {
+		return "", 0, false
+	}
+
+	firstLine := strings.TrimSpace(strings.TrimRight(lines[start], " \t"))
+	if firstLine == "" || !markdownLooksLikeRawHTMLStart(firstLine) {
+		return "", 0, false
+	}
+
+	var blockLines []string
+	for end := start; end < len(lines); end++ {
+		blockLines = append(blockLines, strings.TrimRight(lines[end], " \t"))
+		candidate := strings.TrimSpace(strings.Join(blockLines, "\n"))
+		if candidate == "" || !markdownRawHTMLFragmentComplete(candidate) {
+			continue
+		}
+		rendered, ok := sanitizeMarkdownRawHTMLFragment(candidate, requestPath)
+		if !ok {
+			return "", 0, false
+		}
+		return rendered + "\n", end - start + 1, true
+	}
+
+	return "", 0, false
+}
+
+func sanitizeMarkdownRawHTMLFragment(fragment, requestPath string) (string, bool) {
+	fragment = strings.TrimSpace(fragment)
+	if fragment == "" || !strings.HasPrefix(fragment, "<") || !strings.HasSuffix(fragment, ">") {
+		return "", false
+	}
+
+	nodes, err := xhtml.ParseFragment(strings.NewReader(fragment), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: xatom.Div})
+	if err != nil || len(nodes) == 0 {
+		return "", false
+	}
+
+	var out strings.Builder
+	hasElement := false
+	for _, n := range nodes {
+		clean, ok := sanitizeMarkdownRawHTMLNode(n, requestPath)
+		if !ok {
+			return "", false
+		}
+		if clean == nil {
+			continue
+		}
+		if clean.Type == xhtml.ElementNode {
+			hasElement = true
+		}
+		if err := xhtml.Render(&out, clean); err != nil {
+			return "", false
+		}
+	}
+	if !hasElement {
+		return "", false
+	}
+	return out.String(), true
+}
+
+func markdownRawHTMLFragmentComplete(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !markdownLooksLikeRawHTMLStart(raw) || !strings.HasSuffix(raw, ">") {
+		return false
+	}
+
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(raw))
+	stack := make([]string, 0, 8)
+	hasElement := false
+
+	for {
+		switch tokenizer.Next() {
+		case xhtml.ErrorToken:
+			return errors.Is(tokenizer.Err(), io.EOF) && hasElement && len(stack) == 0
+		case xhtml.StartTagToken:
+			token := tokenizer.Token()
+			tag := strings.ToLower(strings.TrimSpace(token.Data))
+			if tag == "" {
+				continue
+			}
+			hasElement = true
+			if _, ok := markdownRawHTMLVoidTags[tag]; ok {
+				continue
+			}
+			stack = append(stack, tag)
+		case xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			if strings.TrimSpace(token.Data) != "" {
+				hasElement = true
+			}
+		case xhtml.EndTagToken:
+			token := tokenizer.Token()
+			tag := strings.ToLower(strings.TrimSpace(token.Data))
+			if tag == "" {
+				continue
+			}
+			hasElement = true
+			if _, ok := markdownRawHTMLVoidTags[tag]; ok {
+				continue
+			}
+			if len(stack) == 0 || stack[len(stack)-1] != tag {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+func markdownLooksLikeRawHTMLStart(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '<' {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[1:])
+	return unicode.IsLetter(r) || r == '/' || r == '!' || r == '?'
+}
+
+func sanitizeMarkdownRawHTMLNode(n *xhtml.Node, requestPath string) (*xhtml.Node, bool) {
+	if n == nil {
+		return nil, true
+	}
+	switch n.Type {
+	case xhtml.TextNode:
+		return &xhtml.Node{Type: xhtml.TextNode, Data: n.Data}, true
+	case xhtml.CommentNode:
+		return nil, true
+	case xhtml.ElementNode:
+		tag := strings.ToLower(strings.TrimSpace(n.Data))
+		if _, ok := markdownAllowedRawHTMLTags[tag]; !ok {
+			return nil, false
+		}
+		attrs, ok := sanitizeMarkdownRawHTMLAttrs(tag, n.Attr, requestPath)
+		if !ok {
+			return nil, false
+		}
+		clean := &xhtml.Node{Type: xhtml.ElementNode, Data: tag, Attr: attrs}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			cleanChild, ok := sanitizeMarkdownRawHTMLNode(child, requestPath)
+			if !ok {
+				return nil, false
+			}
+			if cleanChild != nil {
+				clean.AppendChild(cleanChild)
+			}
+		}
+		return clean, true
+	default:
+		return nil, true
+	}
+}
+
+func sanitizeMarkdownRawHTMLAttrs(tag string, attrs []xhtml.Attribute, requestPath string) ([]xhtml.Attribute, bool) {
+	if len(attrs) == 0 {
+		return nil, true
+	}
+
+	allowedTagAttrs := markdownAllowedRawHTMLTagAttrs[tag]
+	seen := make(map[string]struct{}, len(attrs))
+	out := make([]xhtml.Attribute, 0, len(attrs))
+	for _, attr := range attrs {
+		if attr.Namespace != "" {
+			return nil, false
+		}
+		key := strings.ToLower(strings.TrimSpace(attr.Key))
+		if key == "" {
+			return nil, false
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		if _, ok := markdownAllowedRawHTMLGlobalAttrs[key]; !ok {
+			if _, ok := allowedTagAttrs[key]; !ok {
+				return nil, false
+			}
+		}
+
+		value := strings.TrimSpace(attr.Val)
+		switch key {
+		case "href", "src":
+			v, ok := sanitizeMarkdownRawHTMLURLAttr(key, value, requestPath)
+			if !ok {
+				return nil, false
+			}
+			value = v
+		case "width", "height", "colspan", "rowspan", "start":
+			if !markdownImageDimensionPattern.MatchString(value) {
+				return nil, false
+			}
+		case "align":
+			value = strings.ToLower(value)
+			if _, ok := markdownAllowedAlignValues[value]; !ok {
+				return nil, false
+			}
+		case "open":
+			if tag != "details" {
+				return nil, false
+			}
+			if value != "" && !strings.EqualFold(value, "open") {
+				return nil, false
+			}
+			value = ""
+		}
+
+		out = append(out, xhtml.Attribute{Key: key, Val: value})
+		seen[key] = struct{}{}
+	}
+	return out, true
+}
+
+func sanitizeMarkdownRawHTMLURLAttr(key, raw, requestPath string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return "", false
+	}
+	if u.Scheme != "" {
+		scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+		switch scheme {
+		case "http", "https":
+			return raw, true
+		case "mailto":
+			if key == "href" {
+				return raw, true
+			}
+			return "", false
+		case "data":
+			if key == "src" {
+				return raw, true
+			}
+			return "", false
+		default:
+			return "", false
+		}
+	}
+	return resolveMarkdownURL(requestPath, raw), true
+}
+
 func renderMarkdownInline(s, requestPath string) string {
 	s = html.EscapeString(strings.TrimSpace(s))
 	s, codeSpans := extractInlineCodeSpans(s)
+	s, rawHTMLSpans := extractInlineRawHTMLSpans(s, requestPath)
 	s = renderMarkdownImages(s, requestPath)
 	s = renderMarkdownLinks(s, requestPath)
 	s = renderMarkdownDelimited(s, "**", "<strong>", "</strong>")
 	s = renderMarkdownDelimited(s, "__", "<strong>", "</strong>")
 	s = renderMarkdownDelimited(s, "*", "<em>", "</em>")
 	s = renderMarkdownDelimited(s, "_", "<em>", "</em>")
+	s = restoreInlineRawHTMLSpans(s, rawHTMLSpans)
 	s = restoreInlineCodeSpans(s, codeSpans)
 	return s
 }
 
-var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
-var markdownLinkPattern = regexp.MustCompile(`\[(.*?)\]\((.*?)\)`)
+func extractInlineRawHTMLSpans(s, requestPath string) (string, []string) {
+	var spans []string
+	var out strings.Builder
+
+	cursor := 0
+	for cursor < len(s) {
+		startRel := strings.Index(s[cursor:], "&lt;")
+		if startRel < 0 {
+			out.WriteString(s[cursor:])
+			break
+		}
+		start := cursor + startRel
+		out.WriteString(s[cursor:start])
+
+		bestEnd := -1
+		bestHTML := ""
+		searchFrom := start
+		for searchFrom < len(s) {
+			endRel := strings.Index(s[searchFrom:], "&gt;")
+			if endRel < 0 {
+				break
+			}
+			end := searchFrom + endRel + len("&gt;")
+			candidateRaw := html.UnescapeString(s[start:end])
+			if strings.Contains(candidateRaw, "\n") || strings.Contains(candidateRaw, "\r") {
+				break
+			}
+			if markdownRawHTMLFragmentComplete(candidateRaw) {
+				clean, ok := sanitizeMarkdownRawHTMLFragment(candidateRaw, requestPath)
+				if ok {
+					bestEnd = end
+					bestHTML = clean
+				}
+			}
+			searchFrom = end
+		}
+
+		if bestEnd > start {
+			token := fmt.Sprintf("%%RAWHTML%d%%", len(spans))
+			spans = append(spans, bestHTML)
+			out.WriteString(token)
+			cursor = bestEnd
+			continue
+		}
+
+		out.WriteString("&lt;")
+		cursor = start + len("&lt;")
+	}
+
+	return out.String(), spans
+}
+
+func restoreInlineRawHTMLSpans(s string, spans []string) string {
+	for i, span := range spans {
+		token := fmt.Sprintf("%%RAWHTML%d%%", i)
+		s = strings.ReplaceAll(s, token, span)
+	}
+	return s
+}
 
 func renderMarkdownImages(s, requestPath string) string {
 	return markdownImagePattern.ReplaceAllStringFunc(s, func(match string) string {

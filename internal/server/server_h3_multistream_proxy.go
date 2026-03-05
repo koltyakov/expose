@@ -69,6 +69,16 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 	resp := msg.Response
+	if shouldServeFallbackFavicon(r, resp.Status) {
+		if resp.Streamed {
+			// Streamed 404 responses may still have unread body frames.
+			// Close this worker stream instead of reusing it.
+			requeue = false
+		}
+		writeFallbackFavicon(w, r)
+		s.queueDomainTouch(route.Domain.ID)
+		return
+	}
 	respHeaders := tunnelproto.CloneHeaders(resp.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 	for k, vals := range respHeaders {

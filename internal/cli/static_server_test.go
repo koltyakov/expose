@@ -394,6 +394,112 @@ func TestStaticHandlerRendersMarkdownAsHTML(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerRendersAllowedCenteredImageHTMLBlock(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "# Guide\n\n<p align=\"center\"><img src=\"./assets/logo.png\" alt=\"expose logo\" width=\"220\" /></p>\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<p align="center"><img src="/assets/logo.png" alt="expose logo" width="220"`) {
+		t.Fatalf("expected centered raw html image block rendered, got %q", body)
+	}
+}
+
+func TestStaticHandlerRendersAllowedCenteredImageMultilineHTMLBlock(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "# Guide\n\n<p align=\"center\">\n  <img src=\"./assets/logo.png\" alt=\"expose logo\" width=\"220\" />\n</p>\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<p align="center">`) {
+		t.Fatalf("expected multiline centered paragraph rendered, got %q", body)
+	}
+	if !strings.Contains(body, `<img src="/assets/logo.png" alt="expose logo" width="220"`) {
+		t.Fatalf("expected multiline centered raw html image block rendered, got %q", body)
+	}
+}
+
+func TestStaticHandlerRejectsUnsafeCenteredImageHTMLBlockAttrs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "# Guide\n\n<p align=\"center\"><img src=\"./assets/logo.png\" onerror=\"alert(1)\" /></p>\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "<p align=\"center\"><img") {
+		t.Fatalf("did not expect unsafe raw html block to be rendered, got %q", body)
+	}
+	if !strings.Contains(body, "&lt;p align=&#34;center&#34;&gt;&lt;img src=&#34;./assets/logo.png&#34; onerror=&#34;alert(1)&#34; /&gt;&lt;/p&gt;") {
+		t.Fatalf("expected unsafe block to remain escaped text, got %q", body)
+	}
+}
+
+func TestStaticHandlerRendersAllowedRawHTMLDetailsBlock(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "# Guide\n\n<details><summary>More</summary><p>Hidden content</p></details>\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<details><summary>More</summary><p>Hidden content</p></details>") {
+		t.Fatalf("expected allowed details html block rendered, got %q", body)
+	}
+}
+
+func TestStaticHandlerRendersAllowedInlineRawHTML(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "Press <kbd>Ctrl</kbd> + <kbd>C</kbd>. See <a href=\"./docs/setup.md\">setup</a>.\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<p>Press <kbd>Ctrl</kbd> + <kbd>C</kbd>. See <a href=\"/docs/setup.md\">setup</a>.</p>") {
+		t.Fatalf("expected inline raw html rendered and href resolved, got %q", body)
+	}
+}
+
 func TestStaticHandlerResolvesNestedMarkdownRelativeLinksAndImages(t *testing.T) {
 	t.Parallel()
 

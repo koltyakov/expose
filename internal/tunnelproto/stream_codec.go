@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 const (
@@ -37,8 +38,11 @@ func ReadStreamMessage(r io.Reader, maxPayloadBytes int64, dst *Message) error {
 	if maxPayloadBytes > 0 && payloadLen > maxPayloadBytes {
 		return fmt.Errorf("stream payload exceeds read limit: %d > %d", payloadLen, maxPayloadBytes)
 	}
+	if payloadLen > int64(math.MaxInt) {
+		return fmt.Errorf("stream payload exceeds int limit: %d > %d", payloadLen, math.MaxInt)
+	}
 
-	payload := make([]byte, payloadLen)
+	payload := make([]byte, int(payloadLen))
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return err
 	}

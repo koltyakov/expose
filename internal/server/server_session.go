@@ -21,6 +21,12 @@ import (
 
 type http3ConnContextKey struct{}
 
+type sessionActivateOptions struct {
+	transportName string
+	h3Pool        *h3StreamPool
+	h3AuthToken   string
+}
+
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tunnelID, ok := s.consumeConnectToken(w, r)
 	if !ok {
@@ -50,7 +56,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("failed to mark tunnel connected", "tunnel_id", tunnelID, "err", err)
 		return
 	}
-	s.activateSession(tunnelID, conn, transport, writer)
+	s.activateSession(tunnelID, conn, transport, writer, sessionActivateOptions{})
 }
 
 func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +84,18 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wantMultiStream := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Expose-H3-Mode")), "multistream")
+	var opts sessionActivateOptions
+	if wantMultiStream {
+		sessionToken, err := newH3SessionToken()
+		if err != nil {
+			http.Error(w, "failed to establish h3 session", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set(h3SessionHeader, sessionToken)
+		opts.h3Pool = newH3StreamPool(h3WorkerQueueDepth)
+		opts.h3AuthToken = sessionToken
+	}
 	w.WriteHeader(http.StatusOK)
 	stream := httpStreamer.HTTPStream()
 	var conn *quic.Conn
@@ -99,7 +117,36 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 	writer := tunneltransport.NewStreamWritePump(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() {
 		_ = closeFn()
 	})
-	s.activateSession(tunnelID, nil, transport, writer)
+	opts.transportName = "quic"
+	s.activateSession(tunnelID, nil, transport, writer, opts)
+}
+
+func (s *Server) handleConnectH3Stream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionToken := strings.TrimSpace(r.Header.Get(h3SessionHeader))
+	if sessionToken == "" {
+		sessionToken = strings.TrimSpace(r.URL.Query().Get("session"))
+	}
+	sess := s.lookupSessionByH3Token(sessionToken)
+	if sess == nil || sess.closing.Load() || !sess.hasH3MultiStream() {
+		http.Error(w, "invalid h3 session", http.StatusUnauthorized)
+		return
+	}
+
+	httpStreamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		http.Error(w, "http3 stream takeover unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	stream := httpStreamer.HTTPStream()
+	if !sess.addH3Worker(stream) {
+		closeH3Stream(stream)
+		return
+	}
 }
 
 func (s *Server) consumeConnectToken(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -116,17 +163,32 @@ func (s *Server) consumeConnectToken(w http.ResponseWriter, r *http.Request) (st
 	return tunnelID, true
 }
 
-func (s *Server) activateSession(tunnelID string, conn *websocket.Conn, transport tunneltransport.Transport, writer *tunneltransport.WritePump) {
+func (s *Server) activateSession(
+	tunnelID string,
+	conn *websocket.Conn,
+	transport tunneltransport.Transport,
+	writer *tunneltransport.WritePump,
+	opts sessionActivateOptions,
+) {
 	s.routes.deleteByTunnelID(tunnelID)
 
+	transportName := tunneltransport.NameOf(transport)
+	if strings.TrimSpace(opts.transportName) != "" {
+		transportName = strings.TrimSpace(opts.transportName)
+	}
 	sess := &session{
 		tunnelID:      tunnelID,
 		conn:          conn,
 		transport:     transport,
 		writer:        writer,
-		transportName: tunneltransport.NameOf(transport),
+		transportName: transportName,
+		h3StreamPool:  opts.h3Pool,
+		h3AuthToken:   strings.TrimSpace(opts.h3AuthToken),
 		pending:       make(map[string]chan tunnelproto.Message),
 		wsPending:     make(map[string]chan tunnelproto.Message),
+	}
+	if sess.h3AuthToken != "" {
+		s.registerH3SessionToken(sess.h3AuthToken, sess)
 	}
 	wsReadLimit := max(s.cfg.MaxBodyBytes*2, minWSReadLimit)
 	sess.transport.SetReadLimit(wsReadLimit)
@@ -134,6 +196,10 @@ func (s *Server) activateSession(tunnelID string, conn *websocket.Conn, transpor
 	prev := s.replaceSession(tunnelID, sess)
 	if prev != nil && prev != sess {
 		s.log.Warn("replacing existing tunnel session", "tunnel_id", tunnelID, "transport", prev.transportName)
+		if prev.h3AuthToken != "" {
+			s.unregisterH3SessionToken(prev.h3AuthToken, prev)
+		}
+		prev.closeH3StreamPool()
 		if prev.transport != nil {
 			_ = prev.transport.Close()
 		}
@@ -157,6 +223,10 @@ func (s *Server) readLoop(sess *session) {
 		if sess.writer != nil {
 			sess.writer.Close()
 		}
+		if sess.h3AuthToken != "" {
+			s.unregisterH3SessionToken(sess.h3AuthToken, sess)
+		}
+		sess.closeH3StreamPool()
 		sess.closePending()
 		sess.closeWSPending()
 		if s.removeSessionIfCurrent(sess) {

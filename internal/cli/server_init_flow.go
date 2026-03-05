@@ -251,6 +251,9 @@ func runServerInitInteractive(ctx context.Context, in io.Reader, out io.Writer, 
 	if err := upsertEnvFile(envFile, entries); err != nil {
 		return fmt.Errorf("write %s: %w", envFile, err)
 	}
+	if err := removeEnvKeys(envFile, "EXPOSE_LISTEN_QUIC", "EXPOSE_QUIC_ADVERTISE_AUTHORITY"); err != nil {
+		return fmt.Errorf("write %s: %w", envFile, err)
+	}
 
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintf(out, "%s Saved %d settings to %s\n", ui.ok("✓"), len(entries), envFile)

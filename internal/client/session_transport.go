@@ -19,9 +19,15 @@ import (
 )
 
 type sessionTransportConn struct {
-	transport tunneltransport.Transport
-	writer    *tunneltransport.WritePump
-	name      string
+	transport      tunneltransport.Transport
+	writer         *tunneltransport.WritePump
+	name           string
+	protocol       string
+	h3Conn         *quic.Conn
+	h3ClientConn   *http3.ClientConn
+	h3Transport    *http3.Transport
+	h3WorkerURL    string
+	h3SessionToken string
 }
 
 type nonRetriableSessionError struct {
@@ -47,26 +53,47 @@ func isNonRetriableSessionError(err error) bool {
 	return errors.As(err, &target)
 }
 
+const (
+	tunnelCapabilityH3CompatV1    = "h3_compat"
+	tunnelCapabilityH3Multistream = "h3_multistream"
+)
+
 func (c *Client) connectSessionTransport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
 	switch c.cfg.Transport {
 	case "ws":
 		return c.connectWebSocketTransport(ctx, reg)
 	case "quic":
-		if strings.TrimSpace(reg.H3URL) == "" {
-			return sessionTransportConn{}, nonRetriableSessionError{err: errors.New("server does not advertise HTTP/3 tunnel support")}
+		var errs []error
+		if canUseH3MultiStream(reg) {
+			conn, err := c.connectHTTP3MultiStreamTransport(ctx, reg)
+			if err == nil {
+				return conn, nil
+			}
+			errs = append(errs, fmt.Errorf("http3 multistream tunnel connect failed: %w", err))
 		}
-		conn, err := c.connectHTTP3Transport(ctx, reg)
-		if err != nil {
-			return sessionTransportConn{}, nonRetriableSessionError{err: fmt.Errorf("http3 tunnel connect failed: %w", err)}
-		}
-		return conn, nil
-	default:
-		if strings.TrimSpace(reg.H3URL) != "" {
+		if canUseH3Compat(reg) {
 			conn, err := c.connectHTTP3Transport(ctx, reg)
 			if err == nil {
 				return conn, nil
 			}
-			c.reportTransportFallback(err)
+			errs = append(errs, fmt.Errorf("http3 tunnel connect failed: %w", err))
+		}
+		if !canUseH3MultiStream(reg) && !canUseH3Compat(reg) {
+			return sessionTransportConn{}, nonRetriableSessionError{err: errors.New("server does not advertise HTTP/3 tunnel support")}
+		}
+		return sessionTransportConn{}, nonRetriableSessionError{err: errors.Join(errs...)}
+	default:
+		if canUseH3MultiStream(reg) {
+			conn, err := c.connectHTTP3MultiStreamTransport(ctx, reg)
+			if err == nil {
+				return conn, nil
+			}
+		}
+		if canUseH3Compat(reg) {
+			conn, err := c.connectHTTP3Transport(ctx, reg)
+			if err == nil {
+				return conn, nil
+			}
 		}
 		return c.connectWebSocketTransport(ctx, reg)
 	}
@@ -85,6 +112,7 @@ func (c *Client) connectWebSocketTransport(ctx context.Context, reg registerResp
 		transport: tunneltransport.NewWebSocketTransport(conn),
 		writer:    tunneltransport.NewWebSocketWritePump(conn, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		name:      "ws",
+		protocol:  "ws_v1",
 	}, nil
 }
 
@@ -93,36 +121,30 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg registerResponse
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
 	}
-	addr := http3DialAuthority(target)
-	tlsConf := &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{http3.NextProtoH3},
-		ServerName: target.Hostname(),
-	}
-	quicConn, err := quic.DialAddr(ctx, addr, tlsConf, nil)
+	quicConn, h3Transport, clientConn, err := openHTTP3ClientConnection(ctx, target)
 	if err != nil {
 		return sessionTransportConn{}, err
 	}
-	h3Transport := &http3.Transport{
-		TLSClientConfig: tlsConf,
-	}
-	clientConn := h3Transport.NewClientConn(quicConn)
 	stream, err := clientConn.OpenRequestStream(ctx)
 	if err != nil {
+		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), nil)
 	if err != nil {
+		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
 	if err := stream.SendRequestHeader(req); err != nil {
+		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
 	resp, err := stream.ReadResponse()
 	if err != nil {
+		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
@@ -132,6 +154,7 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg registerResponse
 			msg = strings.TrimSpace(string(body))
 		}
 		_ = resp.Body.Close()
+		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, fmt.Errorf("http3 connect rejected: %s", msg)
 	}
@@ -140,26 +163,112 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg registerResponse
 		stream.CancelRead(0)
 		stream.CancelWrite(0)
 		err := stream.Close()
+		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return err
 	}
 
 	return sessionTransportConn{
-		transport: tunneltransport.NewStreamTransport("quic", stream, closeFn),
-		writer:    tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() }),
-		name:      "quic",
+		transport:    tunneltransport.NewStreamTransport("quic", stream, closeFn),
+		writer:       tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() }),
+		name:         "quic",
+		protocol:     tunnelCapabilityH3CompatV1,
+		h3Conn:       quicConn,
+		h3Transport:  h3Transport,
+		h3ClientConn: clientConn,
 	}, nil
 }
 
-func (c *Client) reportTransportFallback(err error) {
-	msg := fmt.Sprintf("HTTP/3 tunnel connect failed (%s); falling back to WebSocket", shortenError(err))
-	if c.display != nil {
-		c.display.ShowInfo(msg)
-		return
+func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
+	target, err := url.Parse(strings.TrimSpace(reg.H3URL))
+	if err != nil {
+		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
 	}
-	if c.log != nil {
-		c.log.Warn("http3 tunnel connect failed; falling back to websocket", "err", err)
+	workerURL := h3WorkerURL(target)
+	quicConn, h3Transport, clientConn, err := openHTTP3ClientConnection(ctx, target)
+	if err != nil {
+		return sessionTransportConn{}, err
 	}
+	stream, err := clientConn.OpenRequestStream(ctx)
+	if err != nil {
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return sessionTransportConn{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), nil)
+	if err != nil {
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return sessionTransportConn{}, err
+	}
+	req.Header.Set("X-Expose-H3-Mode", "multistream")
+	if err := stream.SendRequestHeader(req); err != nil {
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return sessionTransportConn{}, err
+	}
+	resp, err := stream.ReadResponse()
+	if err != nil {
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return sessionTransportConn{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := resp.Status
+		if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && strings.TrimSpace(string(body)) != "" {
+			msg = strings.TrimSpace(string(body))
+		}
+		_ = resp.Body.Close()
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return sessionTransportConn{}, fmt.Errorf("http3 multistream connect rejected: %s", msg)
+	}
+	sessionToken := strings.TrimSpace(resp.Header.Get("X-Expose-H3-Session"))
+	if sessionToken == "" {
+		_ = resp.Body.Close()
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return sessionTransportConn{}, errors.New("server did not return h3 session token")
+	}
+
+	closeFn := func() error {
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
+		err := stream.Close()
+		_ = h3Transport.Close()
+		_ = quicConn.CloseWithError(0, "")
+		return err
+	}
+
+	return sessionTransportConn{
+		transport:      tunneltransport.NewStreamTransport("quic", stream, closeFn),
+		writer:         tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() }),
+		name:           "quic",
+		protocol:       tunnelCapabilityH3Multistream,
+		h3Conn:         quicConn,
+		h3Transport:    h3Transport,
+		h3ClientConn:   clientConn,
+		h3WorkerURL:    workerURL,
+		h3SessionToken: sessionToken,
+	}, nil
+}
+
+func openHTTP3ClientConnection(ctx context.Context, target *url.URL) (*quic.Conn, *http3.Transport, *http3.ClientConn, error) {
+	addr := http3DialAuthority(target)
+	tlsConf := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{http3.NextProtoH3},
+		ServerName: target.Hostname(),
+	}
+	quicConn, err := quic.DialAddr(ctx, addr, tlsConf, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	h3Transport := &http3.Transport{
+		TLSClientConfig: tlsConf,
+	}
+	clientConn := h3Transport.NewClientConn(quicConn)
+	return quicConn, h3Transport, clientConn, nil
 }
 
 func http3DialAuthority(u *url.URL) string {
@@ -175,4 +284,47 @@ func http3DialAuthority(u *url.URL) string {
 		port = "443"
 	}
 	return net.JoinHostPort(host, port)
+}
+
+func canUseH3Compat(reg registerResponse) bool {
+	if strings.TrimSpace(reg.H3URL) == "" {
+		return false
+	}
+	if len(reg.Capabilities) == 0 {
+		return true
+	}
+	return hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3CompatV1)
+}
+
+func canUseH3MultiStream(reg registerResponse) bool {
+	if strings.TrimSpace(reg.H3URL) == "" {
+		return false
+	}
+	if len(reg.Capabilities) == 0 {
+		return false
+	}
+	return hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3Multistream)
+}
+
+func hasTunnelCapability(caps []string, want string) bool {
+	want = strings.TrimSpace(strings.ToLower(want))
+	if want == "" {
+		return false
+	}
+	for _, cap := range caps {
+		if strings.TrimSpace(strings.ToLower(cap)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func h3WorkerURL(controlURL *url.URL) string {
+	if controlURL == nil {
+		return ""
+	}
+	workerURL := *controlURL
+	workerURL.Path = strings.TrimSuffix(strings.TrimSpace(controlURL.Path), "/") + "/stream"
+	workerURL.RawQuery = ""
+	return workerURL.String()
 }

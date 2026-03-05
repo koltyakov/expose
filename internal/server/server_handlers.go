@@ -84,12 +84,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	publicURL, wsURL, h3URL := s.registerURLs(r.Host, domainRec.Hostname, token)
+	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream"}
 
 	resp := registerResponse{
 		TunnelID:      tunnelRec.ID,
 		PublicURL:     publicURL,
 		WSURL:         wsURL,
 		H3URL:         h3URL,
+		Capabilities:  capabilities,
 		ServerTLSMode: s.serverTLSMode(),
 		ServerVersion: s.version,
 		WAFEnabled:    s.cfg.WAFEnabled,
@@ -122,10 +124,18 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if websocket.IsWebSocketUpgrade(r) {
+		if sess.hasH3MultiStream() {
+			s.handlePublicWebSocketH3MultiStream(w, r, route, sess)
+			return
+		}
 		s.handlePublicWebSocket(w, r, route, sess)
 		return
 	}
 
+	if sess.hasH3MultiStream() {
+		s.proxyPublicHTTPH3MultiStream(w, r, route, sess)
+		return
+	}
 	s.proxyPublicHTTP(w, r, route, sess)
 }
 

@@ -92,11 +92,11 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 
 ## HTTP/3 fallback / QUIC issues
 
-- **Symptom**: Client logs `HTTP/3 tunnel connect failed ... falling back to WebSocket`.
-- **Check UDP reachability**: Open or forward the configured `EXPOSE_LISTEN_QUIC` UDP port.
-- **Check server advertising**: If the server doesn't advertise `h3_url`, `--transport=auto` falls back and `--transport=quic` fails.
-- **Check authority overrides**: Set `EXPOSE_QUIC_ADVERTISE_AUTHORITY` when the server's public UDP address differs from the registration host or listen address.
+- **Symptom**: `--transport=quic` fails to connect, or `--transport=auto` consistently uses WebSocket.
+- **Check UDP reachability**: Open or forward UDP on the same port as `EXPOSE_LISTEN_HTTPS` (for example `10443/udp` when HTTPS is `:10443`).
+- **Check server advertising**: `--transport=quic` requires advertised HTTP/3 support (`h3_url`).
 - **Check explicit mode**: `--transport=quic` never silently falls back; use `--transport=auto` if fallback is desired.
+- **Check topology**: For reverse proxies, cloud firewalls, or non-default UDP mappings, review [UDP Deployment Topologies](udp-deployment-topologies.md).
 
 ## WebSocket disconnects / frequent reconnects
 

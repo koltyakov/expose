@@ -18,13 +18,14 @@ type RegisterRequest struct {
 // RegisterResponse is the JSON body returned by the server on successful
 // tunnel registration.
 type RegisterResponse struct {
-	TunnelID      string `json:"tunnel_id"`
-	PublicURL     string `json:"public_url"`
-	WSURL         string `json:"ws_url"`
-	H3URL         string `json:"h3_url,omitempty"`
-	ServerTLSMode string `json:"server_tls_mode"`
-	ServerVersion string `json:"server_version,omitempty"`
-	WAFEnabled    bool   `json:"waf_enabled,omitempty"`
+	TunnelID      string   `json:"tunnel_id"`
+	PublicURL     string   `json:"public_url"`
+	WSURL         string   `json:"ws_url"`
+	H3URL         string   `json:"h3_url,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	ServerTLSMode string   `json:"server_tls_mode"`
+	ServerVersion string   `json:"server_version,omitempty"`
+	WAFEnabled    bool     `json:"waf_enabled,omitempty"`
 }
 
 // ErrorResponse is the JSON body returned by the server for structured errors.

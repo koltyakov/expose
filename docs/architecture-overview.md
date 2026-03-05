@@ -21,9 +21,11 @@ sequenceDiagram
     participant A as Local app
 
     C->>S: POST /v1/tunnels/register (API key)
-    S-->>C: tunnel_id + ws_url + optional h3_url
+    S-->>C: tunnel_id + ws_url + optional h3_url + capabilities
     C->>S: WebSocket connect /v1/tunnels/connect
     C->>S: or HTTP/3 CONNECT /v1/tunnels/connect-h3
+    C->>S: or HTTP/3 CONNECT /v1/tunnels/connect-h3 (control)
+    C->>S: HTTP/3 worker streams /v1/tunnels/connect-h3/stream
 
     B->>S: HTTPS GET myapp.example.com/path
     S->>S: Match hostname → tunnel session
@@ -41,8 +43,16 @@ sequenceDiagram
 | **Server**         | Terminates TLS, manages ACME certs, authenticates clients, routes by hostname |
 | **Client**         | Registers tunnel, holds a WebSocket or HTTP/3 tunnel, proxies requests to local port |
 | **Store (SQLite)** | Persists API keys, domains, tunnel state                                      |
-| **Hub**            | In-memory map of active WebSocket sessions for fast hostname lookup           |
+| **Hub**            | In-memory map of active tunnel sessions (WebSocket, HTTP/3 compatibility, HTTP/3 multi-stream) |
 | **WAF**            | Blocks SQL injection, XSS, path traversal, and other attacks before proxying ([details](waf.md)) |
+
+## HTTP/3 Protocol Versions
+
+- `h3_compat`: single HTTP/3 stream carrying the same framed multiplexing protocol as WebSocket compatibility mode.
+- `h3_multistream`: negotiated multi-stream mode with:
+  - one long-lived control stream for keepalive and lifecycle.
+  - many short-lived worker streams where each forwarded HTTP request or proxied websocket uses a distinct HTTP/3 stream.
+- Registration advertises capability/version metadata (`capabilities`) so clients can negotiate protocol behavior.
 
 ## Tunnel Types
 

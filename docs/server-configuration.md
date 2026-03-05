@@ -23,26 +23,26 @@ expose server
 
 Every setting can be provided as a CLI flag or environment variable. Environment variables take effect when the corresponding flag is not explicitly passed.
 
-| Flag                      | Env Variable                   | Default       | Description                                   |
-| ------------------------- | ------------------------------ | ------------- | --------------------------------------------- |
-| `--domain`                | `EXPOSE_DOMAIN`                | _(required)_  | Public base domain (e.g. `example.com`)        |
-| `--listen`                | `EXPOSE_LISTEN_HTTPS`          | `:10443`      | HTTPS listen address                           |
-| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE` | `:10080`      | ACME HTTP-01 challenge listener                |
-| `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`          | -             | Optional pprof listen address (recommended on loopback only) |
-| `--db`                    | `EXPOSE_DB_PATH`               | `./expose.db` | SQLite database path                           |
-| `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`     | `10`          | SQLite max open connections                    |
-| `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`     | `10`          | SQLite max idle connections                    |
-| `--tls-mode`              | `EXPOSE_TLS_MODE`              | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`     |
-| `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`        | `./cert`      | ACME certificate cache directory               |
-| `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`         | -             | Static PEM certificate (for wildcard/auto)     |
-| `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`          | -             | Static PEM private key (for wildcard/auto)     |
-| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`        | -             | Explicit pepper for API key hashing            |
-| `--log-level`             | `EXPOSE_LOG_LEVEL`             | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`|
-| -                         | `EXPOSE_WAF_ENABLE`            | `true`        | Enable/disable the Web Application Firewall    |
-| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`| `32`          | Max in-flight public HTTP requests per active tunnel |
-| -                         | `EXPOSE_ROUTE_CACHE_TTL`       | `1m`          | Positive hostname route cache TTL before DB revalidation |
-| -                         | `EXPOSE_WAF_COUNTER_RETENTION` | `1h`          | Retention window for in-memory per-host WAF counters |
-| -                         | `EXPOSE_AUTOUPDATE`            | `false`       | Enable automatic self-update (`true`/`1`/`yes`)|
+| Flag                      | Env Variable                    | Default       | Description                                                  |
+| ------------------------- | ------------------------------- | ------------- | ------------------------------------------------------------ |
+| `--domain`                | `EXPOSE_DOMAIN`                 | _(required)_  | Public base domain (e.g. `example.com`)                      |
+| `--listen`                | `EXPOSE_LISTEN_HTTPS`           | `:10443`      | HTTPS listen address                                         |
+| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE`  | `:10080`      | ACME HTTP-01 challenge listener                              |
+| `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`           | -             | Optional pprof listen address (recommended on loopback only) |
+| `--db`                    | `EXPOSE_DB_PATH`                | `./expose.db` | SQLite database path                                         |
+| `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`      | `10`          | SQLite max open connections                                  |
+| `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`      | `10`          | SQLite max idle connections                                  |
+| `--tls-mode`              | `EXPOSE_TLS_MODE`               | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`                   |
+| `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`         | `./cert`      | ACME certificate cache directory                             |
+| `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`          | -             | Static PEM certificate (for wildcard/auto)                   |
+| `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`           | -             | Static PEM private key (for wildcard/auto)                   |
+| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`         | -             | Explicit pepper for API key hashing                          |
+| `--log-level`             | `EXPOSE_LOG_LEVEL`              | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`              |
+| -                         | `EXPOSE_WAF_ENABLE`             | `true`        | Enable/disable the Web Application Firewall                  |
+| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL` | `32`          | Max in-flight public HTTP requests per active tunnel         |
+| -                         | `EXPOSE_ROUTE_CACHE_TTL`        | `1m`          | Positive hostname route cache TTL before DB revalidation     |
+| -                         | `EXPOSE_WAF_COUNTER_RETENTION`  | `1h`          | Retention window for in-memory per-host WAF counters         |
+| -                         | `EXPOSE_AUTOUPDATE`             | `false`       | Enable automatic self-update (`true`/`1`/`yes`)              |
 
 ## `.env` File Support
 
@@ -66,10 +66,10 @@ EXPOSE_AUTOUPDATE=true
 
 Before clients can connect, create DNS records for your domain:
 
-| Record | Type | Name | Value              |
-| ------ | ---- | ---- | ------------------ |
-| Apex   | A    | `@`  | Server public IPv4 |
-| Wildcard | A  | `*`  | Server public IPv4 |
+| Record   | Type | Name | Value              |
+| -------- | ---- | ---- | ------------------ |
+| Apex     | A    | `@`  | Server public IPv4 |
+| Wildcard | A    | `*`  | Server public IPv4 |
 
 - `@` covers the base domain (`example.com`)
 - `*` covers all subdomains (`*.example.com`)
@@ -81,12 +81,14 @@ Provider-specific guides: [Cloudflare](dns-cloudflare.md) · [GoDaddy](dns-godad
 
 The server listens on non-privileged ports by default. If you're behind NAT or a router, forward:
 
-| Public Port | Internal Port | Purpose                    |
-| ----------- | ------------- | -------------------------- |
-| 443         | 10443         | HTTPS tunnel traffic       |
-| 80          | 10080         | ACME HTTP-01 challenges    |
+| Public Port         | Internal Port       | Purpose                             |
+| ------------------- | ------------------- | ----------------------------------- |
+| 443                 | 10443               | HTTPS tunnel traffic                |
+| same as HTTPS (UDP) | same as HTTPS (UDP) | HTTP/3 QUIC tunnel traffic (always) |
+| 80                  | 10080               | ACME HTTP-01 challenges             |
 
 See [Port Forwarding](port-forwarding.md) for router-specific instructions.
+For non-default UDP and load-balancer layouts, see [UDP Deployment Topologies](udp-deployment-topologies.md).
 
 To listen on standard ports directly (requires capabilities or root):
 

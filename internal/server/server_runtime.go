@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -37,6 +38,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/v1/tunnels/register", s.handleRegister)
 	mux.HandleFunc("/v1/tunnels/connect", s.handleConnect)
 	mux.HandleFunc("/v1/tunnels/connect-h3", s.handleConnectH3)
+	mux.HandleFunc("/v1/tunnels/connect-h3/stream", s.handleConnectH3Stream)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -107,28 +109,24 @@ func (s *Server) Run(ctx context.Context) error {
 		ErrorLog:          log.New(newHTTPSErrorLogWriter(s.log, useDynamicACME), "", 0),
 	}
 
-	var h3Server *http3.Server
-	if s.cfg.ListenQUIC != "" {
-		h3TLSConfig := http3.ConfigureTLSConfig(tlsConfig.Clone())
-		h3TLSConfig.MinVersion = tls.VersionTLS13
-		h3Server = &http3.Server{
-			Addr:        s.cfg.ListenQUIC,
-			Handler:     handler,
-			TLSConfig:   h3TLSConfig,
-			IdleTimeout: durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
-			ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
-				return context.WithValue(ctx, http3ConnContextKey{}, c)
-			},
-		}
+	h3TLSConfig := http3.ConfigureTLSConfig(tlsConfig.Clone())
+	h3TLSConfig.MinVersion = tls.VersionTLS13
+	_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	h3Server := &http3.Server{
+		Addr:        s.cfg.ListenHTTPS,
+		Handler:     handler,
+		TLSConfig:   h3TLSConfig,
+		IdleTimeout: durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
+		ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
+			return context.WithValue(ctx, http3ConnContextKey{}, c)
+		},
 	}
 
 	errChSize := 1
 	if useDynamicACME {
 		errChSize = 2
 	}
-	if h3Server != nil {
-		errChSize++
-	}
+	errChSize++
 	errCh := make(chan error, errChSize)
 
 	var challengeServer *http.Server
@@ -158,14 +156,12 @@ func (s *Server) Run(ctx context.Context) error {
 			errCh <- fmt.Errorf("https server: %w", err)
 		}
 	}()
-	if h3Server != nil {
-		go func() {
-			s.log.Info("starting HTTP/3 server", "addr", s.cfg.ListenQUIC)
-			if err := h3Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- fmt.Errorf("http3 server: %w", err)
-			}
-		}()
-	}
+	go func() {
+		s.log.Info("starting HTTP/3 server", "addr", s.cfg.ListenHTTPS)
+		if err := h3Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("http3 server: %w", err)
+		}
+	}()
 
 	select {
 	case <-ctx.Done():
@@ -173,9 +169,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case err := <-errCh:
 		s.closeAllSessions("fatal error")
 		_ = shutdownServer(httpsServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
-		if h3Server != nil {
-			_ = h3Server.Close()
-		}
+		_ = h3Server.Close()
 		if challengeServer != nil {
 			_ = shutdownServer(challengeServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
 		}

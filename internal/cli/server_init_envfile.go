@@ -128,6 +128,59 @@ func upsertEnvFile(path string, entries []envEntry) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
+func removeEnvKeys(path string, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	kill := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		kill[key] = struct{}{}
+	}
+	if len(kill) == 0 {
+		return nil
+	}
+
+	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	normalized = strings.TrimRight(normalized, "\n")
+	lines := []string{}
+	if normalized != "" {
+		lines = strings.Split(normalized, "\n")
+	}
+	out := make([]string, 0, len(lines))
+	changed := false
+	for _, line := range lines {
+		key, _, ok := parseEnvAssignment(line)
+		if !ok {
+			out = append(out, line)
+			continue
+		}
+		if _, remove := kill[key]; remove {
+			changed = true
+			continue
+		}
+		out = append(out, line)
+	}
+	if !changed {
+		return nil
+	}
+	content := strings.Join(out, "\n")
+	if content != "" {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
 func parseEnvAssignment(line string) (string, string, bool) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {

@@ -15,7 +15,7 @@ That runs the focused benchmark suites in:
 - `internal/server` for public HTTP tunnel round-trips, parallel load, and streamed responses
 - `internal/client` for local forward costs and streamed-response forwarding
 - `internal/store/sqlite` for token and route-store operations
-- `internal/tunnelproto` for protocol encoding/decoding
+- `internal/tunnelproto` for protocol encoding/decoding, WebSocket vs HTTP/3 compatibility framing, and Phase 1 vs Phase 2 mixed-load packet-loss simulations
 
 ## Useful Narrow Runs
 
@@ -35,6 +35,18 @@ Store and protocol microbenchmarks:
 
 ```bash
 go test ./internal/store/sqlite ./internal/tunnelproto -bench . -run '^$'
+```
+
+Phase 1 vs Phase 2 mixed-load comparison:
+
+```bash
+go test ./internal/tunnelproto -bench 'Phase1VsPhase2PacketLossMixedLoad' -run '^$'
+```
+
+WebSocket vs HTTP/3 compatibility-mode framing:
+
+```bash
+go test ./internal/tunnelproto -bench 'CompatibilityModeWSVsH3Stream' -run '^$'
 ```
 
 Multi-tunnel connection soak:

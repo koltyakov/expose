@@ -40,6 +40,7 @@ func TestRegisterResponseJSONKeys(t *testing.T) {
 		PublicURL:     "https://myapp.example.com",
 		WSURL:         "wss://example.com/v1/tunnels/connect?token=abc",
 		H3URL:         "https://example.com:10443/v1/tunnels/connect-h3?token=abc",
+		Capabilities:  []string{"h3_compat", "h3_multistream"},
 		ServerTLSMode: "auto",
 		ServerVersion: "v2.0.0",
 		WAFEnabled:    true,
@@ -52,7 +53,7 @@ func TestRegisterResponseJSONKeys(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
-	requiredKeys := []string{"tunnel_id", "public_url", "ws_url", "h3_url", "server_tls_mode", "server_version", "waf_enabled"}
+	requiredKeys := []string{"tunnel_id", "public_url", "ws_url", "h3_url", "capabilities", "server_tls_mode", "server_version", "waf_enabled"}
 	for _, key := range requiredKeys {
 		if _, ok := m[key]; !ok {
 			t.Fatalf("missing expected JSON key %q", key)
@@ -78,6 +79,9 @@ func TestRegisterResponseOmitsEmptyH3URL(t *testing.T) {
 	}
 	if _, ok := m["h3_url"]; ok {
 		t.Fatal("expected h3_url to be omitted when empty")
+	}
+	if _, ok := m["capabilities"]; ok {
+		t.Fatal("expected capabilities to be omitted when empty")
 	}
 }
 

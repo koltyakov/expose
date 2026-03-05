@@ -130,8 +130,8 @@ const (
 	domainTouchQueueSize        = 2048
 	domainTouchTimeout          = 3 * time.Second
 	disconnectQueueSize         = 4096
-	disconnectBatchSize         = 128
-	disconnectFlushInterval     = 200 * time.Millisecond
+	disconnectBatchSize         = 64
+	disconnectFlushInterval     = 75 * time.Millisecond
 	disconnectTimeout           = 10 * time.Second
 	wafAuditQueueSize           = 2048
 	wafAuditLookupTimeout       = 250 * time.Millisecond

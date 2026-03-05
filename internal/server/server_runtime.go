@@ -28,6 +28,13 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Info("reconciled stale connected tunnels", "count", resetCount)
 	}
 
+	disconnectCtx, disconnectCancel := context.WithCancel(context.Background())
+	defer func() {
+		disconnectCancel()
+		s.disconnectWg.Wait()
+	}()
+
+	go s.runDisconnectWorker(disconnectCtx)
 	go s.runJanitor(ctx)
 	go s.runDomainTouchWorker(ctx)
 	if s.cfg.WAFEnabled {

@@ -20,7 +20,7 @@ VALUES(?, ?, ?, NULL)`, token, tunnelID, time.Now().UTC().Add(ttl))
 
 func (s *Store) ConsumeConnectToken(ctx context.Context, token string) (string, error) {
 	var tunnelID string
-	err := withSQLiteBusyRetry(ctx, func() error {
+	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err

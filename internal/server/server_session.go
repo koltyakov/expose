@@ -231,11 +231,7 @@ func (s *Server) readLoop(sess *session) {
 		sess.closeWSPending()
 		if s.removeSessionIfCurrent(sess) {
 			s.routes.deleteByTunnelID(sess.tunnelID)
-			disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := s.store.SetTunnelDisconnected(disconnectCtx, sess.tunnelID); err != nil {
-				s.log.Error("failed to mark tunnel disconnected", "tunnel_id", sess.tunnelID, "err", err)
-			}
-			disconnectCancel()
+			s.queueTunnelDisconnect(sess.tunnelID)
 			s.log.Info("tunnel disconnected", "tunnel_id", sess.tunnelID, "transport", sess.transportName)
 		} else {
 			s.log.Debug("stale tunnel session closed", "tunnel_id", sess.tunnelID)

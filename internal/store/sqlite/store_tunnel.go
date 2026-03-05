@@ -43,7 +43,7 @@ func (s *Store) IsHostnameActive(ctx context.Context, host string) (bool, error)
 
 func (s *Store) ResetConnectedTunnels(ctx context.Context) (int64, error) {
 	var affected int64
-	err := withSQLiteBusyRetry(ctx, func() error {
+	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -95,7 +95,7 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 		d domain.Domain
 		t domain.Tunnel
 	)
-	err = withSQLiteBusyRetry(ctx, func() error {
+	err = s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -123,7 +123,7 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 func (s *Store) SwapTunnelSession(ctx context.Context, domainID, keyID, clientMeta string) (domain.Tunnel, error) {
 	clientMeta = strings.TrimSpace(clientMeta)
 	var t domain.Tunnel
-	err := withSQLiteBusyRetry(ctx, func() error {
+	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -197,7 +197,7 @@ func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) erro
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
 
-	return withSQLiteBusyRetry(ctx, func() error {
+	return s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -253,7 +253,7 @@ func (s *Store) SetTunnelAccessPasswordHash(ctx context.Context, tunnelID, hash 
 }
 
 func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) error {
-	return withSQLiteBusyRetry(ctx, func() error {
+	return s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -283,12 +283,106 @@ func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) erro
 	})
 }
 
+func (s *Store) SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) error {
+	ids := uniqueTunnelIDs(tunnelIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+
+	return s.withSerializedWrite(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		placeholders := strings.Repeat("?,", len(ids))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, 0, len(ids))
+		for _, id := range ids {
+			args = append(args, id)
+		}
+
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id, state, is_temporary, domain_id FROM tunnels WHERE id IN (`+placeholders+`)`,
+			args...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		activeIDs := make([]string, 0, len(ids))
+		tempDomainIDs := make(map[string]struct{}, len(ids))
+		for rows.Next() {
+			var (
+				id       string
+				state    string
+				isTemp   bool
+				domainID string
+			)
+			if err = rows.Scan(&id, &state, &isTemp, &domainID); err != nil {
+				return err
+			}
+			if state == domain.TunnelStateClosed {
+				continue
+			}
+			activeIDs = append(activeIDs, id)
+			if isTemp && strings.TrimSpace(domainID) != "" {
+				tempDomainIDs[domainID] = struct{}{}
+			}
+		}
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		if len(activeIDs) == 0 {
+			return tx.Commit()
+		}
+
+		activePlaceholders := strings.Repeat("?,", len(activeIDs))
+		activePlaceholders = activePlaceholders[:len(activePlaceholders)-1]
+		updateArgs := make([]any, 0, 3+len(activeIDs))
+		updateArgs = append(updateArgs, domain.TunnelStateDisconnected, time.Now().UTC())
+		for _, id := range activeIDs {
+			updateArgs = append(updateArgs, id)
+		}
+		updateArgs = append(updateArgs, domain.TunnelStateClosed)
+
+		if _, err = tx.ExecContext(ctx,
+			`UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id IN (`+activePlaceholders+`) AND state != ?`,
+			updateArgs...); err != nil {
+			return err
+		}
+
+		if len(tempDomainIDs) > 0 {
+			domainIDs := make([]string, 0, len(tempDomainIDs))
+			for domainID := range tempDomainIDs {
+				domainIDs = append(domainIDs, domainID)
+			}
+
+			domainPlaceholders := strings.Repeat("?,", len(domainIDs))
+			domainPlaceholders = domainPlaceholders[:len(domainPlaceholders)-1]
+			domainArgs := make([]any, 0, 1+len(domainIDs))
+			domainArgs = append(domainArgs, domain.DomainStatusInactive)
+			for _, domainID := range domainIDs {
+				domainArgs = append(domainArgs, domainID)
+			}
+			if _, err = tx.ExecContext(ctx,
+				`UPDATE domains SET status = ? WHERE id IN (`+domainPlaceholders+`)`,
+				domainArgs...); err != nil {
+				return err
+			}
+		}
+
+		return tx.Commit()
+	})
+}
+
 func (s *Store) CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error) {
 	var (
 		hostname string
 		closed   bool
 	)
-	err := withSQLiteBusyRetry(ctx, func() error {
+	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -332,4 +426,24 @@ WHERE t.id = ?`, tunnelID).Scan(&state, &isTemp, &domainID, &domainType, &hostna
 		return "", false, err
 	}
 	return hostname, closed, nil
+}
+
+func uniqueTunnelIDs(tunnelIDs []string) []string {
+	if len(tunnelIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(tunnelIDs))
+	out := make([]string, 0, len(tunnelIDs))
+	for _, id := range tunnelIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }

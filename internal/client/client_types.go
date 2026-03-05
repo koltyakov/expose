@@ -21,6 +21,7 @@ type registerResponse = domain.RegisterResponse
 type TunnelReadyEvent struct {
 	TunnelID      string
 	PublicURL     string
+	Transport     string
 	ServerVersion string
 	ServerTLSMode string
 	WAFEnabled    bool

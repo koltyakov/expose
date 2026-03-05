@@ -72,12 +72,15 @@ func (d *Display) redraw() {
 	if sv != "--" {
 		serverVersionValue = sv // default terminal color (white in dark themes)
 	}
-	meta := make([]string, 0, 2)
+	meta := make([]string, 0, 3)
 	if d.wafEnabled {
 		meta = append(meta, "WAF: On")
 	}
 	if d.tlsMode != "" {
 		meta = append(meta, "TLS: "+displayCapitalizeCSV(d.tlsMode))
+	}
+	if d.transport != "" {
+		meta = append(meta, "Transport: "+strings.ToUpper(d.transport))
 	}
 	if len(meta) > 0 {
 		serverVersionValue += d.styled(ansiDim, " ("+strings.Join(meta, ", ")+")")

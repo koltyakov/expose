@@ -2,9 +2,7 @@ package client
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
-	"fmt"
 	"net/url"
 	"strings"
 	"sync"
@@ -13,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
 const streamedReqBodyDispatchWait = 100 * time.Millisecond
@@ -70,7 +69,9 @@ func (s *streamedRequestState) close() bool {
 type clientSessionRuntime struct {
 	client    *Client
 	localBase *url.URL
-	conn      *websocket.Conn
+	transport tunneltransport.Transport
+	writer    *tunneltransport.WritePump
+	kind      string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -81,8 +82,6 @@ type clientSessionRuntime struct {
 	requestSem chan struct{}
 	requestMu  sync.Mutex
 	reqCancel  map[string]context.CancelFunc
-
-	writer *tunnelproto.WSWritePump
 
 	pingSentMu sync.Mutex
 	pingSentAt time.Time
@@ -99,22 +98,18 @@ type clientSessionRuntime struct {
 }
 
 func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL, reg registerResponse) (*clientSessionRuntime, error) {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: wsHandshakeTimeout,
-		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
-	}
-	conn, _, err := dialer.DialContext(parentCtx, reg.WSURL, nil)
+	conn, err := c.connectSessionTransport(parentCtx, reg)
 	if err != nil {
-		return nil, fmt.Errorf("ws connect: %w", err)
+		return nil, err
 	}
-	conn.SetReadLimit(clientWSReadLimit)
 
 	sessionCtx, cancel := context.WithCancel(parentCtx)
 	rt := &clientSessionRuntime{
 		client:           c,
 		localBase:        localBase,
-		conn:             conn,
-		writer:           tunnelproto.NewWSWritePump(conn, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
+		transport:        conn.transport,
+		writer:           conn.writer,
+		kind:             conn.name,
 		ctx:              sessionCtx,
 		cancel:           cancel,
 		requestSem:       make(chan struct{}, maxConcurrentForwardsFor(c.cfg)),
@@ -125,10 +120,11 @@ func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *ur
 		wsConns:          make(map[string]*websocket.Conn),
 		streamedReqState: make(map[string]*streamedRequestState),
 	}
+	rt.transport.SetReadLimit(clientWSReadLimit)
 
 	go func() {
 		<-rt.ctx.Done()
-		_ = rt.conn.Close()
+		_ = rt.transport.Close()
 	}()
 
 	if err := rt.sendInitialPing(); err != nil {
@@ -143,7 +139,9 @@ func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *ur
 func (rt *clientSessionRuntime) close() {
 	rt.closeOnce.Do(func() {
 		rt.cancel()
-		_ = rt.conn.Close()
+		if rt.transport != nil {
+			_ = rt.transport.Close()
+		}
 		if rt.writer != nil {
 			rt.writer.Close()
 		}
@@ -266,7 +264,7 @@ func (rt *clientSessionRuntime) startReadLoop() {
 	go func() {
 		for {
 			var msg tunnelproto.Message
-			if err := tunnelproto.ReadWSMessage(rt.conn, &msg); err != nil {
+			if err := rt.transport.ReadMessage(&msg); err != nil {
 				select {
 				case rt.readErr <- err:
 				default:
@@ -284,14 +282,14 @@ func (rt *clientSessionRuntime) startReadLoop() {
 
 func (rt *clientSessionRuntime) writeJSON(msg tunnelproto.Message) error {
 	if rt.writer == nil {
-		return tunnelproto.ErrWSWritePumpClosed
+		return tunneltransport.ErrWritePumpClosed
 	}
 	return rt.writer.WriteJSON(msg)
 }
 
 func (rt *clientSessionRuntime) writeBinary(frameKind byte, id string, wsMessageType int, payload []byte) error {
 	if rt.writer == nil {
-		return tunnelproto.ErrWSWritePumpClosed
+		return tunneltransport.ErrWritePumpClosed
 	}
 	return rt.writer.WriteBinaryFrame(frameKind, id, wsMessageType, payload)
 }

@@ -87,6 +87,7 @@ type Display struct {
 	protected     bool
 	localAddr     string
 	tlsMode       string
+	transport     string
 	serverVersion string
 	wafEnabled    bool   // true when WAF is enabled on the server
 	updateVersion string // non-empty when an update is available

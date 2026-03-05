@@ -6,6 +6,7 @@ This guide covers:
 - local HTTPS server in wildcard mode
 - tunnel client connection to local server on `:10443`
 - password-protected tunnel verification
+- optional HTTP/3 tunnel verification on UDP
 
 ## Prerequisites
 
@@ -74,3 +75,16 @@ Expected:
 - first request: `401 Unauthorized` with the HTML access form
 - `expose auth curl`: prints a ready-to-run `curl` command with the access cookie
 - curl with helper-provided header: upstream `200` response
+
+## 7) Verify HTTP/3 tunnel availability
+
+```bash
+curl -k -I --http3-only https://127.0.0.1.sslip.io:10443/healthz
+lsof -nP -iUDP:10443
+./bin/expose http --domain=myapp --transport=quic 3000
+```
+
+Expected:
+- `curl --http3-only` succeeds against `/healthz`
+- `lsof` shows the server listening on UDP `:10443`
+- the client connects without falling back to WebSocket

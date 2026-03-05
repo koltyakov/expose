@@ -74,13 +74,34 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		backoff = reconnectInitialDelay
 		tlsProvisioningRetries = 0
+
+		rt, err := newClientSessionRuntime(c, ctx, localBase, reg)
+		if err != nil {
+			if isNonRetriableSessionError(err) {
+				return err
+			}
+			if c.display != nil {
+				c.display.ShowWarning(fmt.Sprintf("tunnel connect failed, %s; retrying in %s", shortenError(err), reconnectInitialDelay.Round(time.Second)))
+			} else {
+				c.log.Warn("tunnel connect failed", "err", err, "retry_in", reconnectInitialDelay.Round(time.Second).String())
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-autoUpdateCh:
+				return ErrAutoUpdated
+			case <-time.After(reconnectInitialDelay):
+			}
+			continue
+		}
+
 		if c.display != nil {
 			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
-			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID, c.cfg.Protect)
+			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID, c.cfg.Protect, rt.kind)
 			c.display.ShowVersions(c.version, versionutil.EnsureVPrefix(reg.ServerVersion), reg.WAFEnabled)
 		} else {
-			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID)
+			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID, "transport", rt.kind)
 			if reg.ServerTLSMode != "" {
 				c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
 			}
@@ -92,6 +113,7 @@ func (c *Client) Run(ctx context.Context) error {
 			hook(TunnelReadyEvent{
 				TunnelID:      reg.TunnelID,
 				PublicURL:     reg.PublicURL,
+				Transport:     rt.kind,
 				ServerVersion: reg.ServerVersion,
 				ServerTLSMode: reg.ServerTLSMode,
 				WAFEnabled:    reg.WAFEnabled,
@@ -120,7 +142,8 @@ func (c *Client) Run(ctx context.Context) error {
 		default:
 		}
 
-		err = c.runSession(ctx, localBase, reg)
+		err = rt.run()
+		rt.close()
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -146,15 +169,6 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {
-	rt, err := newClientSessionRuntime(c, ctx, localBase, reg)
-	if err != nil {
-		return err
-	}
-	defer rt.close()
-	return rt.run()
-}
-
 func nextBackoff(current time.Duration) time.Duration {
 	if current <= 0 {
 		current = reconnectInitialDelay
@@ -163,4 +177,13 @@ func nextBackoff(current time.Duration) time.Duration {
 	// Add ±25% jitter to avoid thundering herd on reconnect.
 	jitter := 1.0 + (rand.Float64()-0.5)*0.5 // range [0.75, 1.25]
 	return time.Duration(float64(next) * jitter)
+}
+
+func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {
+	rt, err := newClientSessionRuntime(c, ctx, localBase, reg)
+	if err != nil {
+		return err
+	}
+	defer rt.close()
+	return rt.run()
 }

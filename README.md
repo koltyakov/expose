@@ -17,6 +17,7 @@
 - **Rate limiting** on tunnel registration to prevent abuse
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally
 - **Automatic reconnection** with exponential backoff and keepalive pings
+- **Optional HTTP/3 tunnel transport** - clients can use `--transport=quic` or `--transport=auto` when the server advertises an HTTP/3 endpoint
 
 ## How It Works
 
@@ -41,15 +42,15 @@ flowchart TB
     Browser["🌐 Browser"]
 
     App -- "HTTP" --> Fwd
-    Hub <-- "WebSocket tunnel" --> Conn
+    Hub <-- "WebSocket or HTTP/3 tunnel" --> Conn
     Conn -- "token" --> Hub
     Reg -- "API key" --> Route
     TLS -- "HTTPS *.domain" --> Browser
 ```
 
 1. The **server** terminates TLS, runs WAF inspection, and routes requests by hostname to the correct tunnel
-2. The **client** registers via API key, opens a persistent WebSocket, and proxies requests to your local port
-3. Requests and responses flow over the WebSocket as JSON envelopes with binary streaming for large bodies
+2. The **client** registers via API key, then opens a persistent WebSocket or HTTP/3 tunnel to the server
+3. Requests and responses flow over the tunnel as JSON envelopes with binary streaming for large bodies
 
 For the full request lifecycle and component breakdown, see [Architecture Overview](docs/architecture-overview.md).
 
@@ -72,6 +73,9 @@ On your public-facing machine, run the interactive setup (writes a `.env` for yo
 ```bash
 expose server init   # guided setup
 expose server        # start the tunnel server
+
+# Optional: also expose an HTTP/3 tunnel endpoint on UDP
+EXPOSE_LISTEN_QUIC=:10443 expose server
 ```
 
 Then create an API key for your client(s):

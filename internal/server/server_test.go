@@ -112,13 +112,16 @@ func TestParseAndValidateRegisterRequestBasicMode(t *testing.T) {
 func TestRegisterURLsNonDefaultPort(t *testing.T) {
 	t.Parallel()
 
-	srv := &Server{cfg: config.ServerConfig{BaseDomain: "example.com"}}
-	publicURL, wsURL := srv.registerURLs("127.0.0.1.sslip.io:10443", "abc.example.com", "token-1")
+	srv := &Server{cfg: config.ServerConfig{BaseDomain: "example.com", ListenQUIC: ":9443"}}
+	publicURL, wsURL, h3URL := srv.registerURLs("127.0.0.1.sslip.io:10443", "abc.example.com", "token-1")
 	if publicURL != "https://abc.example.com:10443" {
 		t.Fatalf("expected public url with custom port, got %q", publicURL)
 	}
 	if wsURL != "wss://127.0.0.1.sslip.io:10443/v1/tunnels/connect?token=token-1" {
 		t.Fatalf("unexpected ws url: %q", wsURL)
+	}
+	if h3URL != "https://127.0.0.1.sslip.io:9443/v1/tunnels/connect-h3?token=token-1" {
+		t.Fatalf("unexpected h3 url: %q", h3URL)
 	}
 }
 
@@ -534,6 +537,29 @@ func TestAuthorityPort(t *testing.T) {
 	}
 	if got := authorityPort("example.com"); got != "" {
 		t.Fatalf("expected empty port, got %q", got)
+	}
+}
+
+func TestAdvertisedQUICAuthority(t *testing.T) {
+	tests := []struct {
+		name       string
+		host       string
+		fallback   string
+		listen     string
+		configured string
+		want       string
+	}{
+		{name: "disabled when listen empty", host: "example.com:10443", fallback: "example.com", want: ""},
+		{name: "derive host and port", host: "127.0.0.1.sslip.io:10443", fallback: "example.com", listen: ":9443", want: "127.0.0.1.sslip.io:9443"},
+		{name: "preserve standard port omission", host: "example.com", fallback: "example.com", listen: ":443", want: "example.com"},
+		{name: "configured override", host: "example.com", fallback: "fallback.example.com", listen: ":9443", configured: "https://quic.example.com:7443", want: "quic.example.com:7443"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := advertisedQUICAuthority(tt.host, tt.fallback, tt.listen, tt.configured); got != tt.want {
+				t.Fatalf("advertisedQUICAuthority(): got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -83,12 +83,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicURL, wsURL := s.registerURLs(r.Host, domainRec.Hostname, token)
+	publicURL, wsURL, h3URL := s.registerURLs(r.Host, domainRec.Hostname, token)
 
 	resp := registerResponse{
 		TunnelID:      tunnelRec.ID,
 		PublicURL:     publicURL,
 		WSURL:         wsURL,
+		H3URL:         h3URL,
 		ServerTLSMode: s.serverTLSMode(),
 		ServerVersion: s.version,
 		WAFEnabled:    s.cfg.WAFEnabled,

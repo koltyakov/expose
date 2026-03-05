@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/koltyakov/expose/internal/waf"
@@ -34,6 +36,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/tunnels/register", s.handleRegister)
 	mux.HandleFunc("/v1/tunnels/connect", s.handleConnect)
+	mux.HandleFunc("/v1/tunnels/connect-h3", s.handleConnectH3)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -104,9 +107,27 @@ func (s *Server) Run(ctx context.Context) error {
 		ErrorLog:          log.New(newHTTPSErrorLogWriter(s.log, useDynamicACME), "", 0),
 	}
 
+	var h3Server *http3.Server
+	if s.cfg.ListenQUIC != "" {
+		h3TLSConfig := http3.ConfigureTLSConfig(tlsConfig.Clone())
+		h3TLSConfig.MinVersion = tls.VersionTLS13
+		h3Server = &http3.Server{
+			Addr:        s.cfg.ListenQUIC,
+			Handler:     handler,
+			TLSConfig:   h3TLSConfig,
+			IdleTimeout: durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
+			ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
+				return context.WithValue(ctx, http3ConnContextKey{}, c)
+			},
+		}
+	}
+
 	errChSize := 1
 	if useDynamicACME {
 		errChSize = 2
+	}
+	if h3Server != nil {
+		errChSize++
 	}
 	errCh := make(chan error, errChSize)
 
@@ -137,13 +158,24 @@ func (s *Server) Run(ctx context.Context) error {
 			errCh <- fmt.Errorf("https server: %w", err)
 		}
 	}()
+	if h3Server != nil {
+		go func() {
+			s.log.Info("starting HTTP/3 server", "addr", s.cfg.ListenQUIC)
+			if err := h3Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("http3 server: %w", err)
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
-		return s.gracefulShutdown(httpsServer, challengeServer)
+		return s.gracefulShutdown(httpsServer, challengeServer, h3Server)
 	case err := <-errCh:
 		s.closeAllSessions("fatal error")
 		_ = shutdownServer(httpsServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
+		if h3Server != nil {
+			_ = h3Server.Close()
+		}
 		if challengeServer != nil {
 			_ = shutdownServer(challengeServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
 		}
@@ -156,7 +188,7 @@ func (s *Server) Run(ctx context.Context) error {
 //  1. Drain - stop accepting new connections (http.Server.Shutdown).
 //  2. Close - terminate all active tunnel sessions.
 //  3. Wait  - allow read loops to finish within a timeout.
-func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *http.Server) error {
+func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *http.Server, h3Server *http3.Server) error {
 	drainTimeout := durationOr(s.cfg.ShutdownDrainTime, 5*time.Second)
 	waitTimeout := durationOr(s.cfg.ShutdownWaitTime, 15*time.Second)
 
@@ -164,6 +196,11 @@ func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *htt
 	var firstErr error
 	if err := shutdownServer(httpsServer, drainTimeout); err != nil {
 		firstErr = err
+	}
+	if h3Server != nil {
+		if err := h3Server.Shutdown(context.Background()); err != nil && firstErr == nil && !errors.Is(err, http.ErrServerClosed) {
+			firstErr = err
+		}
 	}
 	if challengeServer != nil {
 		if err := shutdownServer(challengeServer, drainTimeout); err != nil && firstErr == nil {
@@ -193,6 +230,8 @@ func (s *Server) closeAllSessions(reason string) {
 		s.log.Info("closing active tunnel sessions", "count", len(sessions), "reason", reason)
 	}
 	for _, sess := range sessions {
-		_ = sess.conn.Close()
+		if sess.transport != nil {
+			_ = sess.transport.Close()
+		}
 	}
 }

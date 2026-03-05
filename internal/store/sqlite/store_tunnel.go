@@ -42,13 +42,15 @@ func (s *Store) IsHostnameActive(ctx context.Context, host string) (bool, error)
 }
 
 func (s *Store) ResetConnectedTunnels(ctx context.Context) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	var affected int64
+	err := withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	if _, err = tx.ExecContext(ctx, `
+		if _, err = tx.ExecContext(ctx, `
 UPDATE domains
 SET status = ?
 WHERE id IN (
@@ -56,22 +58,24 @@ WHERE id IN (
 	FROM tunnels
 	WHERE state = ? AND is_temporary = 1
 )`, domain.DomainStatusInactive, domain.TunnelStateConnected); err != nil {
-		return 0, err
-	}
+			return err
+		}
 
-	res, err := tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 UPDATE tunnels
 SET state = ?, disconnected_at = ?
 WHERE state = ?`, domain.TunnelStateDisconnected, time.Now().UTC(), domain.TunnelStateConnected)
-	if err != nil {
-		return 0, err
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
+		if err != nil {
+			return err
+		}
+		affected, err = res.RowsAffected()
+		if err != nil {
+			return err
+		}
 
-	if err = tx.Commit(); err != nil {
+		return tx.Commit()
+	})
+	if err != nil {
 		return 0, err
 	}
 	return affected, nil
@@ -87,23 +91,30 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.Domain{}, domain.Tunnel{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	var (
+		d domain.Domain
+		t domain.Tunnel
+	)
+	err = withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	now := time.Now().UTC()
-	d, err := s.claimOrCreateDomainTx(ctx, tx, keyID, in, now)
-	if err != nil {
-		return domain.Domain{}, domain.Tunnel{}, err
-	}
-	t, err := insertAllocatedTunnelTx(ctx, tx, keyID, d.ID, in.isTemporary, in.clientMeta)
-	if err != nil {
-		return domain.Domain{}, domain.Tunnel{}, err
-	}
+		now := time.Now().UTC()
+		d, err = s.claimOrCreateDomainTx(ctx, tx, keyID, in, now)
+		if err != nil {
+			return err
+		}
+		t, err = insertAllocatedTunnelTx(ctx, tx, keyID, d.ID, in.isTemporary, in.clientMeta)
+		if err != nil {
+			return err
+		}
 
-	if err = tx.Commit(); err != nil {
+		return tx.Commit()
+	})
+	if err != nil {
 		return domain.Domain{}, domain.Tunnel{}, err
 	}
 	return d, t, nil
@@ -111,66 +122,70 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 
 func (s *Store) SwapTunnelSession(ctx context.Context, domainID, keyID, clientMeta string) (domain.Tunnel, error) {
 	clientMeta = strings.TrimSpace(clientMeta)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.Tunnel{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	var t domain.Tunnel
+	err := withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	var apiKeyID string
-	var domainType string
-	if err = tx.QueryRowContext(ctx, `
+		var apiKeyID string
+		var domainType string
+		if err = tx.QueryRowContext(ctx, `
 SELECT api_key_id, type
 FROM domains
 WHERE id = ?`, domainID).Scan(&apiKeyID, &domainType); err != nil {
-		return domain.Tunnel{}, err
-	}
-	if apiKeyID != keyID {
-		return domain.Tunnel{}, ErrHostnameInUse
-	}
+			return err
+		}
+		if apiKeyID != keyID {
+			return ErrHostnameInUse
+		}
 
-	now := time.Now().UTC()
-	if _, err = tx.ExecContext(ctx, `
+		now := time.Now().UTC()
+		if _, err = tx.ExecContext(ctx, `
 UPDATE tunnels
 SET state = ?, disconnected_at = ?
 WHERE domain_id = ? AND state = ?`,
-		domain.TunnelStateDisconnected, now, domainID, domain.TunnelStateConnected); err != nil {
-		return domain.Tunnel{}, err
-	}
-	if _, err = tx.ExecContext(ctx, `
+			domain.TunnelStateDisconnected, now, domainID, domain.TunnelStateConnected); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `
 UPDATE domains
 SET status = ?
 WHERE id = ?`, domain.DomainStatusActive, domainID); err != nil {
-		return domain.Tunnel{}, err
-	}
+			return err
+		}
 
-	tID2, err := newID("t")
-	if err != nil {
-		return domain.Tunnel{}, err
-	}
-	t := domain.Tunnel{
-		ID:          tID2,
-		APIKeyID:    keyID,
-		DomainID:    domainID,
-		State:       domain.TunnelStateDisconnected,
-		IsTemporary: domainType == domain.DomainTypeTemporarySubdomain,
-		ClientMeta:  clientMeta,
-	}
-	if _, err = tx.ExecContext(ctx, `
+		tID2, err := newID("t")
+		if err != nil {
+			return err
+		}
+		t = domain.Tunnel{
+			ID:          tID2,
+			APIKeyID:    keyID,
+			DomainID:    domainID,
+			State:       domain.TunnelStateDisconnected,
+			IsTemporary: domainType == domain.DomainTypeTemporarySubdomain,
+			ClientMeta:  clientMeta,
+		}
+		if _, err = tx.ExecContext(ctx, `
 INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_mode, access_password_hash, connected_at, disconnected_at)
 VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
-		t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
-		return domain.Tunnel{}, err
-	}
+			t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
+			return err
+		}
 
-	if err = tx.Commit(); err != nil {
+		return tx.Commit()
+	})
+	if err != nil {
 		return domain.Tunnel{}, err
 	}
 	return t, nil
 }
 
 func (s *Store) SetTunnelConnected(ctx context.Context, tunnelID string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWithSQLiteBusyRetry(ctx, `
 UPDATE tunnels
 SET state = ?, connected_at = ?, disconnected_at = NULL
 WHERE id = ?`,
@@ -182,137 +197,139 @@ func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) erro
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	var keyID string
-	var state string
-	if err = tx.QueryRowContext(ctx, `SELECT api_key_id, state FROM tunnels WHERE id = ?`, tunnelID).Scan(&keyID, &state); err != nil {
-		return err
-	}
-	if state == domain.TunnelStateConnected {
-		return tx.Commit()
-	}
+		var keyID string
+		var state string
+		if err = tx.QueryRowContext(ctx, `SELECT api_key_id, state FROM tunnels WHERE id = ?`, tunnelID).Scan(&keyID, &state); err != nil {
+			return err
+		}
+		if state == domain.TunnelStateConnected {
+			return tx.Commit()
+		}
 
-	var limit int
-	if err = tx.QueryRowContext(ctx, `SELECT tunnel_limit FROM api_keys WHERE id = ?`, keyID).Scan(&limit); err != nil {
-		return err
-	}
-	if limit >= 0 {
-		var active int
-		if err = tx.QueryRowContext(ctx, `
+		var limit int
+		if err = tx.QueryRowContext(ctx, `SELECT tunnel_limit FROM api_keys WHERE id = ?`, keyID).Scan(&limit); err != nil {
+			return err
+		}
+		if limit >= 0 {
+			var active int
+			if err = tx.QueryRowContext(ctx, `
 SELECT COUNT(1)
 FROM tunnels
 WHERE api_key_id = ? AND state = ?`, keyID, domain.TunnelStateConnected).Scan(&active); err != nil {
-			return err
+				return err
+			}
+			if active >= limit {
+				return domain.ErrTunnelLimitReached
+			}
 		}
-		if active >= limit {
-			return domain.ErrTunnelLimitReached
-		}
-	}
 
-	if _, err = tx.ExecContext(ctx, `
+		if _, err = tx.ExecContext(ctx, `
 UPDATE tunnels
 SET state = ?, connected_at = ?, disconnected_at = NULL
 WHERE id = ?`,
-		domain.TunnelStateConnected, time.Now().UTC(), tunnelID); err != nil {
-		return err
-	}
+			domain.TunnelStateConnected, time.Now().UTC(), tunnelID); err != nil {
+			return err
+		}
 
-	return tx.Commit()
+		return tx.Commit()
+	})
 }
 
 func (s *Store) SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, mode, hash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, nullableString(user), nullableString(mode), nullableString(hash), tunnelID)
+	_, err := s.execWithSQLiteBusyRetry(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, nullableString(user), nullableString(mode), nullableString(hash), tunnelID)
 	return err
 }
 
 func (s *Store) SetTunnelAccessPasswordHash(ctx context.Context, tunnelID, hash string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, "admin", access.ModeBasic, nullableString(hash), tunnelID)
+	_, err := s.execWithSQLiteBusyRetry(ctx, `UPDATE tunnels SET access_user = ?, access_mode = ?, access_password_hash = ? WHERE id = ?`, "admin", access.ModeBasic, nullableString(hash), tunnelID)
 	return err
 }
 
 func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var state string
-	var isTemp bool
-	var domainID string
-	if err = tx.QueryRowContext(ctx, `SELECT state, is_temporary, domain_id FROM tunnels WHERE id = ?`, tunnelID).Scan(&state, &isTemp, &domainID); err != nil {
-		return err
-	}
-	if state == domain.TunnelStateClosed {
-		if err = tx.Commit(); err != nil {
+	return withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
 			return err
 		}
-		return nil
-	}
+		defer func() { _ = tx.Rollback() }()
 
-	if _, err = tx.ExecContext(ctx, `UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id = ?`, domain.TunnelStateDisconnected, time.Now().UTC(), tunnelID); err != nil {
-		return err
-	}
-
-	if isTemp {
-		if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusInactive, domainID); err != nil {
+		var state string
+		var isTemp bool
+		var domainID string
+		if err = tx.QueryRowContext(ctx, `SELECT state, is_temporary, domain_id FROM tunnels WHERE id = ?`, tunnelID).Scan(&state, &isTemp, &domainID); err != nil {
 			return err
 		}
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	return nil
+		if state == domain.TunnelStateClosed {
+			return tx.Commit()
+		}
+
+		if _, err = tx.ExecContext(ctx, `UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id = ?`, domain.TunnelStateDisconnected, time.Now().UTC(), tunnelID); err != nil {
+			return err
+		}
+
+		if isTemp {
+			if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusInactive, domainID); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
 }
 
 func (s *Store) CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	var (
+		hostname string
+		closed   bool
+	)
+	err := withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	var state string
-	var isTemp bool
-	var domainID string
-	var domainType string
-	var hostname string
-	if err = tx.QueryRowContext(ctx, `
+		var state string
+		var isTemp bool
+		var domainID string
+		var domainType string
+		if err = tx.QueryRowContext(ctx, `
 SELECT t.state, t.is_temporary, t.domain_id, d.type, d.hostname
 FROM tunnels t
 JOIN domains d ON d.id = t.domain_id
 WHERE t.id = ?`, tunnelID).Scan(&state, &isTemp, &domainID, &domainType, &hostname); err != nil {
-		return "", false, err
-	}
-
-	if !isTemp || domainType != domain.DomainTypeTemporarySubdomain {
-		if err = tx.Commit(); err != nil {
-			return "", false, err
+			return err
 		}
-		return "", false, nil
-	}
-	if state == domain.TunnelStateClosed {
-		if err = tx.Commit(); err != nil {
-			return "", false, err
+
+		if !isTemp || domainType != domain.DomainTypeTemporarySubdomain {
+			hostname = ""
+			closed = false
+			return tx.Commit()
 		}
-		return hostname, false, nil
-	}
+		if state == domain.TunnelStateClosed {
+			closed = false
+			return tx.Commit()
+		}
 
-	now := time.Now().UTC()
-	if _, err = tx.ExecContext(ctx, `UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id = ?`, domain.TunnelStateClosed, now, tunnelID); err != nil {
-		return "", false, err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusInactive, domainID); err != nil {
-		return "", false, err
-	}
+		now := time.Now().UTC()
+		if _, err = tx.ExecContext(ctx, `UPDATE tunnels SET state = ?, disconnected_at = ? WHERE id = ?`, domain.TunnelStateClosed, now, tunnelID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusInactive, domainID); err != nil {
+			return err
+		}
 
-	if err = tx.Commit(); err != nil {
+		closed = true
+		return tx.Commit()
+	})
+	if err != nil {
 		return "", false, err
 	}
-	return hostname, true, nil
+	return hostname, closed, nil
 }

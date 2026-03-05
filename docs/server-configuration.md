@@ -44,6 +44,13 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_WAF_COUNTER_RETENTION`  | `1h`          | Retention window for in-memory per-host WAF counters         |
 | -                         | `EXPOSE_AUTOUPDATE`             | `false`       | Enable automatic self-update (`true`/`1`/`yes`)              |
 
+## HTTP/3 + QUIC Behavior
+
+- The server always starts HTTP/3 on the same listen address as HTTPS (`EXPOSE_LISTEN_HTTPS`).
+- There is no separate QUIC listen or advertise setting in current versions.
+- For clients using QUIC (`--transport=auto` or `--transport=quic`), your public TCP and UDP paths must use the same authority/port.
+- If UDP is unavailable, clients can still connect over WebSocket when using `--transport=auto`.
+
 ## `.env` File Support
 
 The server loads `.env` from the working directory on startup. Variables already present in the environment are not overwritten.
@@ -88,7 +95,7 @@ The server listens on non-privileged ports by default. If you're behind NAT or a
 | 80                  | 10080               | ACME HTTP-01 challenges             |
 
 See [Port Forwarding](port-forwarding.md) for router-specific instructions.
-For non-default UDP and load-balancer layouts, see [UDP Deployment Topologies](udp-deployment-topologies.md).
+For NAT and load-balancer layouts, see [UDP Deployment Topologies](udp-deployment-topologies.md).
 
 To listen on standard ports directly (requires capabilities or root):
 

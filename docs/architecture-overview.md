@@ -21,11 +21,11 @@ sequenceDiagram
     participant A as Local app
 
     C->>S: POST /v1/tunnels/register (API key)
-    S-->>C: tunnel_id + ws_url + optional h3_url + capabilities
+    S-->>C: tunnel_id + ws_url + h3_url + capabilities
     C->>S: WebSocket connect /v1/tunnels/connect
-    C->>S: or HTTP/3 CONNECT /v1/tunnels/connect-h3
-    C->>S: or HTTP/3 CONNECT /v1/tunnels/connect-h3 (control)
-    C->>S: HTTP/3 worker streams /v1/tunnels/connect-h3/stream
+    C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_compat)
+    C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_multistream control, X-Expose-H3-Mode: multistream)
+    C->>S: HTTP/3 POST /v1/tunnels/connect-h3/stream (worker, X-Expose-H3-Session)
 
     B->>S: HTTPS GET myapp.example.com/path
     S->>S: Match hostname → tunnel session
@@ -52,7 +52,13 @@ sequenceDiagram
 - `h3_multistream`: negotiated multi-stream mode with:
   - one long-lived control stream for keepalive and lifecycle.
   - many short-lived worker streams where each forwarded HTTP request or proxied websocket uses a distinct HTTP/3 stream.
-- Registration advertises capability/version metadata (`capabilities`) so clients can negotiate protocol behavior.
+- Registration currently advertises `ws_v1`, `h3_compat`, and `h3_multistream` capabilities.
+- Client selection order is:
+  - `--transport=auto`: `h3_multistream` -> `h3_compat` -> `ws_v1`
+  - `--transport=quic`: `h3_multistream` -> `h3_compat` (no WebSocket fallback)
+  - `--transport=ws`: `ws_v1` only
+
+The server accepts HTTP/3 `POST` and `CONNECT` on H3 endpoints for compatibility. The built-in client uses `POST`.
 
 ## Tunnel Types
 

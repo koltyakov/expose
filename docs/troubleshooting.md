@@ -93,10 +93,14 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 ## HTTP/3 fallback / QUIC issues
 
 - **Symptom**: `--transport=quic` fails to connect, or `--transport=auto` consistently uses WebSocket.
-- **Check UDP reachability**: Open or forward UDP on the same port as `EXPOSE_LISTEN_HTTPS` (for example `10443/udp` when HTTPS is `:10443`).
-- **Check server advertising**: `--transport=quic` requires advertised HTTP/3 support (`h3_url`).
-- **Check explicit mode**: `--transport=quic` never silently falls back; use `--transport=auto` if fallback is desired.
-- **Check topology**: For reverse proxies, cloud firewalls, or non-default UDP mappings, review [UDP Deployment Topologies](udp-deployment-topologies.md).
+- **Check mode semantics**:
+  - `--transport=quic` tries HTTP/3 only and never falls back to WebSocket.
+  - `--transport=auto` tries HTTP/3 first, then WebSocket fallback.
+- **Check UDP reachability**: Open or forward UDP on the same public port as HTTPS (for example `10443/udp` when HTTPS is `:10443`).
+- **Check local listener**: Confirm server binds UDP on the HTTPS port (example: `lsof -nP -iUDP:10443`).
+- **Check topology limits**: Mixed public ports such as `443/tcp` + `8443/udp` are not supported for QUIC in current versions.
+- **Check server advertising**: `--transport=quic` requires `h3_url` in registration. Current servers return it by default.
+- **Check edge path**: For reverse proxies, cloud firewalls, or pass-through issues, review [UDP Deployment Topologies](udp-deployment-topologies.md).
 
 ## WebSocket disconnects / frequent reconnects
 

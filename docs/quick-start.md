@@ -30,7 +30,7 @@ export EXPOSE_TLS_MODE=auto
 ./bin/expose server
 ```
 
-> Ports `10443` (HTTPS) and `10080` (ACME HTTP-01) must be reachable from the internet. See [Port Forwarding](port-forwarding.md) if you're behind a router.
+> Ports `10443/tcp` (HTTPS) and `10080/tcp` (ACME HTTP-01) must be reachable from the internet. For HTTP/3/QUIC transport, open `10443/udp` as well. See [Port Forwarding](port-forwarding.md) if you're behind a router.
 
 ## 2 - Create an API key
 

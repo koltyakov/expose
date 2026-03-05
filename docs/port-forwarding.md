@@ -1,19 +1,22 @@
 # Port Forwarding
 
-If your expose server runs behind a home router or NAT gateway, you need to forward two ports from your public IP to the server machine.
+If your expose server runs behind a home router or NAT gateway, forward TCP and UDP for the HTTPS listener, plus the ACME HTTP challenge port.
 
 ## Required Ports
 
 | Public Port | Internal Port | Protocol | Purpose                             |
 | ----------- | ------------- | -------- | ----------------------------------- |
 | **443**     | 10443         | TCP      | HTTPS traffic (tunnelled requests)  |
+| **443**     | 10443         | UDP      | HTTP/3 QUIC tunnel traffic          |
 | **80**      | 10080         | TCP      | ACME HTTP-01 certificate challenges |
 
 ```mermaid
 flowchart LR
     Internet["Internet"] -- ":443 TCP" --> Router["Router / NAT"]
+    Internet -- ":443 UDP" --> Router
     Internet -- ":80 TCP" --> Router
-    Router -- ":10443" --> Server["expose server<br/>192.168.1.50"]
+    Router -- ":10443 TCP" --> Server["expose server<br/>192.168.1.50"]
+    Router -- ":10443 UDP" --> Server
     Router -- ":10080" --> Server
 ```
 
@@ -33,11 +36,12 @@ flowchart LR
 
 3. Navigate to **Port Forwarding** (sometimes under Advanced, NAT, or Virtual Servers)
 
-4. Create two forwarding rules:
+4. Create three forwarding rules:
 
    | External Port | Internal IP  | Internal Port | Protocol |
    | ------------- | ------------ | ------------- | -------- |
    | 443           | 192.168.1.50 | 10443         | TCP      |
+   | 443           | 192.168.1.50 | 10443         | UDP      |
    | 80            | 192.168.1.50 | 10080         | TCP      |
 
 Where 192.168.1.50 is your server's local IP address.
@@ -64,9 +68,15 @@ curl -v https://example.com --connect-timeout 5
 
 Or use an online port checker to test ports 80 and 443 on your public IP.
 
+For UDP path sanity checks:
+
+```bash
+nc -vzu example.com 443
+```
+
 ## Tips
 
 - **Static local IP**: Assign a static IP or DHCP reservation for your server so the forwarding rules don't break.
 - **ISP blocking ports 80/443**: Some ISPs block these ports on residential connections. Contact your ISP or consider a VPS instead (see [VPS Deployment](vps-deployment.md)).
 - **Double NAT**: If you're behind two routers (e.g. ISP modem + your router), you need to forward on both, or put the ISP modem in bridge mode.
-- **Firewall**: Ensure `ufw`, `iptables`, or macOS firewall allows incoming connections on 10443 and 10080.
+- **Firewall**: Ensure `ufw`, `iptables`, or macOS firewall allows incoming connections on `10443/tcp`, `10443/udp`, and `10080/tcp`.

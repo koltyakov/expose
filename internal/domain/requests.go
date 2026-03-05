@@ -2,6 +2,10 @@
 // server, store, and tunnel protocol layers.
 package domain
 
+// RegisterResumeTunnelHeader allows a reconnecting client to ask the server to
+// resume a previously issued tunnel ID instead of allocating a replacement.
+const RegisterResumeTunnelHeader = "X-Expose-Resume-Tunnel"
+
 // RegisterRequest is the JSON body sent by the client to create a new tunnel.
 type RegisterRequest struct {
 	Mode            string `json:"mode"`

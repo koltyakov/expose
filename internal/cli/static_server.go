@@ -25,11 +25,24 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	embedassets "github.com/koltyakov/expose/internal/assets"
 	xhtml "golang.org/x/net/html"
 	xatom "golang.org/x/net/html/atom"
 )
 
 const staticServerShutdownTimeout = 5 * time.Second
+
+var staticFallbackFaviconICO = append([]byte(nil), embedassets.FaviconICO...)
+
+var staticMarkdownFaviconNames = []string{
+	"favicon.svg",
+	"favicon.png",
+	"favicon.ico",
+	"favicon.jpg",
+	"favicon.jpeg",
+	"favicon.webp",
+	"apple-touch-icon.png",
+}
 
 type staticFileServer struct {
 	server *http.Server
@@ -140,6 +153,9 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.serveResolvedPath(w, r, cleanPath) {
 		return
 	}
+	if serveStaticFallbackFavicon(w, r, cleanPath) {
+		return
+	}
 	if h.spa && staticSPAMethodAllowed(r.Method) && cleanPath != "/index.html" && h.serveSPAIndex(w, r) {
 		return
 	}
@@ -153,7 +169,7 @@ func (h *staticHandler) serveResolvedPath(w http.ResponseWriter, r *http.Request
 	}
 	if !info.IsDir() {
 		defer func() { _ = file.Close() }()
-		serveStaticOpenedFile(w, r, file, info)
+		h.serveStaticOpenedFile(w, r, file, info)
 		return true
 	}
 	_ = file.Close()
@@ -165,7 +181,7 @@ func (h *staticHandler) serveResolvedPath(w http.ResponseWriter, r *http.Request
 			return true
 		}
 		defer func() { _ = defaultFile.Close() }()
-		serveStaticOpenedFileWithName(w, r, defaultPath, defaultFile, defaultInfo)
+		h.serveStaticOpenedFileWithName(w, r, defaultPath, defaultFile, defaultInfo)
 		return true
 	}
 
@@ -190,7 +206,7 @@ func (h *staticHandler) serveSPAIndex(w http.ResponseWriter, r *http.Request) bo
 		return false
 	}
 	defer func() { _ = file.Close() }()
-	serveStaticOpenedFile(w, r, file, info)
+	h.serveStaticOpenedFile(w, r, file, info)
 	return true
 }
 
@@ -258,13 +274,13 @@ func staticDirectoryPath(cleanPath string) string {
 	return cleanPath + "/"
 }
 
-func serveStaticOpenedFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) {
-	serveStaticOpenedFileWithName(w, r, info.Name(), file, info)
+func (h *staticHandler) serveStaticOpenedFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) {
+	h.serveStaticOpenedFileWithName(w, r, info.Name(), file, info)
 }
 
-func serveStaticOpenedFileWithName(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo) {
+func (h *staticHandler) serveStaticOpenedFileWithName(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo) {
 	if staticShouldRenderMarkdown(r.Method, info.Name()) {
-		if serveRenderedMarkdownFile(w, r, file, info) {
+		if h.serveRenderedMarkdownFile(w, r, file, info) {
 			return
 		}
 	}
@@ -279,7 +295,7 @@ func staticShouldRenderMarkdown(method, name string) bool {
 	return ext == ".md" || ext == ".markdown"
 }
 
-func serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) bool {
+func (h *staticHandler) serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) bool {
 	body, err := io.ReadAll(file)
 	if err != nil {
 		return false
@@ -288,10 +304,14 @@ func serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http
 	if strings.TrimSpace(title) == "" {
 		title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 	}
+	faviconHref := h.resolveMarkdownFaviconHref(r.URL.Path)
 	page, err := buildMarkdownHTMLPage(markdownPageData{
-		Title:      title,
-		BodyHTML:   template.HTML(rendered),
-		HasMermaid: hasMermaid,
+		Title:           title,
+		BodyHTML:        template.HTML(rendered),
+		FaviconHref:     faviconHref,
+		FaviconType:     staticFaviconContentType(faviconHref),
+		UseShortcutIcon: staticShouldUseShortcutIcon(faviconHref),
+		HasMermaid:      hasMermaid,
 	})
 	if err != nil {
 		return false
@@ -302,9 +322,12 @@ func serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http
 }
 
 type markdownPageData struct {
-	Title      string
-	BodyHTML   template.HTML
-	HasMermaid bool
+	Title           string
+	BodyHTML        template.HTML
+	FaviconHref     string
+	FaviconType     string
+	UseShortcutIcon bool
+	HasMermaid      bool
 }
 
 var markdownPageTemplate = template.Must(template.New("markdown-page").Parse(`<!doctype html>
@@ -313,6 +336,8 @@ var markdownPageTemplate = template.Must(template.New("markdown-page").Parse(`<!
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}}</title>
+  {{if .FaviconHref}}<link rel="icon"{{if .FaviconType}} type="{{.FaviconType}}"{{end}} href="{{.FaviconHref}}">{{end}}
+  {{if .UseShortcutIcon}}<link rel="shortcut icon" href="{{.FaviconHref}}">{{end}}
   <style>
     :root {
       color-scheme: light dark;
@@ -553,6 +578,97 @@ func buildMarkdownHTMLPage(data markdownPageData) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+func (h *staticHandler) resolveMarkdownFaviconHref(requestPath string) string {
+	for _, candidate := range staticMarkdownFaviconCandidates(requestPath) {
+		file, info, ok := h.open(candidate)
+		if !ok {
+			continue
+		}
+		_ = file.Close()
+		if info != nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "/favicon.ico"
+}
+
+func staticFaviconContentType(href string) string {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(href))) {
+	case ".ico":
+		return "image/x-icon"
+	case ".png":
+		return "image/png"
+	case ".svg":
+		return "image/svg+xml"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+func staticShouldUseShortcutIcon(href string) bool {
+	return strings.EqualFold(strings.TrimSpace(filepath.Ext(href)), ".ico")
+}
+
+func staticMarkdownFaviconCandidates(requestPath string) []string {
+	cleanPath := staticCleanPath(requestPath)
+	searchDir := cleanPath
+	if !strings.HasSuffix(strings.TrimSpace(requestPath), "/") {
+		searchDir = path.Dir(cleanPath)
+	}
+	if searchDir == "." || searchDir == "" {
+		searchDir = "/"
+	}
+
+	seen := make(map[string]struct{}, len(staticMarkdownFaviconNames)*2)
+	candidates := make([]string, 0, len(staticMarkdownFaviconNames)*2)
+	for {
+		for _, name := range staticMarkdownFaviconNames {
+			candidate := path.Join(searchDir, name)
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+		if searchDir == "/" {
+			break
+		}
+		searchDir = path.Dir(searchDir)
+		if searchDir == "." || searchDir == "" {
+			searchDir = "/"
+		}
+	}
+	return candidates
+}
+
+func serveStaticFallbackFavicon(w http.ResponseWriter, r *http.Request, cleanPath string) bool {
+	if !shouldServeStaticFallbackFavicon(r, cleanPath) {
+		return false
+	}
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return true
+	}
+	_, _ = w.Write(staticFallbackFaviconICO)
+	return true
+}
+
+func shouldServeStaticFallbackFavicon(r *http.Request, cleanPath string) bool {
+	if r == nil {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return cleanPath == "/favicon.ico"
 }
 
 func renderMarkdownDocument(src, requestPath string) (string, string, bool) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -574,12 +575,14 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 	var gotUser string
 	var gotMode string
 	var gotPassword string
+	var gotResumeID string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/tunnels/register" {
 			http.NotFound(w, r)
 			return
 		}
 		gotAuth = r.Header.Get("Authorization")
+		gotResumeID = r.Header.Get(domain.RegisterResumeTunnelHeader)
 		var req registerRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -601,6 +604,7 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 		ProtectMode: "form",
 		LocalPort:   8080,
 	}, nil)
+	c.resumeID = "t_prev"
 
 	_, err := c.register(context.Background())
 	if err != nil {
@@ -617,6 +621,9 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotAuth, "Bearer ") {
 		t.Fatalf("expected bearer auth header, got %q", gotAuth)
+	}
+	if gotResumeID != "t_prev" {
+		t.Fatalf("expected resume tunnel header t_prev, got %q", gotResumeID)
 	}
 }
 

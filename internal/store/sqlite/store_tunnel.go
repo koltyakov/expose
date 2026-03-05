@@ -120,9 +120,12 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 	return d, t, nil
 }
 
-func (s *Store) SwapTunnelSession(ctx context.Context, domainID, keyID, clientMeta string) (domain.Tunnel, error) {
+func (s *Store) ResumeTunnelSession(ctx context.Context, tunnelID, keyID, clientMeta string) (domain.Domain, domain.Tunnel, error) {
 	clientMeta = strings.TrimSpace(clientMeta)
-	var t domain.Tunnel
+	var (
+		d domain.Domain
+		t domain.Tunnel
+	)
 	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -130,58 +133,81 @@ func (s *Store) SwapTunnelSession(ctx context.Context, domainID, keyID, clientMe
 		}
 		defer func() { _ = tx.Rollback() }()
 
-		var apiKeyID string
-		var domainType string
+		var lastSeen sql.NullTime
+		var connectedAt sql.NullTime
+		var disconnectedAt sql.NullTime
+		var storedClientMeta sql.NullString
+		var accessUser sql.NullString
+		var accessMode sql.NullString
+		var accessPasswordHash sql.NullString
 		if err = tx.QueryRowContext(ctx, `
-SELECT api_key_id, type
-FROM domains
-WHERE id = ?`, domainID).Scan(&apiKeyID, &domainType); err != nil {
+SELECT
+ d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.connected_at, t.disconnected_at
+FROM tunnels t
+JOIN domains d ON d.id = t.domain_id
+WHERE t.id = ?`, tunnelID).Scan(
+			&d.ID, &d.APIKeyID, &d.Type, &d.Hostname, &d.Status, &d.CreatedAt, &lastSeen,
+			&t.ID, &t.APIKeyID, &t.DomainID, &t.State, &t.IsTemporary, &storedClientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
+		); err != nil {
 			return err
 		}
-		if apiKeyID != keyID {
+		if d.APIKeyID != keyID || t.APIKeyID != keyID {
+			return ErrHostnameInUse
+		}
+		if t.State == domain.TunnelStateClosed {
+			return sql.ErrNoRows
+		}
+		if storedClientMeta.Valid {
+			t.ClientMeta = storedClientMeta.String
+		}
+		if accessUser.Valid {
+			t.AccessUser = accessUser.String
+		}
+		if accessMode.Valid {
+			t.AccessMode = accessMode.String
+		}
+		if accessPasswordHash.Valid {
+			t.AccessPasswordHash = accessPasswordHash.String
+		}
+		if connectedAt.Valid {
+			v := connectedAt.Time
+			t.ConnectedAt = &v
+		}
+		if disconnectedAt.Valid {
+			v := disconnectedAt.Time
+			t.DisconnectedAt = &v
+		}
+		if lastSeen.Valid {
+			v := lastSeen.Time
+			d.LastSeenAt = &v
+		}
+		if existing := strings.TrimSpace(t.ClientMeta); existing != "" && clientMeta != "" && existing != clientMeta {
 			return ErrHostnameInUse
 		}
 
-		now := time.Now().UTC()
-		if _, err = tx.ExecContext(ctx, `
-UPDATE tunnels
-SET state = ?, disconnected_at = ?
-WHERE domain_id = ? AND state = ?`,
-			domain.TunnelStateDisconnected, now, domainID, domain.TunnelStateConnected); err != nil {
-			return err
-		}
 		if _, err = tx.ExecContext(ctx, `
 UPDATE domains
 SET status = ?
-WHERE id = ?`, domain.DomainStatusActive, domainID); err != nil {
+WHERE id = ?`, domain.DomainStatusActive, d.ID); err != nil {
 			return err
 		}
-
-		tID2, err := newID("t")
-		if err != nil {
-			return err
+		d.Status = domain.DomainStatusActive
+		if clientMeta != "" && clientMeta != strings.TrimSpace(t.ClientMeta) {
+			if _, err = tx.ExecContext(ctx, `
+UPDATE tunnels
+SET client_meta = ?
+WHERE id = ?`, nullableString(clientMeta), t.ID); err != nil {
+				return err
+			}
+			t.ClientMeta = clientMeta
 		}
-		t = domain.Tunnel{
-			ID:          tID2,
-			APIKeyID:    keyID,
-			DomainID:    domainID,
-			State:       domain.TunnelStateDisconnected,
-			IsTemporary: domainType == domain.DomainTypeTemporarySubdomain,
-			ClientMeta:  clientMeta,
-		}
-		if _, err = tx.ExecContext(ctx, `
-INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, client_meta, access_user, access_mode, access_password_hash, connected_at, disconnected_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
-			t.ID, t.APIKeyID, t.DomainID, t.State, boolToInt(t.IsTemporary), nullableString(t.ClientMeta)); err != nil {
-			return err
-		}
-
 		return tx.Commit()
 	})
 	if err != nil {
-		return domain.Tunnel{}, err
+		return domain.Domain{}, domain.Tunnel{}, err
 	}
-	return t, nil
+	return d, t, nil
 }
 
 func (s *Store) SetTunnelConnected(ctx context.Context, tunnelID string) error {

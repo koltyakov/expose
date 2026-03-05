@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,8 +12,6 @@ import (
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/domain"
 )
-
-var errRegisterSwapInactive = errors.New("register swap inactive tunnel session")
 
 type preparedRegisterRequest struct {
 	request             registerRequest
@@ -146,18 +145,6 @@ func (s *Server) allocateRegisterRoute(ctx context.Context, keyID string, prepar
 		s.cfg.BaseDomain,
 		prepared.clientMachineID,
 	)
-	if isHostnameInUseError(err) {
-		if swappedDomain, swappedTunnel, swapped, swapErr := s.trySwapInactiveClientSession(ctx, keyID, req.Subdomain, prepared.clientMachineID); swapErr != nil {
-			if s.log != nil {
-				s.log.Error("failed to swap inactive tunnel session", "subdomain", req.Subdomain, "err", swapErr)
-			}
-			return domain.Domain{}, domain.Tunnel{}, errors.Join(errRegisterSwapInactive, swapErr)
-		} else if swapped {
-			domainRec = swappedDomain
-			tunnelRec = swappedTunnel
-			err = nil
-		}
-	}
 	if prepared.autoStableSubdomain && isHostnameInUseError(err) {
 		// Only fall back to a random subdomain for cross-key hash collisions.
 		// If the same API key already owns this subdomain with an active
@@ -177,6 +164,61 @@ func (s *Server) allocateRegisterRoute(ctx context.Context, keyID string, prepar
 		}
 	}
 	return domainRec, tunnelRec, err
+}
+
+func (s *Server) tryResumeRegisterRoute(
+	ctx context.Context,
+	keyID string,
+	prepared preparedRegisterRequest,
+	resumeTunnelID string,
+) (domain.Domain, domain.Tunnel, bool, error) {
+	resumeTunnelID = strings.TrimSpace(resumeTunnelID)
+	if resumeTunnelID != "" {
+		domainRec, tunnelRec, err := s.store.ResumeTunnelSession(ctx, resumeTunnelID, keyID, prepared.clientMachineID)
+		if err == nil {
+			if s.log != nil {
+				s.log.Info("tunnel session resumed", "tunnel_id", tunnelRec.ID, "hostname", domainRec.Hostname, "source", "header")
+			}
+			return domainRec, tunnelRec, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) && !isHostnameInUseError(err) {
+			return domain.Domain{}, domain.Tunnel{}, false, err
+		}
+	}
+
+	subdomain := strings.TrimSpace(prepared.request.Subdomain)
+	if subdomain == "" || prepared.clientMachineID == "" {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+
+	host := strings.ToLower(strings.TrimSpace(subdomain)) + "." + normalizeHost(s.cfg.BaseDomain)
+	route, err := s.store.FindRouteByHost(ctx, host)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+	if err != nil {
+		return domain.Domain{}, domain.Tunnel{}, false, err
+	}
+	if route.Domain.APIKeyID != keyID || route.Tunnel.State == domain.TunnelStateClosed {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+
+	existingMachineID := strings.TrimSpace(route.Tunnel.ClientMeta)
+	if existingMachineID != "" && existingMachineID != prepared.clientMachineID {
+		return domain.Domain{}, domain.Tunnel{}, false, nil
+	}
+
+	domainRec, tunnelRec, err := s.store.ResumeTunnelSession(ctx, route.Tunnel.ID, keyID, prepared.clientMachineID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || isHostnameInUseError(err) {
+			return domain.Domain{}, domain.Tunnel{}, false, nil
+		}
+		return domain.Domain{}, domain.Tunnel{}, false, err
+	}
+	if s.log != nil {
+		s.log.Info("tunnel session resumed", "tunnel_id", tunnelRec.ID, "hostname", domainRec.Hostname, "source", "hostname")
+	}
+	return domainRec, tunnelRec, true, nil
 }
 
 func (s *Server) registerURLs(hostHeader, hostname, token string) (publicURL, wsURL, h3URL string) {

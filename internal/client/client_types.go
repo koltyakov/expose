@@ -61,6 +61,7 @@ type Client struct {
 	apiClient  *http.Client // for registration API calls
 	fwdClient  *http.Client // for local upstream forwarding
 	autoUpdate bool         // when true, periodically self-update and restart
+	resumeID   string       // last tunnel ID, reused on reconnect attempts
 	hooks      LifecycleHooks
 }
 

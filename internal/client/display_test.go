@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -795,4 +796,40 @@ func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
 	if strings.Contains(out, "online for ") || strings.Contains(out, "reconnecting for ") {
 		t.Fatal("expected no status duration before first connection")
 	}
+}
+
+func TestDisplayAutoRefreshUpdatesSessionDurationWhileIdle(t *testing.T) {
+	t.Parallel()
+
+	d, buf := newTestDisplay(false)
+	d.refreshInterval = 10 * time.Millisecond
+	defer d.Cleanup()
+
+	nowUnix := atomic.Int64{}
+	start := time.Now()
+	nowUnix.Store(start.UnixNano())
+	d.nowFunc = func() time.Time {
+		return time.Unix(0, nowUnix.Load())
+	}
+
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	nowUnix.Store(start.Add(5 * time.Minute).UnixNano())
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		out := buf.String()
+		d.mu.Unlock()
+		if strings.Contains(out, "for 5 minutes") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	d.mu.Lock()
+	out := buf.String()
+	d.mu.Unlock()
+	t.Fatalf("expected auto-refresh to update session duration, got: %s", out)
 }

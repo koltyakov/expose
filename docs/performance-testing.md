@@ -55,6 +55,13 @@ WebSocket vs HTTP/3 compatibility-mode framing:
 go test ./internal/tunnelproto -bench 'CompatibilityModeWSVsH3Stream' -run '^$'
 ```
 
+Multi-tunnel transport matrix (steady-state public HTTP across many active
+tunnels, comparing `ws` vs `quic`):
+
+```bash
+go test ./internal/server -bench 'PublicHTTPRoundTripTransportMatrix' -run '^$' -benchmem
+```
+
 Multi-tunnel connection soak:
 
 ```bash

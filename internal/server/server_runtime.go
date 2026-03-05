@@ -8,12 +8,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/waf"
 )
 
@@ -123,6 +126,7 @@ func (s *Server) Run(ctx context.Context) error {
 		Addr:        s.cfg.ListenHTTPS,
 		Handler:     handler,
 		TLSConfig:   h3TLSConfig,
+		QUICConfig:  netutil.TunnelQUICConfig(0),
 		IdleTimeout: durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
 		ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
 			return context.WithValue(ctx, http3ConnContextKey{}, c)
@@ -174,7 +178,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		return s.gracefulShutdown(httpsServer, challengeServer, h3Server)
 	case err := <-errCh:
-		s.closeAllSessions("fatal error")
+		s.forceCloseAllSessions("fatal error")
 		_ = shutdownServer(httpsServer, durationOr(s.cfg.ShutdownDrainTime, 5*time.Second))
 		_ = h3Server.Close()
 		if challengeServer != nil {
@@ -187,39 +191,92 @@ func (s *Server) Run(ctx context.Context) error {
 
 // gracefulShutdown performs an orderly multi-phase shutdown:
 //  1. Drain - stop accepting new connections (http.Server.Shutdown).
-//  2. Close - terminate all active tunnel sessions.
-//  3. Wait  - allow read loops to finish within a timeout.
+//  2. Signal - ask active tunnel sessions to reconnect elsewhere.
+//  3. Close - terminate any sessions that didn't exit on their own.
+//  4. Wait  - allow read loops to finish within a timeout.
 func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *http.Server, h3Server *http3.Server) error {
 	drainTimeout := durationOr(s.cfg.ShutdownDrainTime, 5*time.Second)
 	waitTimeout := durationOr(s.cfg.ShutdownWaitTime, 15*time.Second)
 
 	s.log.Info("shutdown: draining connections", "timeout", drainTimeout)
-	var firstErr error
-	if err := shutdownServer(httpsServer, drainTimeout); err != nil {
-		firstErr = err
-	}
-	if h3Server != nil {
-		if err := h3Server.Shutdown(context.Background()); err != nil && firstErr == nil && !errors.Is(err, http.ErrServerClosed) {
-			firstErr = err
-		}
-	}
-	if challengeServer != nil {
-		if err := shutdownServer(challengeServer, drainTimeout); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	s.closeAllSessions("shutdown")
+	drainErrCh := make(chan error, 1)
+	go func() {
+		drainErrCh <- s.drainServers(httpsServer, challengeServer, h3Server, drainTimeout)
+	}()
+	s.signalAllSessions("shutdown")
 
 	s.log.Info("shutdown: waiting for tunnel sessions to finish", "timeout", waitTimeout)
 	if !waitGroupWait(&s.hub.wg, waitTimeout) {
-		s.log.Warn("shutdown: timed out waiting for tunnel sessions")
+		s.log.Warn("shutdown: timed out waiting for tunnel sessions; forcing close", "timeout", waitTimeout)
+		s.forceCloseAllSessions("shutdown timeout")
+		if !waitGroupWait(&s.hub.wg, 2*time.Second) {
+			s.log.Warn("shutdown: timed out waiting for forced tunnel session close")
+		}
 	}
+	firstErr := <-drainErrCh
 	s.log.Info("shutdown: complete")
 	return firstErr
 }
 
-func (s *Server) closeAllSessions(reason string) {
+func (s *Server) drainServers(httpsServer *http.Server, challengeServer *http.Server, h3Server *http3.Server, timeout time.Duration) error {
+	type shutdownTask struct {
+		name string
+		run  func() error
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	tasks := make([]shutdownTask, 0, 3)
+	if httpsServer != nil {
+		tasks = append(tasks, shutdownTask{
+			name: "https",
+			run:  func() error { return shutdownServer(httpsServer, timeout) },
+		})
+	}
+	if h3Server != nil {
+		tasks = append(tasks, shutdownTask{
+			name: "http3",
+			run: func() error {
+				err := h3Server.Shutdown(ctx)
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			},
+		})
+	}
+	if challengeServer != nil {
+		tasks = append(tasks, shutdownTask{
+			name: "challenge",
+			run:  func() error { return shutdownServer(challengeServer, timeout) },
+		})
+	}
+
+	errCh := make(chan error, len(tasks))
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(task shutdownTask) {
+			defer wg.Done()
+			if err := task.run(); err != nil {
+				errCh <- fmt.Errorf("%s server shutdown: %w", task.name, err)
+			}
+		}(task)
+	}
+	wg.Wait()
+	close(errCh)
+
+	var firstErr error
+	for err := range errCh {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (s *Server) signalAllSessions(reason string) {
 	s.hub.mu.RLock()
 	sessions := make([]*session, 0, len(s.hub.sessions))
 	for _, sess := range s.hub.sessions {
@@ -227,11 +284,37 @@ func (s *Server) closeAllSessions(reason string) {
 	}
 	s.hub.mu.RUnlock()
 
-	if len(sessions) > 0 {
+	if len(sessions) > 0 && s.log != nil {
+		s.log.Info("signaling active tunnel sessions", "count", len(sessions), "reason", reason)
+	}
+
+	var wg sync.WaitGroup
+	for _, sess := range sessions {
+		if sess == nil || sess.writer == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(sess *session) {
+			defer wg.Done()
+			_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindClose})
+		}(sess)
+	}
+	wg.Wait()
+}
+
+func (s *Server) forceCloseAllSessions(reason string) {
+	s.hub.mu.RLock()
+	sessions := make([]*session, 0, len(s.hub.sessions))
+	for _, sess := range s.hub.sessions {
+		sessions = append(sessions, sess)
+	}
+	s.hub.mu.RUnlock()
+
+	if len(sessions) > 0 && s.log != nil {
 		s.log.Info("closing active tunnel sessions", "count", len(sessions), "reason", reason)
 	}
 	for _, sess := range sessions {
-		if sess.transport != nil {
+		if sess != nil && sess.transport != nil {
 			_ = sess.transport.Close()
 		}
 	}

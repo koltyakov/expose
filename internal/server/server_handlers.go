@@ -1,7 +1,6 @@
 package server
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -29,38 +28,46 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	active, err := s.store.ActiveTunnelCountByKey(r.Context(), keyID)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	keyLimit, err := s.store.GetAPIKeyTunnelLimit(r.Context(), keyID)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if keyLimit >= 0 && active >= keyLimit {
-		writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
-		return
-	}
-
 	prepared, ok := s.parseAndValidateRegisterRequest(w, r)
 	if !ok {
 		return
 	}
 
-	domainRec, tunnelRec, err := s.allocateRegisterRoute(r.Context(), keyID, prepared)
+	domainRec, tunnelRec, resumed, err := s.tryResumeRegisterRoute(
+		r.Context(),
+		keyID,
+		prepared,
+		r.Header.Get(domain.RegisterResumeTunnelHeader),
+	)
 	if err != nil {
-		if errors.Is(err, errRegisterSwapInactive) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !resumed {
+		active, err := s.store.ActiveTunnelCountByKey(r.Context(), keyID)
+		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if isHostnameInUseError(err) {
-			writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
-		} else {
-			http.Error(w, err.Error(), http.StatusConflict)
+		keyLimit, err := s.store.GetAPIKeyTunnelLimit(r.Context(), keyID)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
 		}
-		return
+		if keyLimit >= 0 && active >= keyLimit {
+			writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
+			return
+		}
+
+		domainRec, tunnelRec, err = s.allocateRegisterRoute(r.Context(), keyID, prepared)
+		if err != nil {
+			if isHostnameInUseError(err) {
+				writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
+			} else {
+				http.Error(w, err.Error(), http.StatusConflict)
+			}
+			return
+		}
 	}
 	if prepared.request.Password != "" {
 		if existingRoute, lookupErr := s.store.FindRouteByHost(r.Context(), domainRec.Hostname); lookupErr == nil {

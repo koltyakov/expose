@@ -32,6 +32,7 @@ type serverStore interface {
 	ConsumeConnectToken(ctx context.Context, token string) (string, error)
 	SetTunnelConnected(ctx context.Context, tunnelID string) error
 	TrySetTunnelConnected(ctx context.Context, tunnelID string) error
+	ResumeTunnelSession(ctx context.Context, tunnelID, keyID, clientMeta string) (domain.Domain, domain.Tunnel, error)
 	SetTunnelDisconnected(ctx context.Context, tunnelID string) error
 	SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) error
 	FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error)
@@ -40,7 +41,6 @@ type serverStore interface {
 	PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error)
 	CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error)
 	ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error)
-	SwapTunnelSession(ctx context.Context, domainID, keyID, clientMeta string) (domain.Tunnel, error)
 }
 
 var _ serverStore = (*sqlite.Store)(nil)

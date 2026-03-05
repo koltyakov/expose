@@ -276,7 +276,7 @@ func TestHTTP3IntegrationDistinctWorkerStreamsForHTTPAndWS(t *testing.T) {
 	}
 }
 
-func startHTTP3IntegrationServer(t *testing.T, handler http.Handler) (string, func()) {
+func startHTTP3IntegrationServer(t testing.TB, handler http.Handler) (string, func()) {
 	t.Helper()
 
 	addr := randomLoopbackUDPAddr(t)
@@ -320,7 +320,7 @@ func startHTTP3IntegrationServer(t *testing.T, handler http.Handler) (string, fu
 	}
 }
 
-func newHTTP3IntegrationClient(t *testing.T, addr string) (*quic.Conn, *http3.ClientConn, func()) {
+func newHTTP3IntegrationClient(t testing.TB, addr string) (*quic.Conn, *http3.ClientConn, func()) {
 	t.Helper()
 	tlsConf := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
@@ -340,7 +340,7 @@ func newHTTP3IntegrationClient(t *testing.T, addr string) (*quic.Conn, *http3.Cl
 	}
 }
 
-func openHTTP3RequestStream(t *testing.T, clientConn *http3.ClientConn, rawURL, sessionToken string) *http3.RequestStream {
+func openHTTP3RequestStream(t testing.TB, clientConn *http3.ClientConn, rawURL, sessionToken string) *http3.RequestStream {
 	t.Helper()
 
 	stream, err := clientConn.OpenRequestStream(context.Background())
@@ -360,7 +360,7 @@ func openHTTP3RequestStream(t *testing.T, clientConn *http3.ClientConn, rawURL, 
 	return stream
 }
 
-func randomLoopbackUDPAddr(t *testing.T) string {
+func randomLoopbackUDPAddr(t testing.TB) string {
 	t.Helper()
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -370,7 +370,7 @@ func randomLoopbackUDPAddr(t *testing.T) string {
 	return conn.LocalAddr().String()
 }
 
-func selfSignedCertForLoopback(t *testing.T) tls.Certificate {
+func selfSignedCertForLoopback(t testing.TB) tls.Certificate {
 	t.Helper()
 
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

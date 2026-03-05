@@ -10,6 +10,7 @@ import (
 func (d *Display) ShowBanner(version string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.ensureRefreshLoopLocked()
 	d.version = version
 	if d.color {
 		_, _ = fmt.Fprint(d.out, ansiHideCur)
@@ -20,13 +21,22 @@ func (d *Display) ShowBanner(version string) {
 // Cleanup restores the terminal cursor. Call on shutdown.
 func (d *Display) Cleanup() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.wsDebounceTimer != nil {
 		d.wsDebounceTimer.Stop()
 		d.wsDebounceTimer = nil
 	}
+	if d.refreshStop != nil {
+		close(d.refreshStop)
+		d.refreshStop = nil
+	}
+	done := d.refreshDone
+	d.refreshDone = nil
 	if d.color {
 		_, _ = fmt.Fprint(d.out, ansiShowCur)
+	}
+	d.mu.Unlock()
+	if done != nil {
+		<-done
 	}
 }
 
@@ -34,6 +44,7 @@ func (d *Display) Cleanup() {
 func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string, protected bool, transport string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.ensureRefreshLoopLocked()
 	now := d.now()
 	if d.sessionStart.IsZero() {
 		d.sessionStart = now
@@ -89,8 +100,37 @@ func (d *Display) ShowWAFStats(blocked int64) {
 func (d *Display) ShowReconnecting(reason string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.ensureRefreshLoopLocked()
 	d.setStatusLocked("reconnecting", d.now())
 	d.redraw()
+}
+
+func (d *Display) ensureRefreshLoopLocked() {
+	if d.refreshInterval <= 0 || d.refreshStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	interval := d.refreshInterval
+	d.refreshStop = stop
+	d.refreshDone = done
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				d.mu.Lock()
+				if d.status != "" {
+					d.redraw()
+				}
+				d.mu.Unlock()
+			}
+		}
+	}()
 }
 
 func (d *Display) setStatusLocked(status string, now time.Time) {

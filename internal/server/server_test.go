@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 	"github.com/koltyakov/expose/internal/waf"
@@ -123,6 +126,58 @@ func TestRegisterURLsNonDefaultPort(t *testing.T) {
 	}
 	if h3URL != "https://127.0.0.1.sslip.io:10443/v1/tunnels/connect-h3?token=token-1" {
 		t.Fatalf("unexpected h3 url: %q", h3URL)
+	}
+}
+
+func TestHandleRegisterResumesSameTunnelIDBeforeActiveLimitCheck(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "resume.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	rawKey := "resume-secret"
+	keyHash := auth.HashAPIKey(rawKey, "")
+	key, err := store.CreateAPIKeyWithLimit(ctx, "resume", keyHash, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domainRec, tunnelRec, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "temporary", "resume-me", "example.com", "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, tunnelRec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(config.ServerConfig{
+		BaseDomain:      "example.com",
+		ConnectTokenTTL: time.Minute,
+	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","client_machine_id":"machine-1","local_port":"3000"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	req.Header.Set(domain.RegisterResumeTunnelHeader, tunnelRec.ID)
+	rr := httptest.NewRecorder()
+
+	srv.handleRegister(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 on resume, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp registerResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TunnelID != tunnelRec.ID {
+		t.Fatalf("expected resumed tunnel id %s, got %s", tunnelRec.ID, resp.TunnelID)
+	}
+	if resp.PublicURL != "https://"+domainRec.Hostname {
+		t.Fatalf("expected public url for %s, got %s", domainRec.Hostname, resp.PublicURL)
 	}
 }
 
@@ -734,6 +789,93 @@ func TestSessionReplacementPreventsStaleEviction(t *testing.T) {
 	if exists {
 		t.Fatal("expected tunnel session map entry to be removed")
 	}
+}
+
+type testSessionWriter struct {
+	mu     sync.Mutex
+	msgs   []tunnelproto.Message
+	closed bool
+}
+
+func (w *testSessionWriter) WriteJSON(msg tunnelproto.Message) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.msgs = append(w.msgs, msg)
+	return nil
+}
+
+func (w *testSessionWriter) WriteBinaryFrame(byte, string, int, []byte) error {
+	return nil
+}
+
+func (w *testSessionWriter) Close() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+}
+
+type testTransport struct {
+	mu         sync.Mutex
+	closeCount int
+	readLimit  int64
+}
+
+func (t *testTransport) ReadMessage(*tunnelproto.Message) error {
+	return io.EOF
+}
+
+func (t *testTransport) SetReadLimit(v int64) {
+	t.mu.Lock()
+	t.readLimit = v
+	t.mu.Unlock()
+}
+
+func (t *testTransport) Close() error {
+	t.mu.Lock()
+	t.closeCount++
+	t.mu.Unlock()
+	return nil
+}
+
+func TestShutdownSignalsSessionsBeforeForceClose(t *testing.T) {
+	t.Parallel()
+
+	writer := &testSessionWriter{}
+	transport := &testTransport{}
+	srv := &Server{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		hub: &hub{
+			sessions: map[string]*session{
+				"tun_1": {
+					tunnelID:  "tun_1",
+					writer:    writer,
+					transport: transport,
+				},
+			},
+		},
+	}
+
+	srv.signalAllSessions("shutdown")
+
+	writer.mu.Lock()
+	if len(writer.msgs) != 1 || writer.msgs[0].Kind != tunnelproto.KindClose {
+		t.Fatalf("expected a single close message, got %+v", writer.msgs)
+	}
+	writer.mu.Unlock()
+
+	transport.mu.Lock()
+	if transport.closeCount != 0 {
+		t.Fatalf("expected transport to remain open after signal, got %d closes", transport.closeCount)
+	}
+	transport.mu.Unlock()
+
+	srv.forceCloseAllSessions("shutdown")
+
+	transport.mu.Lock()
+	if transport.closeCount != 1 {
+		t.Fatalf("expected transport close after force close, got %d", transport.closeCount)
+	}
+	transport.mu.Unlock()
 }
 
 func TestHandleConnectH3StreamRejectsSessionTokenQueryParam(t *testing.T) {

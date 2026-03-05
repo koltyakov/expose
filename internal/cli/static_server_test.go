@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	embedassets "github.com/koltyakov/expose/internal/assets"
 )
 
 func TestStaticAccessPolicyBlocksHiddenAndBackupPaths(t *testing.T) {
@@ -704,6 +707,64 @@ func TestStaticHandlerUsesFirstH1AsPageTitle(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "<title>TLS Modes</title>") {
 		t.Fatalf("expected page title from first h1, got %q", body)
+	}
+}
+
+func TestStaticHandlerMarkdownUsesDiscoveredFavicon(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n")
+	mustWriteStaticTestFile(t, filepath.Join(root, "docs", "favicon.png"), "png")
+	mustWriteStaticTestFile(t, filepath.Join(root, "favicon.ico"), "ico")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/docs/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<link rel="icon" type="image/png" href="/docs/favicon.png">`) {
+		t.Fatalf("expected nearest favicon link in markdown page, got %q", body)
+	}
+}
+
+func TestStaticHandlerMarkdownFallsBackToEmbeddedFavicon(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "guide.md"), "# Guide\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/guide.md", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<link rel="icon" type="image/x-icon" href="/favicon.ico">`) {
+		t.Fatalf("expected fallback favicon link in markdown page, got %q", body)
+	}
+	if !strings.Contains(body, `<link rel="shortcut icon" href="/favicon.ico">`) {
+		t.Fatalf("expected shortcut favicon link in markdown page, got %q", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected embedded favicon fallback, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "image/x-icon" {
+		t.Fatalf("expected favicon content type, got %q", got)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), embedassets.FaviconICO) {
+		t.Fatal("expected fallback favicon body to match embedded asset")
 	}
 }
 

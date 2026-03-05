@@ -80,6 +80,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		backoff = reconnectInitialDelay
 		tlsProvisioningRetries = 0
+		c.resumeID = reg.TunnelID
 
 		rt, err := newSessionRuntime(c, ctx, localBase, reg)
 		if err != nil {

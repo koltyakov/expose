@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -89,6 +90,9 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
+	if resumeID := strings.TrimSpace(c.resumeID); resumeID != "" {
+		req.Header.Set(domain.RegisterResumeTunnelHeader, resumeID)
+	}
 
 	resp, err := c.apiClient.Do(req)
 	if err != nil {

@@ -183,7 +183,7 @@ func TestAllocateConflictDoesNotLeakTransaction(t *testing.T) {
 	assertStoreWritableAfterError(t, store, tunnel.ID)
 }
 
-func TestSwapConflictDoesNotLeakTransaction(t *testing.T) {
+func TestResumeConflictDoesNotLeakTransaction(t *testing.T) {
 	store, err := openTestStoreWithOptions(t, OpenOptions{MaxOpenConns: 1, MaxIdleConns: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -199,12 +199,12 @@ func TestSwapConflictDoesNotLeakTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, tunnel, err := store.AllocateDomainAndTunnel(ctx, k1.ID, "temporary", "swap-sub", "example.com")
+	_, tunnel, err := store.AllocateDomainAndTunnel(ctx, k1.ID, "temporary", "swap-sub", "example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SwapTunnelSession(ctx, d.ID, k2.ID, "machine-other"); err == nil {
-		t.Fatal("expected hostname conflict on swap")
+	if _, _, err := store.ResumeTunnelSession(ctx, tunnel.ID, k2.ID, "machine-other"); err == nil {
+		t.Fatal("expected hostname conflict on resume")
 	}
 	assertStoreWritableAfterError(t, store, tunnel.ID)
 }
@@ -740,7 +740,7 @@ func TestAllocateDomainAndTunnelWithClientMeta(t *testing.T) {
 	}
 }
 
-func TestSwapTunnelSession(t *testing.T) {
+func TestResumeTunnelSession(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {
 		t.Fatal(err)
@@ -759,19 +759,25 @@ func TestSwapTunnelSession(t *testing.T) {
 	if err := store.SetTunnelConnected(ctx, oldTunnel.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetTunnelDisconnected(ctx, oldTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
 
-	newTunnel, err := store.SwapTunnelSession(ctx, d.ID, k.ID, "machine-1")
+	domainRec, resumedTunnel, err := store.ResumeTunnelSession(ctx, oldTunnel.ID, k.ID, "machine-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newTunnel.ID == oldTunnel.ID {
-		t.Fatal("expected a new tunnel id for swapped session")
+	if resumedTunnel.ID != oldTunnel.ID {
+		t.Fatalf("expected tunnel id %s to be reused, got %s", oldTunnel.ID, resumedTunnel.ID)
 	}
-	if newTunnel.DomainID != d.ID {
-		t.Fatalf("expected tunnel domain %s, got %s", d.ID, newTunnel.DomainID)
+	if resumedTunnel.DomainID != d.ID {
+		t.Fatalf("expected tunnel domain %s, got %s", d.ID, resumedTunnel.DomainID)
 	}
-	if newTunnel.ClientMeta != "machine-1" {
-		t.Fatalf("expected client meta machine-1, got %q", newTunnel.ClientMeta)
+	if resumedTunnel.ClientMeta != "machine-1" {
+		t.Fatalf("expected client meta machine-1, got %q", resumedTunnel.ClientMeta)
+	}
+	if domainRec.Status != domain.DomainStatusActive {
+		t.Fatalf("expected resumed domain active, got %s", domainRec.Status)
 	}
 
 	var oldState string
@@ -779,7 +785,18 @@ func TestSwapTunnelSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if oldState != domain.TunnelStateDisconnected {
-		t.Fatalf("expected old tunnel to be disconnected, got %s", oldState)
+		t.Fatalf("expected resumed tunnel to remain disconnected until connect, got %s", oldState)
+	}
+
+	route, err := store.FindRouteByHost(ctx, d.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.ID != oldTunnel.ID {
+		t.Fatalf("expected route tunnel %s, got %s", oldTunnel.ID, route.Tunnel.ID)
+	}
+	if route.Domain.Status != domain.DomainStatusActive {
+		t.Fatalf("expected route domain active, got %s", route.Domain.Status)
 	}
 }
 

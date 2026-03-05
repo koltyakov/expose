@@ -46,6 +46,7 @@ const (
 	displayLocalHealthCacheTTL = 2 * time.Second
 	displayLocalHealthTimeout  = 200 * time.Millisecond
 	displayLatencySampleMax    = 1024
+	displayAutoRefreshInterval = 5 * time.Second
 	displayLockIcon            = "🔒"
 )
 
@@ -127,19 +128,24 @@ type Display struct {
 	wsDebounceGen   uint64
 
 	localHealth map[string]localHealthEntry
+
+	refreshInterval time.Duration
+	refreshStop     chan struct{}
+	refreshDone     chan struct{}
 }
 
 // NewDisplay creates a Display that writes to stdout.
 // When color is true, ANSI escape codes are used for styling.
 func NewDisplay(color bool) *Display {
 	return &Display{
-		out:            os.Stdout,
-		color:          color,
-		wsConns:        make(map[string]wsEntry),
-		visitors:       make(map[string]time.Time),
-		requests:       make([]requestEntry, 0, maxDisplayRequests),
-		latencySamples: make([]time.Duration, 0, displayLatencySampleMax),
-		nowFunc:        time.Now,
-		localHealth:    make(map[string]localHealthEntry),
+		out:             os.Stdout,
+		color:           color,
+		wsConns:         make(map[string]wsEntry),
+		visitors:        make(map[string]time.Time),
+		requests:        make([]requestEntry, 0, maxDisplayRequests),
+		latencySamples:  make([]time.Duration, 0, displayLatencySampleMax),
+		nowFunc:         time.Now,
+		localHealth:     make(map[string]localHealthEntry),
+		refreshInterval: displayAutoRefreshInterval,
 	}
 }

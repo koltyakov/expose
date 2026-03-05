@@ -23,6 +23,8 @@ import (
 	"github.com/koltyakov/expose/internal/versionutil"
 )
 
+const defaultClientPingInterval = 30 * time.Second
+
 func runHTTP(ctx context.Context, args []string) int {
 	args = configNormalizeProtectFlagArgs(args)
 
@@ -115,19 +117,7 @@ func runStatic(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	cfg := config.ClientConfig{
-		ServerURL:             serverURL,
-		APIKey:                apiKey,
-		Transport:             transport,
-		User:                  envOr("EXPOSE_USER", "admin"),
-		Password:              envOr("EXPOSE_PASSWORD", ""),
-		Protect:               strings.TrimSpace(protectMode) != "",
-		ProtectMode:           protectMode,
-		Name:                  name,
-		Timeout:               30 * time.Second,
-		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
-		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
-	}
+	cfg := newStaticClientConfig(serverURL, apiKey, transport, name, protectMode)
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
 	if cfg.User == "" {
@@ -186,6 +176,23 @@ func runStatic(ctx context.Context, args []string) int {
 
 	cfg.LocalPort = port
 	return runConfiguredClient(ctx, cfg)
+}
+
+func newStaticClientConfig(serverURL, apiKey, transport, name, protectMode string) config.ClientConfig {
+	return config.ClientConfig{
+		ServerURL:             serverURL,
+		APIKey:                apiKey,
+		Transport:             transport,
+		User:                  envOr("EXPOSE_USER", "admin"),
+		Password:              envOr("EXPOSE_PASSWORD", ""),
+		Protect:               strings.TrimSpace(protectMode) != "",
+		ProtectMode:           protectMode,
+		Name:                  name,
+		Timeout:               30 * time.Second,
+		PingInterval:          defaultClientPingInterval,
+		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
+	}
 }
 
 func configNormalizeProtectFlagArgs(args []string) []string {

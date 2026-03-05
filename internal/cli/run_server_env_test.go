@@ -125,6 +125,15 @@ func TestMergeClientSettingsNormalizesInlineServerURL(t *testing.T) {
 	}
 }
 
+func TestNewStaticClientConfigSetsPingInterval(t *testing.T) {
+	clearClientEnvVarsForTest(t)
+
+	cfg := newStaticClientConfig("https://example.com", "k_test", "quic", "", "")
+	if cfg.PingInterval != defaultClientPingInterval {
+		t.Fatalf("expected ping interval %s, got %s", defaultClientPingInterval, cfg.PingInterval)
+	}
+}
+
 func clearServerEnvVarsForTest(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{

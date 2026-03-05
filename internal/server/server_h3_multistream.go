@@ -70,6 +70,22 @@ func (p *h3StreamPool) acquire(ctx context.Context, timeout time.Duration) (*htt
 	if timeout <= 0 {
 		timeout = 50 * time.Millisecond
 	}
+
+	// Fast path: most public requests should find an already-open worker
+	// immediately, so avoid allocating a timer in the uncontended case.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.closed:
+		return nil, errH3WorkerUnavailable
+	case stream, ok := <-p.ready:
+		if !ok || stream == nil {
+			return nil, errH3WorkerUnavailable
+		}
+		return stream, nil
+	default:
+	}
+
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 

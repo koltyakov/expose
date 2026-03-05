@@ -15,6 +15,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
@@ -260,7 +261,7 @@ func openHTTP3ClientConnection(ctx context.Context, target *url.URL) (*quic.Conn
 		NextProtos: []string{http3.NextProtoH3},
 		ServerName: target.Hostname(),
 	}
-	quicConn, err := quic.DialAddr(ctx, addr, tlsConf, nil)
+	quicConn, err := quic.DialAddr(ctx, addr, tlsConf, netutil.TunnelQUICConfig(0))
 	if err != nil {
 		return nil, nil, nil, err
 	}

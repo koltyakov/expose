@@ -2,14 +2,12 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
@@ -256,65 +254,4 @@ func (s *Server) cleanupStaleWAFCounters() {
 
 func isHostnameInUseError(err error) bool {
 	return errors.Is(err, sqlite.ErrHostnameInUse)
-}
-
-func (s *Server) trySwapInactiveClientSession(ctx context.Context, keyID, subdomain, clientMachineID string) (domain.Domain, domain.Tunnel, bool, error) {
-	subdomain = normalizeHost(subdomain)
-	clientMachineID = strings.TrimSpace(clientMachineID)
-	if subdomain == "" || clientMachineID == "" {
-		return domain.Domain{}, domain.Tunnel{}, false, nil
-	}
-
-	host := subdomain + "." + normalizeHost(s.cfg.BaseDomain)
-	route, err := s.store.FindRouteByHost(ctx, host)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.Domain{}, domain.Tunnel{}, false, nil
-	}
-	if err != nil {
-		return domain.Domain{}, domain.Tunnel{}, false, err
-	}
-	if route.Domain.APIKeyID != keyID {
-		return domain.Domain{}, domain.Tunnel{}, false, nil
-	}
-
-	existingMachineID := strings.TrimSpace(route.Tunnel.ClientMeta)
-	if existingMachineID != "" && existingMachineID != clientMachineID {
-		return domain.Domain{}, domain.Tunnel{}, false, nil
-	}
-	if s.isSessionCurrentlyActive(route.Tunnel.ID) {
-		return domain.Domain{}, domain.Tunnel{}, false, nil
-	}
-
-	tunnelRec, err := s.store.SwapTunnelSession(ctx, route.Domain.ID, keyID, clientMachineID)
-	if err != nil {
-		return domain.Domain{}, domain.Tunnel{}, false, err
-	}
-	s.log.Info("inactive tunnel session swapped",
-		"hostname", route.Domain.Hostname,
-		"old_tunnel_id", route.Tunnel.ID,
-		"new_tunnel_id", tunnelRec.ID)
-	return route.Domain, tunnelRec, true, nil
-}
-
-func (s *Server) isSessionCurrentlyActive(tunnelID string) bool {
-	s.hub.mu.RLock()
-	sess := s.hub.sessions[tunnelID]
-	s.hub.mu.RUnlock()
-	if sess == nil {
-		return false
-	}
-	if sess.closing.Load() {
-		return false
-	}
-	if time.Since(sess.lastSeen()) <= s.cfg.ClientPingTimeout {
-		return true
-	}
-	if sess.closing.CompareAndSwap(false, true) {
-		if sess.transport != nil {
-			_ = sess.transport.Close()
-		} else if sess.conn != nil {
-			_ = sess.conn.Close()
-		}
-	}
-	return false
 }

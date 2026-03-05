@@ -10,6 +10,12 @@ import (
 	"github.com/koltyakov/expose/internal/versionutil"
 )
 
+type sessionRuntime interface {
+	run() error
+	close()
+	transportKind() string
+}
+
 func (c *Client) Run(ctx context.Context) error {
 	localBase, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", c.cfg.LocalPort))
 	if err != nil {
@@ -75,7 +81,7 @@ func (c *Client) Run(ctx context.Context) error {
 		backoff = reconnectInitialDelay
 		tlsProvisioningRetries = 0
 
-		rt, err := newClientSessionRuntime(c, ctx, localBase, reg)
+		rt, err := newSessionRuntime(c, ctx, localBase, reg)
 		if err != nil {
 			if isNonRetriableSessionError(err) {
 				return err
@@ -98,10 +104,10 @@ func (c *Client) Run(ctx context.Context) error {
 		if c.display != nil {
 			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
-			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID, c.cfg.Protect, rt.kind)
+			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID, c.cfg.Protect, rt.transportKind())
 			c.display.ShowVersions(c.version, versionutil.EnsureVPrefix(reg.ServerVersion), reg.WAFEnabled)
 		} else {
-			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID, "transport", rt.kind)
+			c.log.Info("tunnel ready", "public_url", reg.PublicURL, "tunnel_id", reg.TunnelID, "transport", rt.transportKind())
 			if reg.ServerTLSMode != "" {
 				c.log.Info("server tls mode", "mode", reg.ServerTLSMode)
 			}
@@ -113,7 +119,7 @@ func (c *Client) Run(ctx context.Context) error {
 			hook(TunnelReadyEvent{
 				TunnelID:      reg.TunnelID,
 				PublicURL:     reg.PublicURL,
-				Transport:     rt.kind,
+				Transport:     rt.transportKind(),
 				ServerVersion: reg.ServerVersion,
 				ServerTLSMode: reg.ServerTLSMode,
 				WAFEnabled:    reg.WAFEnabled,
@@ -180,7 +186,7 @@ func nextBackoff(current time.Duration) time.Duration {
 }
 
 func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {
-	rt, err := newClientSessionRuntime(c, ctx, localBase, reg)
+	rt, err := newSessionRuntime(c, ctx, localBase, reg)
 	if err != nil {
 		return err
 	}

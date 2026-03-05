@@ -97,12 +97,7 @@ type clientSessionRuntime struct {
 	streamedReqState map[string]*streamedRequestState
 }
 
-func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL, reg registerResponse) (*clientSessionRuntime, error) {
-	conn, err := c.connectSessionTransport(parentCtx, reg)
-	if err != nil {
-		return nil, err
-	}
-
+func newClientSessionRuntimeFromConn(c *Client, parentCtx context.Context, localBase *url.URL, conn sessionTransportConn) (*clientSessionRuntime, error) {
 	sessionCtx, cancel := context.WithCancel(parentCtx)
 	rt := &clientSessionRuntime{
 		client:           c,
@@ -134,6 +129,13 @@ func newClientSessionRuntime(c *Client, parentCtx context.Context, localBase *ur
 	rt.startKeepaliveLoop()
 	rt.startReadLoop()
 	return rt, nil
+}
+
+func (rt *clientSessionRuntime) transportKind() string {
+	if rt == nil {
+		return ""
+	}
+	return rt.kind
 }
 
 func (rt *clientSessionRuntime) close() {

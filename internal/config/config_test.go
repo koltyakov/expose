@@ -233,39 +233,11 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 }
 
-func TestParseServerFlagsQUICSettings(t *testing.T) {
-	t.Setenv("EXPOSE_LISTEN_QUIC", "10443")
-	t.Setenv("EXPOSE_QUIC_ADVERTISE_AUTHORITY", "https://quic.example.com:9443")
-
-	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
-	if err != nil {
-		t.Fatal(err)
+func TestParseServerFlagsRejectsRemovedQUICFlags(t *testing.T) {
+	if _, err := ParseServerFlags([]string{"--domain", "example.com", "--quic-listen", ":443"}); err == nil {
+		t.Fatal("expected removed --quic-listen flag to fail parsing")
 	}
-	if cfg.ListenQUIC != ":10443" {
-		t.Fatalf("expected quic listen :10443, got %q", cfg.ListenQUIC)
-	}
-	if cfg.QUICAdvertiseAuthority != "quic.example.com:9443" {
-		t.Fatalf("expected advertised authority quic.example.com:9443, got %q", cfg.QUICAdvertiseAuthority)
-	}
-}
-
-func TestParseServerFlagsQUICDefaultsToHTTPSListen(t *testing.T) {
-	cfg, err := ParseServerFlags([]string{"--domain", "example.com", "--listen", ":443"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ListenQUIC != ":443" {
-		t.Fatalf("expected quic listen to mirror https listen (:443), got %q", cfg.ListenQUIC)
-	}
-}
-
-func TestParseServerFlagsExplicitEmptyQUICEnvDisablesDefaultMirroring(t *testing.T) {
-	t.Setenv("EXPOSE_LISTEN_QUIC", "")
-	cfg, err := ParseServerFlags([]string{"--domain", "example.com", "--listen", ":443"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ListenQUIC != "" {
-		t.Fatalf("expected quic listen to remain empty when env is explicitly set empty, got %q", cfg.ListenQUIC)
+	if _, err := ParseServerFlags([]string{"--domain", "example.com", "--quic-advertise-authority", "quic.example.com:443"}); err == nil {
+		t.Fatal("expected removed --quic-advertise-authority flag to fail parsing")
 	}
 }

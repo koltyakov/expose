@@ -17,7 +17,7 @@
 - **Rate limiting** on tunnel registration to prevent abuse
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally
 - **Automatic reconnection** with exponential backoff and keepalive pings
-- **Optional HTTP/3 tunnel transport** - clients can use `--transport=quic` or `--transport=auto` when the server advertises an HTTP/3 endpoint
+- **Optional HTTP/3 tunnel transport** - clients can use compatibility mode or negotiated multi-stream HTTP/3 when the server advertises support
 
 ## How It Works
 
@@ -73,9 +73,6 @@ On your public-facing machine, run the interactive setup (writes a `.env` for yo
 ```bash
 expose server init   # guided setup
 expose server        # start the tunnel server
-
-# Optional: also expose an HTTP/3 tunnel endpoint on UDP
-EXPOSE_LISTEN_QUIC=:10443 expose server
 ```
 
 Then create an API key for your client(s):

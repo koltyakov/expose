@@ -186,8 +186,6 @@ func (s *Server) registerURLs(hostHeader, hostname, token string) (publicURL, ws
 		publicURL = fmt.Sprintf("https://%s:%s", hostname, port)
 	}
 	wsURL = fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", wsAuthority, token)
-	if quicAuthority := advertisedQUICAuthority(hostHeader, normalizeHost(s.cfg.BaseDomain), s.cfg.ListenQUIC, s.cfg.QUICAdvertiseAuthority); quicAuthority != "" {
-		h3URL = fmt.Sprintf("https://%s/v1/tunnels/connect-h3?token=%s", quicAuthority, token)
-	}
+	h3URL = fmt.Sprintf("https://%s/v1/tunnels/connect-h3?token=%s", wsAuthority, token)
 	return publicURL, wsURL, h3URL
 }

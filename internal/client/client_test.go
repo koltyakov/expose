@@ -684,6 +684,46 @@ func TestHTTP3DialAuthority(t *testing.T) {
 	}
 }
 
+func TestCanUseH3Modes(t *testing.T) {
+	t.Parallel()
+
+	reg := registerResponse{
+		H3URL:        "https://example.com/v1/tunnels/connect-h3?token=abc",
+		Capabilities: []string{"h3_compat", "h3_multistream"},
+	}
+	if !canUseH3Compat(reg) {
+		t.Fatal("expected h3 compatibility mode to be available")
+	}
+	if !canUseH3MultiStream(reg) {
+		t.Fatal("expected h3 multistream mode to be available")
+	}
+
+	reg.Capabilities = []string{"h3_compat"}
+	if canUseH3MultiStream(reg) {
+		t.Fatal("expected h3 multistream mode to be unavailable without capability")
+	}
+
+	reg.Capabilities = nil
+	if !canUseH3Compat(reg) {
+		t.Fatal("expected h3 compatibility mode to be available without capability list")
+	}
+	if canUseH3MultiStream(reg) {
+		t.Fatal("expected h3 multistream mode to require explicit capability list")
+	}
+}
+
+func TestH3WorkerURL(t *testing.T) {
+	t.Parallel()
+
+	target, err := url.Parse("https://example.com/v1/tunnels/connect-h3?token=abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h3WorkerURL(target); got != "https://example.com/v1/tunnels/connect-h3/stream" {
+		t.Fatalf("unexpected worker url %q", got)
+	}
+}
+
 func TestIsNonReleaseVersion(t *testing.T) {
 	t.Parallel()
 

@@ -61,6 +61,7 @@ type Server struct {
 	domainTouched map[string]struct{}
 	wafBlocks     sync.Map // hostname → *wafCounter
 	wafAuditQueue chan wafAuditEvent
+	h3Sessions    sync.Map // auth token -> *session
 }
 
 type wafAuditEvent struct {
@@ -85,6 +86,8 @@ type session struct {
 	transport        tunneltransport.Transport
 	writer           sessionWriter
 	transportName    string
+	h3StreamPool     *h3StreamPool
+	h3AuthToken      string
 	pendingMu        sync.RWMutex
 	pending          map[string]chan tunnelproto.Message
 	wsMu             sync.RWMutex

@@ -37,7 +37,6 @@ func TestBuildInitEnvEntriesDynamic(t *testing.T) {
 	if hasEnvEntry(entries, "EXPOSE_TLS_KEY_FILE") {
 		t.Fatalf("did not expect EXPOSE_TLS_KEY_FILE for non-wildcard mode")
 	}
-
 	gotOrder := envEntryKeys(entries)
 	wantOrder := []string{
 		"EXPOSE_DOMAIN",
@@ -124,6 +123,40 @@ func TestUpsertEnvFileUpdatesAndAppends(t *testing.T) {
 	}
 	if !strings.Contains(content, "EXPOSE_DB_PATH=./expose.db") {
 		t.Fatalf("expected new key to be appended, got:\n%s", content)
+	}
+}
+
+func TestRemoveEnvKeys(t *testing.T) {
+	tmp := t.TempDir()
+	envPath := filepath.Join(tmp, ".env")
+	initial := strings.Join([]string{
+		"EXPOSE_DOMAIN=example.com",
+		"EXPOSE_LISTEN_QUIC=:10443",
+		"EXPOSE_QUIC_ADVERTISE_AUTHORITY=quic.example.com:10443",
+		"EXPOSE_DB_PATH=./expose.db",
+		"",
+	}, "\n")
+	if err := os.WriteFile(envPath, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeEnvKeys(envPath, "EXPOSE_LISTEN_QUIC", "EXPOSE_QUIC_ADVERTISE_AUTHORITY"); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(updated)
+	if strings.Contains(content, "EXPOSE_LISTEN_QUIC=") {
+		t.Fatalf("expected EXPOSE_LISTEN_QUIC to be removed, got:\n%s", content)
+	}
+	if strings.Contains(content, "EXPOSE_QUIC_ADVERTISE_AUTHORITY=") {
+		t.Fatalf("expected EXPOSE_QUIC_ADVERTISE_AUTHORITY to be removed, got:\n%s", content)
+	}
+	if !strings.Contains(content, "EXPOSE_DB_PATH=./expose.db") {
+		t.Fatalf("expected unrelated keys to remain, got:\n%s", content)
 	}
 }
 

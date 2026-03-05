@@ -32,6 +32,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 
 - [VPS Deployment](vps-deployment.md) - Deploy on DigitalOcean, Hetzner, AWS Lightsail, etc.
 - [Port Forwarding](port-forwarding.md) - Router / NAT port forwarding for home servers
+- [UDP Deployment Topologies](udp-deployment-topologies.md) - HTTP/3 QUIC routing through NAT, firewalls, and load balancers
 
 ## Scenarios
 

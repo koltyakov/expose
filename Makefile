@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint vet test test-race test-coverage bench build build-all release-check release-local ci run-server run-server-wizard run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint vet test test-race test-coverage bench build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -28,7 +28,7 @@ help:
 	@echo "  make release-local  - Build snapshot artifacts via GoReleaser"
 	@echo "  make ci             - Run local CI checks"
 	@echo "  make run-server     - Run server (env-driven)"
-	@echo "  make run-server-wizard - Guided server setup (.env + optional API key)"
+	@echo "  make run-server-init - Guided server setup (.env + optional API key)"
 	@echo "  make run-client     - Run tunnel client (env-driven)"
 	@echo "  make client-login   - Save client server URL + API key"
 	@echo "  make apikey-create  - Create API key"

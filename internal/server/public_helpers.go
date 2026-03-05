@@ -97,6 +97,14 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 			return
 		}
 		resp := msg.Response
+		if shouldServeFallbackFavicon(r, resp.Status) {
+			if resp.Streamed {
+				s.abortPendingRequest(sess, reqID, respCh)
+			}
+			writeFallbackFavicon(w, r)
+			s.queueDomainTouch(route.Domain.ID)
+			return
+		}
 		respHeaders := tunnelproto.CloneHeaders(resp.Headers)
 		netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 		for k, vals := range respHeaders {

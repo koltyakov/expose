@@ -1,5 +1,9 @@
 # expose
 
+<p align="center">
+  <img src="./assets/logo.png" alt="expose logo" width="220" />
+</p>
+
 **expose** is a self-hosted HTTP tunnel. Run your own server, then expose local HTTP ports from any machine - no third-party services required.
 
 ![expose client](./assets/client-tunnel.png)

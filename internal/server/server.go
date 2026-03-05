@@ -33,6 +33,7 @@ type serverStore interface {
 	SetTunnelConnected(ctx context.Context, tunnelID string) error
 	TrySetTunnelConnected(ctx context.Context, tunnelID string) error
 	SetTunnelDisconnected(ctx context.Context, tunnelID string) error
+	SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) error
 	FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error)
 	TouchDomain(ctx context.Context, domainID string) error
 	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
@@ -59,6 +60,10 @@ type Server struct {
 	domainTouches chan string
 	domainTouchMu sync.Mutex
 	domainTouched map[string]struct{}
+	disconnects   chan string
+	disconnectMu  sync.Mutex
+	disconnectQ   map[string]struct{}
+	disconnectWg  sync.WaitGroup
 	wafBlocks     sync.Map // hostname → *wafCounter
 	wafAuditQueue chan wafAuditEvent
 	h3Sessions    sync.Map // auth token -> *session
@@ -124,6 +129,10 @@ const (
 	tokenPurgeBatchLimit        = 1000
 	domainTouchQueueSize        = 2048
 	domainTouchTimeout          = 3 * time.Second
+	disconnectQueueSize         = 4096
+	disconnectBatchSize         = 128
+	disconnectFlushInterval     = 200 * time.Millisecond
+	disconnectTimeout           = 10 * time.Second
 	wafAuditQueueSize           = 2048
 	wafAuditLookupTimeout       = 250 * time.Millisecond
 	wsDataDispatchWait          = 250 * time.Millisecond
@@ -160,6 +169,8 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
 		domainTouches: make(chan string, domainTouchQueueSize),
 		domainTouched: make(map[string]struct{}),
+		disconnects:   make(chan string, disconnectQueueSize),
+		disconnectQ:   make(map[string]struct{}),
 		wafAuditQueue: make(chan wafAuditEvent, wafAuditQueueSize),
 	}
 }

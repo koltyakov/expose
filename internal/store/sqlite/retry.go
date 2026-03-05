@@ -41,11 +41,17 @@ func (s *Store) execWithSQLiteBusyRetry(ctx context.Context, query string, args 
 		res sql.Result
 		err error
 	)
-	err = withSQLiteBusyRetry(ctx, func() error {
+	err = s.withSerializedWrite(ctx, func() error {
 		res, err = s.db.ExecContext(ctx, query, args...)
 		return err
 	})
 	return res, err
+}
+
+func (s *Store) withSerializedWrite(ctx context.Context, op func() error) error {
+	s.dbWriteMu.Lock()
+	defer s.dbWriteMu.Unlock()
+	return withSQLiteBusyRetry(ctx, op)
 }
 
 func isSQLiteBusyError(err error) bool {

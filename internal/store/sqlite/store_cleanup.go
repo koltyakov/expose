@@ -14,7 +14,7 @@ func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan tim
 	}
 
 	var hosts []string
-	err := withSQLiteBusyRetry(ctx, func() error {
+	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err

@@ -433,6 +433,86 @@ func TestSetTunnelDisconnectedKeepsClosedState(t *testing.T) {
 
 }
 
+func TestSetTunnelsDisconnectedBatch(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_batch_disconnect")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tempDomain, tempTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, tempTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	closedDomain, closedTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, closedTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, closed, err := store.CloseTemporaryTunnel(ctx, closedTunnel.ID); err != nil {
+		t.Fatal(err)
+	} else if !closed {
+		t.Fatal("expected temporary tunnel to be closed")
+	}
+
+	permDomain, permTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "permanent", "batchperm", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, permTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetTunnelsDisconnected(ctx, []string{tempTunnel.ID, closedTunnel.ID, permTunnel.ID, "", tempTunnel.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	tempRoute, err := store.FindRouteByHost(ctx, tempDomain.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tempRoute.Tunnel.State != domain.TunnelStateDisconnected {
+		t.Fatalf("expected temporary tunnel disconnected, got %s", tempRoute.Tunnel.State)
+	}
+	if tempRoute.Domain.Status != domain.DomainStatusInactive {
+		t.Fatalf("expected temporary domain inactive, got %s", tempRoute.Domain.Status)
+	}
+
+	closedRoute, err := store.FindRouteByHost(ctx, closedDomain.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closedRoute.Tunnel.State != domain.TunnelStateClosed {
+		t.Fatalf("expected closed tunnel to remain closed, got %s", closedRoute.Tunnel.State)
+	}
+	if closedRoute.Domain.Status != domain.DomainStatusInactive {
+		t.Fatalf("expected closed tunnel domain inactive, got %s", closedRoute.Domain.Status)
+	}
+
+	permRoute, err := store.FindRouteByHost(ctx, permDomain.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permRoute.Tunnel.State != domain.TunnelStateDisconnected {
+		t.Fatalf("expected permanent tunnel disconnected, got %s", permRoute.Tunnel.State)
+	}
+	if permRoute.Domain.Status != domain.DomainStatusActive {
+		t.Fatalf("expected permanent domain active, got %s", permRoute.Domain.Status)
+	}
+}
+
 func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {

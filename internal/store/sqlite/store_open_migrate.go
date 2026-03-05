@@ -29,6 +29,7 @@ type Store struct {
 	findRouteByHostStmt      *sql.Stmt
 
 	connectMu            sync.Mutex
+	dbWriteMu            sync.Mutex
 	touchMu              sync.Mutex
 	lastDomainTouch      map[string]time.Time
 	touchMinInterval     time.Duration

@@ -4,33 +4,34 @@ Complete reference for all client flags, environment variables, and credential m
 
 ## Commands
 
-| Command                             | Description                               |
-| ----------------------------------- | ----------------------------------------- |
-| `expose http <port>`                | Expose a local port (temporary subdomain) |
-| `expose http --domain=myapp <port>` | Expose with a named subdomain             |
-| `expose http --protect <port>`      | Expose with password protection           |
-| `expose static [dir]`               | Expose a static directory                 |
+| Command                             | Description                                       |
+| ----------------------------------- | ------------------------------------------------- |
+| `expose http <port>`                | Expose a local port (temporary subdomain)         |
+| `expose http --domain=myapp <port>` | Expose with a named subdomain                     |
+| `expose http --protect <port>`      | Expose with password protection                   |
+| `expose static [dir]`               | Expose a static directory                         |
 | `expose soak --port 3000`           | Run many temporary clients against one local port |
-| `expose login`                      | Save server URL and API key               |
-| `expose up`                         | Start routes from `expose.yml`            |
-| `expose up init`                    | Create `expose.yml` via wizard            |
-| `expose update`                     | Update to the latest release              |
+| `expose login`                      | Save server URL and API key                       |
+| `expose up`                         | Start routes from `expose.yml`                    |
+| `expose up init`                    | Create `expose.yml` via wizard                    |
+| `expose update`                     | Update to the latest release                      |
 
 ## Flags & Environment Variables
 
-| Flag        | Env Variable        | Description                                        |
-| ----------- | ------------------- | -------------------------------------------------- |
-| `--port`    | `EXPOSE_PORT`       | Local HTTP port on `127.0.0.1` (positional arg)    |
-| `--domain`  | `EXPOSE_SUBDOMAIN`  | Requested subdomain label (e.g. `myapp`)           |
-| `--server`  | `EXPOSE_DOMAIN`     | Server URL (e.g. `example.com`)                    |
-| `--api-key` | `EXPOSE_API_KEY`    | API key for authentication                         |
-| `--pprof-listen` | `EXPOSE_PPROF_LISTEN` | Optional pprof listen address for the client process |
-| `--protect` | -                   | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
-| `--allow`   | -                   | Allow blocked static paths matching a glob pattern |
-| -           | `EXPOSE_USER`       | Access-form username (default: `admin`)            |
-| -           | `EXPOSE_PASSWORD`   | Access-form password                               |
-| -           | `EXPOSE_MAX_CONCURRENT_FORWARDS` | Max concurrent local upstream forwards per client process (default: `32`) |
-| -           | `EXPOSE_AUTOUPDATE` | Enable automatic self-update (`true`/`1`/`yes`)    |
+| Flag             | Env Variable                     | Description                                                                          |
+| ---------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `--port`         | `EXPOSE_PORT`                    | Local HTTP port on `127.0.0.1` (positional arg)                                      |
+| `--domain`       | `EXPOSE_SUBDOMAIN`               | Requested subdomain label (e.g. `myapp`)                                             |
+| `--server`       | `EXPOSE_DOMAIN`                  | Server URL (e.g. `example.com`)                                                      |
+| `--api-key`      | `EXPOSE_API_KEY`                 | API key for authentication                                                           |
+| `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `auto`, `ws`, `quic`                                               |
+| `--pprof-listen` | `EXPOSE_PPROF_LISTEN`            | Optional pprof listen address for the client process                                 |
+| `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
+| `--allow`        | -                                | Allow blocked static paths matching a glob pattern                                   |
+| -                | `EXPOSE_USER`                    | Access-form username (default: `admin`)                                              |
+| -                | `EXPOSE_PASSWORD`                | Access-form password                                                                 |
+| -                | `EXPOSE_MAX_CONCURRENT_FORWARDS` | Max concurrent local upstream forwards per client process (default: `32`)            |
+| -                | `EXPOSE_AUTOUPDATE`              | Enable automatic self-update (`true`/`1`/`yes`)                                      |
 
 ## Credential Resolution
 
@@ -42,6 +43,20 @@ The client resolves server URL and API key from multiple sources, with this prio
 4. **Saved credentials** from `expose login` (`~/.expose/settings.json`) - lowest priority
 
 This means you can `expose login` once and never pass credentials again, or override per-command with flags or env vars.
+
+## Transport Selection (`--transport`)
+
+| Value  | Behavior                                                                                          |
+| ------ | ------------------------------------------------------------------------------------------------- |
+| `auto` | Tries HTTP/3 multi-stream first, then HTTP/3 compatibility mode, then falls back to WebSocket     |
+| `quic` | Uses HTTP/3 only (multi-stream preferred, then compatibility mode), never falls back to WebSocket |
+| `ws`   | Uses WebSocket only                                                                               |
+
+Notes:
+
+- `--transport` applies to `expose http` and `expose static`.
+- HTTP/3 requires UDP reachability on the same public port as HTTPS.
+- In `quic` mode, a QUIC failure is terminal for that connection attempt; use `auto` when fallback is desired.
 
 ## Login
 

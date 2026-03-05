@@ -12,7 +12,7 @@ flowchart TB
         Certs["ACME cert cache<br/>./cert/"]
     end
     DNS["DNS<br/>*.example.com → VPS IP"] --> VPS
-    Client["expose client<br/>(your laptop)"] -- "WebSocket" --> Expose
+    Client["expose client<br/>(your laptop)"] -- "WebSocket or HTTP/3" --> Expose
     Browser["Browser"] -- "HTTPS" --> Expose
 ```
 
@@ -22,7 +22,7 @@ Any Linux VPS with a public IPv4 works. Minimum specs:
 
 - **1 vCPU, 512 MB RAM** (expose is lightweight)
 - Ubuntu 22.04+ / Debian 12+ recommended
-- Ports 80 and 443 open in cloud firewall
+- Ports `80/tcp`, `443/tcp`, and `443/udp` open in cloud firewall
 
 ## 2 - Install expose
 
@@ -78,8 +78,9 @@ Required records:
 # UFW (Ubuntu/Debian)
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
+sudo ufw allow 443/udp
 
-# Or for cloud provider firewalls, add inbound rules for ports 80 and 443
+# Or for cloud provider firewalls, add inbound rules for 80/tcp, 443/tcp, and 443/udp
 ```
 
 ## 5 - Create a systemd service
@@ -156,12 +157,12 @@ expose http 3000
 
 ## Cloud-Specific Notes
 
-| Provider          | Firewall                  | Notes                                           |
-| ----------------- | ------------------------- | ----------------------------------------------- |
-| **DigitalOcean**  | Cloud Firewall or `ufw`   | Droplet firewalls are separate from OS firewall |
-| **Hetzner**       | Hetzner Firewall + `ufw`  | Cheapest EU option for low-traffic tunnels      |
-| **AWS Lightsail** | Networking tab → Firewall | Simplest AWS option; add ports 80 + 443         |
-| **Linode/Akamai** | Cloud Firewall + `ufw`    | Select closest region to your clients           |
+| Provider          | Firewall                  | Notes                                             |
+| ----------------- | ------------------------- | ------------------------------------------------- |
+| **DigitalOcean**  | Cloud Firewall or `ufw`   | Droplet firewalls are separate from OS firewall   |
+| **Hetzner**       | Hetzner Firewall + `ufw`  | Cheapest EU option for low-traffic tunnels        |
+| **AWS Lightsail** | Networking tab → Firewall | Simplest AWS option; add 80/tcp, 443/tcp, 443/udp |
+| **Linode/Akamai** | Cloud Firewall + `ufw`    | Select closest region to your clients             |
 
 ## API Key Pepper & Server Migration
 
@@ -196,4 +197,3 @@ sqlite3 /opt/expose/expose.db ".backup /opt/expose/backup.db"
 ```
 
 When restoring on a different machine, ensure `EXPOSE_API_KEY_PEPPER` is set to the same value used when the keys were created.
-

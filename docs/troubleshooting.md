@@ -90,6 +90,14 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 - List active tunnels or disconnect unused ones.
 - Increase the key's tunnel limit or create additional API keys if you need more concurrent tunnels.
 
+## HTTP/3 fallback / QUIC issues
+
+- **Symptom**: Client logs `HTTP/3 tunnel connect failed ... falling back to WebSocket`.
+- **Check UDP reachability**: Open or forward the configured `EXPOSE_LISTEN_QUIC` UDP port.
+- **Check server advertising**: If the server doesn't advertise `h3_url`, `--transport=auto` falls back and `--transport=quic` fails.
+- **Check authority overrides**: Set `EXPOSE_QUIC_ADVERTISE_AUTHORITY` when the server's public UDP address differs from the registration host or listen address.
+- **Check explicit mode**: `--transport=quic` never silently falls back; use `--transport=auto` if fallback is desired.
+
 ## WebSocket disconnects / frequent reconnects
 
 - **Network instability**: Client auto-reconnects with backoff - occasional reconnects are normal.
@@ -113,4 +121,4 @@ export EXPOSE_LOG_LEVEL=debug
 expose server
 ```
 
-This shows detailed request routing, WebSocket lifecycle, and ACME events.
+This shows detailed request routing, tunnel transport lifecycle, and ACME events.

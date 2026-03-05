@@ -19,6 +19,7 @@ import (
 type ClientConfig struct {
 	ServerURL             string
 	APIKey                string
+	Transport             string
 	User                  string
 	Password              string
 	Protect               bool
@@ -36,6 +37,7 @@ type ClientConfig struct {
 type ServerConfig struct {
 	ListenHTTPS            string
 	ListenHTTP             string
+	ListenQUIC             string
 	PprofListen            string
 	DBPath                 string
 	DBMaxOpenConns         int
@@ -44,6 +46,7 @@ type ServerConfig struct {
 	APIKeyPepper           string
 	TLSMode                string
 	CertCacheDir           string
+	QUICAdvertiseAuthority string
 	TLSCertFile            string
 	TLSKeyFile             string
 	LogLevel               string
@@ -85,6 +88,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg := ClientConfig{
 		ServerURL:             envOrDefault("EXPOSE_DOMAIN", ""),
 		APIKey:                envOrDefault("EXPOSE_API_KEY", ""),
+		Transport:             normalizeClientTransport(envOrDefault("EXPOSE_TRANSPORT", "auto")),
 		User:                  envOrDefault("EXPOSE_USER", "admin"),
 		Password:              envOrDefault("EXPOSE_PASSWORD", ""),
 		LocalPort:             envIntOrDefault("EXPOSE_PORT", 0),
@@ -98,6 +102,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
+	fs.StringVar(&cfg.Transport, "transport", cfg.Transport, "Tunnel transport: auto|ws|quic")
 	fs.StringVar(&cfg.ProtectMode, "protect", cfg.ProtectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
@@ -107,6 +112,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 
 	cfg.Name = strings.TrimSpace(cfg.Name)
+	cfg.Transport = normalizeClientTransport(cfg.Transport)
 	cfg.User = trimOrDefault(cfg.User, "admin")
 	cfg.Password = strings.TrimSpace(cfg.Password)
 	cfg.PprofListen = strings.TrimSpace(cfg.PprofListen)
@@ -126,6 +132,11 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 	if cfg.MaxConcurrentForwards <= 0 {
 		return cfg, errors.New("max concurrent forwards must be > 0")
+	}
+	switch cfg.Transport {
+	case "auto", "ws", "quic":
+	default:
+		return cfg, errors.New("transport must be one of: auto, ws, quic")
 	}
 	if cfg.Password != "" && cfg.ProtectMode == "" {
 		cfg.ProtectMode = access.ModeForm
@@ -157,9 +168,12 @@ func normalizeProtectFlagArgs(args []string) []string {
 
 // ParseServerFlags parses CLI flags and env vars into a [ServerConfig].
 func ParseServerFlags(args []string) (ServerConfig, error) {
+	quicListenEnv, quicListenEnvSet := os.LookupEnv("EXPOSE_LISTEN_QUIC")
+
 	cfg := ServerConfig{
 		ListenHTTPS:            envOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
 		ListenHTTP:             envOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
+		ListenQUIC:             strings.TrimSpace(quicListenEnv),
 		PprofListen:            strings.TrimSpace(envOrDefault("EXPOSE_PPROF_LISTEN", "")),
 		DBPath:                 envOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
 		DBMaxOpenConns:         envIntOrDefault("EXPOSE_DB_MAX_OPEN_CONNS", 10),
@@ -168,6 +182,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		APIKeyPepper:           envOrDefault("EXPOSE_API_KEY_PEPPER", ""),
 		TLSMode:                envOrDefault("EXPOSE_TLS_MODE", "auto"),
 		CertCacheDir:           envOrDefault("EXPOSE_CERT_CACHE_DIR", defaultServerCertCacheDir),
+		QUICAdvertiseAuthority: strings.TrimSpace(envOrDefault("EXPOSE_QUIC_ADVERTISE_AUTHORITY", "")),
 		TLSCertFile:            envOrDefault("EXPOSE_TLS_CERT_FILE", ""),
 		TLSKeyFile:             envOrDefault("EXPOSE_TLS_KEY_FILE", ""),
 		LogLevel:               envOrDefault("EXPOSE_LOG_LEVEL", "info"),
@@ -187,6 +202,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.StringVar(&cfg.ListenHTTPS, "listen", cfg.ListenHTTPS, "HTTPS listen address")
 	fs.StringVar(&cfg.ListenHTTP, "http-challenge-listen", cfg.ListenHTTP, "HTTP-01 challenge listen address")
+	fs.StringVar(&cfg.ListenQUIC, "quic-listen", cfg.ListenQUIC, "HTTP/3 QUIC listen address (optional)")
 	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
 	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "SQLite max open connections")
@@ -195,6 +211,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.APIKeyPepper, "api-key-pepper", cfg.APIKeyPepper, "API key hash pepper override")
 	fs.StringVar(&cfg.TLSMode, "tls-mode", cfg.TLSMode, "TLS mode: auto|dynamic|wildcard")
 	fs.StringVar(&cfg.CertCacheDir, "cert-cache-dir", cfg.CertCacheDir, "TLS cert cache dir")
+	fs.StringVar(&cfg.QUICAdvertiseAuthority, "quic-advertise-authority", cfg.QUICAdvertiseAuthority, "Advertised QUIC authority for clients (optional)")
 	fs.StringVar(&cfg.TLSCertFile, "tls-cert-file", cfg.TLSCertFile, "Static TLS cert PEM file (optional, DNS-01 wildcard)")
 	fs.StringVar(&cfg.TLSKeyFile, "tls-key-file", cfg.TLSKeyFile, "Static TLS key PEM file (optional, DNS-01 wildcard)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
@@ -202,8 +219,15 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		return cfg, err
 	}
 
+	// If QUIC listen is not explicitly configured via flag or env, mirror HTTPS.
+	// This keeps the common case zero-config and avoids redundant settings.
+	if !flagProvided(args, "--quic-listen") && !quicListenEnvSet {
+		cfg.ListenQUIC = cfg.ListenHTTPS
+	}
+
 	cfg.ListenHTTPS = normalizeListenAddr(cfg.ListenHTTPS)
 	cfg.ListenHTTP = normalizeListenAddr(cfg.ListenHTTP)
+	cfg.ListenQUIC = normalizeListenAddr(cfg.ListenQUIC)
 	cfg.PprofListen = normalizeListenAddr(cfg.PprofListen)
 
 	cfg.BaseDomain = normalizeDomainHost(cfg.BaseDomain)
@@ -211,6 +235,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		return cfg, errors.New("missing --domain or EXPOSE_DOMAIN")
 	}
 	cfg.TLSMode = normalizeLowerOrDefault(cfg.TLSMode, "auto")
+	cfg.QUICAdvertiseAuthority = normalizeAuthority(cfg.QUICAdvertiseAuthority)
 	switch cfg.TLSMode {
 	case "auto", "dynamic", "wildcard":
 	default:
@@ -248,6 +273,41 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func flagProvided(args []string, name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	for i, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == name {
+			// "--flag value"
+			return true
+		}
+		if strings.HasPrefix(arg, name+"=") {
+			// "--flag=value"
+			return true
+		}
+		// Ignore standalone "-" or values that happen to contain the flag name.
+		_ = i
+	}
+	return false
+}
+
+func normalizeClientTransport(v string) string {
+	return normalizeLowerOrDefault(v, "auto")
+}
+
+func normalizeAuthority(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(v); err == nil && parsed.Host != "" {
+		return strings.TrimSpace(parsed.Host)
+	}
+	return v
 }
 
 func envOrDefault(key, def string) string {

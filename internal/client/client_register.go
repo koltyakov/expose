@@ -114,6 +114,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 		return registerResponse{}, err
 	}
 	out.WSURL = normalizeWSURLPort(out.WSURL, c.cfg.ServerURL)
+	out.H3URL = strings.TrimSpace(out.H3URL)
 	if out.WSURL == "" {
 		return registerResponse{}, errors.New("server returned empty ws_url")
 	}

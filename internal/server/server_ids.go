@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,4 +104,46 @@ func authorityPort(authority string) string {
 		return ""
 	}
 	return strings.TrimSpace(port)
+}
+
+func advertisedQUICAuthority(hostHeader, fallbackHost, listenAddr, configured string) string {
+	configured = normalizeAuthorityValue(configured)
+	if configured != "" {
+		return configured
+	}
+	if strings.TrimSpace(listenAddr) == "" {
+		return ""
+	}
+
+	hostAuthority := registrationWSAuthority(hostHeader, fallbackHost)
+	host := normalizeHost(hostAuthority)
+	if splitHost, _, err := net.SplitHostPort(hostAuthority); err == nil {
+		host = normalizeHost(splitHost)
+	}
+	if host == "" {
+		host = normalizeHost(fallbackHost)
+	}
+	if host == "" {
+		return ""
+	}
+
+	port := authorityPort(strings.TrimSpace(listenAddr))
+	if port == "" {
+		return ""
+	}
+	if port == "443" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func normalizeAuthorityValue(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(v); err == nil && parsed.Host != "" {
+		return strings.TrimSpace(parsed.Host)
+	}
+	return v
 }

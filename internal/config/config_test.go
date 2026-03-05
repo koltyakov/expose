@@ -36,6 +36,28 @@ func TestParseClientFlagsPasswordSourcesAndTrim(t *testing.T) {
 	}
 }
 
+func TestParseClientFlagsTransportDefaultsAndValidation(t *testing.T) {
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Transport != "auto" {
+		t.Fatalf("expected default transport auto, got %q", cfg.Transport)
+	}
+
+	cfg, err = ParseClientFlags([]string{"--port", "8080", "--transport", "quic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Transport != "quic" {
+		t.Fatalf("expected transport quic, got %q", cfg.Transport)
+	}
+
+	if _, err := ParseClientFlags([]string{"--port", "8080", "--transport", "bogus"}); err == nil {
+		t.Fatal("expected invalid transport error")
+	}
+}
+
 func TestParseClientFlagsPasswordLengthValidation(t *testing.T) {
 	t.Setenv("EXPOSE_PASSWORD", strings.Repeat("a", 257))
 	_, err := ParseClientFlags([]string{"--port", "8080"})
@@ -208,5 +230,42 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 	if cfg.PprofListen != "127.0.0.1:6060" {
 		t.Fatalf("expected pprof listen 127.0.0.1:6060, got %q", cfg.PprofListen)
+	}
+}
+
+func TestParseServerFlagsQUICSettings(t *testing.T) {
+	t.Setenv("EXPOSE_LISTEN_QUIC", "10443")
+	t.Setenv("EXPOSE_QUIC_ADVERTISE_AUTHORITY", "https://quic.example.com:9443")
+
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenQUIC != ":10443" {
+		t.Fatalf("expected quic listen :10443, got %q", cfg.ListenQUIC)
+	}
+	if cfg.QUICAdvertiseAuthority != "quic.example.com:9443" {
+		t.Fatalf("expected advertised authority quic.example.com:9443, got %q", cfg.QUICAdvertiseAuthority)
+	}
+}
+
+func TestParseServerFlagsQUICDefaultsToHTTPSListen(t *testing.T) {
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com", "--listen", ":443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenQUIC != ":443" {
+		t.Fatalf("expected quic listen to mirror https listen (:443), got %q", cfg.ListenQUIC)
+	}
+}
+
+func TestParseServerFlagsExplicitEmptyQUICEnvDisablesDefaultMirroring(t *testing.T) {
+	t.Setenv("EXPOSE_LISTEN_QUIC", "")
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com", "--listen", ":443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenQUIC != "" {
+		t.Fatalf("expected quic listen to remain empty when env is explicitly set empty, got %q", cfg.ListenQUIC)
 	}
 }

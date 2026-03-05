@@ -11,6 +11,7 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
 func (s *Server) resolvePublicRoute(ctx context.Context, host string) (domain.TunnelRoute, error) {
@@ -70,7 +71,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		s.abortPendingRequest(sess, reqID, respCh)
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else if errors.Is(err, tunnelproto.ErrWSWritePumpBackpressure) {
+		} else if errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
 			http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
 		} else {
 			http.Error(w, "tunnel write failed", http.StatusBadGateway)

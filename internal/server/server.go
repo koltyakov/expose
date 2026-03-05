@@ -17,6 +17,7 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/tunneltransport"
 	"github.com/koltyakov/expose/internal/waf"
 )
 
@@ -81,7 +82,9 @@ type hub struct {
 type session struct {
 	tunnelID         string
 	conn             *websocket.Conn
-	writer           *tunnelproto.WSWritePump
+	transport        tunneltransport.Transport
+	writer           sessionWriter
+	transportName    string
 	pendingMu        sync.RWMutex
 	pending          map[string]chan tunnelproto.Message
 	wsMu             sync.RWMutex
@@ -89,6 +92,12 @@ type session struct {
 	pendingCount     atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
+}
+
+type sessionWriter interface {
+	WriteJSON(tunnelproto.Message) error
+	WriteBinaryFrame(byte, string, int, []byte) error
+	Close()
 }
 
 const (

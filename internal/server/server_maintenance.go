@@ -122,7 +122,11 @@ func (s *Server) expireStaleSessions() {
 				s.log.Info("temporary tunnel certificate cache removed", "hostname", hostname, "files", removed)
 			}
 		}
-		_ = sess.conn.Close()
+		if sess.transport != nil {
+			_ = sess.transport.Close()
+		} else if sess.conn != nil {
+			_ = sess.conn.Close()
+		}
 	}
 }
 
@@ -306,7 +310,11 @@ func (s *Server) isSessionCurrentlyActive(tunnelID string) bool {
 		return true
 	}
 	if sess.closing.CompareAndSwap(false, true) {
-		_ = sess.conn.Close()
+		if sess.transport != nil {
+			_ = sess.transport.Close()
+		} else if sess.conn != nil {
+			_ = sess.conn.Close()
+		}
 	}
 	return false
 }

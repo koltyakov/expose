@@ -8,12 +8,13 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps fmt lint vet test test-race test-coverage bench build build-all release-check release-local ci run-server run-server-wizard run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint vet test test-race test-coverage bench build build-all release-check release-local ci run-server run-server-wizard run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
 	@echo "  make tidy           - Run go mod tidy"
 	@echo "  make deps           - Download + tidy dependencies"
+	@echo "  make deps-update    - Update all Go module dependencies to latest minor/patch"
 	@echo "  make fmt            - Format Go code"
 	@echo "  make lint           - Run golangci-lint"
 	@echo "  make vet            - Run go vet"
@@ -40,6 +41,10 @@ tidy:
 
 deps:
 	go mod download
+	go mod tidy
+
+deps-update:
+	go get -u ./...
 	go mod tidy
 
 fmt:

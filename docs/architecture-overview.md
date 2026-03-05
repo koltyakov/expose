@@ -1,13 +1,13 @@
 # Architecture Overview
 
-How **expose** routes public HTTPS traffic to your local machine through a WebSocket tunnel.
+How **expose** routes public HTTPS traffic to your local machine through a tunnel transport. The client-server tunnel can run over WebSocket or HTTP/3.
 
 ## High-Level Flow
 
 ```mermaid
 flowchart LR
     Browser["Browser"] -- "HTTPS request<br/>myapp.example.com" --> Server
-    Server["expose server<br/>(TLS + routing)"] -- "WebSocket<br/>tunnel" <--> Client["expose client"]
+    Server["expose server<br/>(TLS + routing)"] -- "WebSocket or HTTP/3<br/>tunnel" <--> Client["expose client"]
     Client -- "HTTP<br/>127.0.0.1:PORT" --> App["Local app"]
 ```
 
@@ -21,15 +21,16 @@ sequenceDiagram
     participant A as Local app
 
     C->>S: POST /v1/tunnels/register (API key)
-    S-->>C: tunnel_id + ws_url
+    S-->>C: tunnel_id + ws_url + optional h3_url
     C->>S: WebSocket connect /v1/tunnels/connect
+    C->>S: or HTTP/3 CONNECT /v1/tunnels/connect-h3
 
     B->>S: HTTPS GET myapp.example.com/path
     S->>S: Match hostname → tunnel session
-    S->>C: Forward request over WebSocket
+    S->>C: Forward request over active tunnel
     C->>A: HTTP GET 127.0.0.1:3000/path
     A-->>C: HTTP response
-    C-->>S: Forward response over WebSocket
+    C-->>S: Forward response over active tunnel
     S-->>B: HTTPS response
 ```
 
@@ -38,7 +39,7 @@ sequenceDiagram
 | Component          | Role                                                                          |
 | ------------------ | ----------------------------------------------------------------------------- |
 | **Server**         | Terminates TLS, manages ACME certs, authenticates clients, routes by hostname |
-| **Client**         | Registers tunnel, holds WebSocket, proxies requests to local port             |
+| **Client**         | Registers tunnel, holds a WebSocket or HTTP/3 tunnel, proxies requests to local port |
 | **Store (SQLite)** | Persists API keys, domains, tunnel state                                      |
 | **Hub**            | In-memory map of active WebSocket sessions for fast hostname lookup           |
 | **WAF**            | Blocks SQL injection, XSS, path traversal, and other attacks before proxying ([details](waf.md)) |

@@ -29,6 +29,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("http", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
+	transport := strings.TrimSpace(envOr("EXPOSE_TRANSPORT", ""))
 	name := ""
 	protectMode := ""
 	port := parseIntEnv("EXPOSE_PORT", 0)
@@ -37,6 +38,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	fs.StringVar(&protectMode, "protect", protectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
+	fs.StringVar(&transport, "transport", transport, "Tunnel transport: auto|ws|quic")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "http command error:", err)
 		return 2
@@ -64,6 +66,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--domain", name)
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--server", serverURL)
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--api-key", apiKey)
+	clientArgs = appendFlagIfNotEmpty(clientArgs, "--transport", transport)
 	if strings.TrimSpace(protectMode) != "" {
 		clientArgs = append(clientArgs, "--protect", protectMode)
 	}
@@ -77,6 +80,7 @@ func runStatic(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("static", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
+	transport := strings.TrimSpace(envOr("EXPOSE_TRANSPORT", ""))
 	name := ""
 	protectMode := ""
 	folders := false
@@ -90,6 +94,7 @@ func runStatic(ctx context.Context, args []string) int {
 	fs.BoolVar(&spa, "spa", spa, "Fallback unresolved GET/HEAD routes to /index.html")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
+	fs.StringVar(&transport, "transport", transport, "Tunnel transport: auto|ws|quic")
 	fs.Var(&allowPatterns, "allow", "Allow blocked static paths matching a glob pattern (repeatable, e.g. .well-known/**)")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "static command error:", err)
@@ -113,6 +118,7 @@ func runStatic(ctx context.Context, args []string) int {
 	cfg := config.ClientConfig{
 		ServerURL:             serverURL,
 		APIKey:                apiKey,
+		Transport:             transport,
 		User:                  envOr("EXPOSE_USER", "admin"),
 		Password:              envOr("EXPOSE_PASSWORD", ""),
 		Protect:               strings.TrimSpace(protectMode) != "",
@@ -126,6 +132,16 @@ func runStatic(ctx context.Context, args []string) int {
 	cfg.User = strings.TrimSpace(cfg.User)
 	if cfg.User == "" {
 		cfg.User = "admin"
+	}
+	cfg.Transport = strings.ToLower(strings.TrimSpace(cfg.Transport))
+	if cfg.Transport == "" {
+		cfg.Transport = "auto"
+	}
+	switch cfg.Transport {
+	case "auto", "ws", "quic":
+	default:
+		fmt.Fprintln(os.Stderr, "static command error: transport must be one of: auto, ws, quic")
+		return 2
 	}
 	if cfg.Name == "" {
 		hostname, _ := os.Hostname()

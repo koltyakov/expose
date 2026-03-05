@@ -647,6 +647,43 @@ func TestNormalizeWSURLPort(t *testing.T) {
 	}
 }
 
+func TestConnectSessionTransportQUICRequiresH3URL(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{cfg: config.ClientConfig{Transport: "quic"}}
+	_, err := c.connectSessionTransport(t.Context(), registerResponse{
+		WSURL: "wss://example.com/v1/tunnels/connect?token=abc",
+	})
+	if err == nil {
+		t.Fatal("expected error when h3_url is missing")
+	}
+	if !isNonRetriableSessionError(err) {
+		t.Fatalf("expected non-retriable session error, got %v", err)
+	}
+}
+
+func TestHTTP3DialAuthority(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "https://example.com/v1/tunnels/connect-h3?token=abc", want: "example.com:443"},
+		{raw: "https://example.com:9443/v1/tunnels/connect-h3?token=abc", want: "example.com:9443"},
+		{raw: "https://[2001:db8::1]:9443/v1/tunnels/connect-h3?token=abc", want: "[2001:db8::1]:9443"},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := http3DialAuthority(u); got != tc.want {
+			t.Fatalf("http3DialAuthority(%q): got %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestIsNonReleaseVersion(t *testing.T) {
 	t.Parallel()
 

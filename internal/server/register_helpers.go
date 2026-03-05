@@ -179,12 +179,15 @@ func (s *Server) allocateRegisterRoute(ctx context.Context, keyID string, prepar
 	return domainRec, tunnelRec, err
 }
 
-func (s *Server) registerURLs(hostHeader, hostname, token string) (publicURL, wsURL string) {
+func (s *Server) registerURLs(hostHeader, hostname, token string) (publicURL, wsURL, h3URL string) {
 	wsAuthority := registrationWSAuthority(hostHeader, normalizeHost(s.cfg.BaseDomain))
 	publicURL = "https://" + hostname
 	if port := authorityPort(wsAuthority); port != "" && port != "443" {
 		publicURL = fmt.Sprintf("https://%s:%s", hostname, port)
 	}
 	wsURL = fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", wsAuthority, token)
-	return publicURL, wsURL
+	if quicAuthority := advertisedQUICAuthority(hostHeader, normalizeHost(s.cfg.BaseDomain), s.cfg.ListenQUIC, s.cfg.QUICAdvertiseAuthority); quicAuthority != "" {
+		h3URL = fmt.Sprintf("https://%s/v1/tunnels/connect-h3?token=%s", quicAuthority, token)
+	}
+	return publicURL, wsURL, h3URL
 }

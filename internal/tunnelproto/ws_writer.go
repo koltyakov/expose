@@ -39,6 +39,7 @@ type WSWritePump struct {
 	done        chan struct{}
 	closed      atomic.Bool
 	stopOnce    sync.Once
+	enqueueMu   sync.RWMutex
 	highTimeout time.Duration
 	lowTimeout  time.Duration
 }
@@ -145,6 +146,14 @@ func (p *WSWritePump) enqueue(req wsWriteRequest, high bool) error {
 		return ErrWSWritePumpClosed
 	}
 
+	// Serialize stop signaling with enqueue selection so we cannot queue work
+	// after run() has observed shutdown and drained pending requests.
+	p.enqueueMu.RLock()
+	if p.closed.Load() {
+		p.enqueueMu.RUnlock()
+		return ErrWSWritePumpClosed
+	}
+
 	target := p.low
 	wait := p.lowTimeout
 	if high {
@@ -164,13 +173,15 @@ func (p *WSWritePump) enqueue(req wsWriteRequest, high bool) error {
 
 	select {
 	case <-p.stop:
+		p.enqueueMu.RUnlock()
 		return ErrWSWritePumpClosed
 	case target <- req:
 	case <-timer.C:
+		p.enqueueMu.RUnlock()
 		p.triggerBackpressure()
 		return ErrWSWritePumpBackpressure
 	}
-
+	p.enqueueMu.RUnlock()
 	return <-req.done
 }
 
@@ -238,6 +249,8 @@ func (p *WSWritePump) failPending(err error) {
 
 func (p *WSWritePump) signalStop() {
 	p.stopOnce.Do(func() {
+		p.enqueueMu.Lock()
+		defer p.enqueueMu.Unlock()
 		close(p.stop)
 	})
 }

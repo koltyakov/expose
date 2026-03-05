@@ -84,7 +84,7 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	dsn := path + sep + "_pragma=foreign_keys(1)&_pragma=synchronous(normal)"
+	dsn := path + sep + "_pragma=foreign_keys(1)&_pragma=synchronous(normal)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -105,11 +105,10 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db.SetMaxOpenConns(maxOpenConns)
 	db.SetMaxIdleConns(maxIdleConns)
 
-	// journal_mode and busy_timeout are database-wide; set them once here.
-	// foreign_keys and synchronous are per-connection and are handled via DSN _pragma parameters.
+	// journal_mode is database-wide; set it once here.
+	// foreign_keys, synchronous, and busy_timeout are per-connection and are handled via DSN _pragma parameters.
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
 	}
 	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {

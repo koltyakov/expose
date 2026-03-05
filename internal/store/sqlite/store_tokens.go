@@ -12,51 +12,54 @@ func (s *Store) CreateConnectToken(ctx context.Context, tunnelID string, ttl tim
 	if err != nil {
 		return "", err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.execWithSQLiteBusyRetry(ctx, `
 INSERT INTO connect_tokens(token, tunnel_id, expires_at, used_at)
 VALUES(?, ?, ?, NULL)`, token, tunnelID, time.Now().UTC().Add(ttl))
 	return token, err
 }
 
 func (s *Store) ConsumeConnectToken(ctx context.Context, token string) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	var tunnelID string
-	var expires time.Time
-	var used sql.NullTime
-	if err = tx.QueryRowContext(ctx, `
+	err := withSQLiteBusyRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		var expires time.Time
+		var used sql.NullTime
+		if err = tx.QueryRowContext(ctx, `
 SELECT tunnel_id, expires_at, used_at
 FROM connect_tokens
 WHERE token = ?`, token).Scan(&tunnelID, &expires, &used); err != nil {
-		return "", err
-	}
-	now := time.Now().UTC()
-	if used.Valid {
-		return "", errors.New("token already used")
-	}
-	if now.After(expires) {
-		return "", errors.New("token expired")
-	}
+			return err
+		}
+		now := time.Now().UTC()
+		if used.Valid {
+			return errors.New("token already used")
+		}
+		if now.After(expires) {
+			return errors.New("token expired")
+		}
 
-	res, err := tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 UPDATE connect_tokens
 SET used_at = ?
 WHERE token = ? AND used_at IS NULL AND expires_at >= ?`, now, token, now)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return errors.New("token already used")
+		}
+		return tx.Commit()
+	})
 	if err != nil {
-		return "", err
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return "", err
-	}
-	if affected == 0 {
-		return "", errors.New("token already used")
-	}
-	if err = tx.Commit(); err != nil {
 		return "", err
 	}
 	return tunnelID, nil
@@ -71,7 +74,7 @@ func (s *Store) PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan 
 	now = now.UTC()
 	usedOlderThan = usedOlderThan.UTC()
 
-	res, err := s.db.ExecContext(ctx, `
+	res, err := s.execWithSQLiteBusyRetry(ctx, `
 DELETE FROM connect_tokens
 WHERE token IN (
 	SELECT token

@@ -12,7 +12,7 @@ func (s *Store) TouchDomain(ctx context.Context, domainID string) error {
 		return nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `UPDATE domains SET last_seen_at = ? WHERE id = ?`, now, domainID)
+	_, err := s.execWithSQLiteBusyRetry(ctx, `UPDATE domains SET last_seen_at = ? WHERE id = ?`, now, domainID)
 	if err != nil {
 		s.rollbackDomainTouch(domainID, now)
 	}

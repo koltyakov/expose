@@ -24,7 +24,11 @@ type writeRequest struct {
 	wsMessageType int
 	payload       []byte
 	binary        bool
-	done          chan error
+	done          *writeCompletion
+}
+
+type writeCompletion struct {
+	ch chan error
 }
 
 type WritePump struct {
@@ -39,6 +43,12 @@ type WritePump struct {
 	enqueueMu   sync.RWMutex
 	highTimeout time.Duration
 	lowTimeout  time.Duration
+}
+
+var writeCompletionPool = sync.Pool{
+	New: func() any {
+		return &writeCompletion{ch: make(chan error, 1)}
+	},
 }
 
 func NewWritePump(
@@ -76,7 +86,7 @@ func NewWritePump(
 func (p *WritePump) WriteJSON(msg tunnelproto.Message) error {
 	return p.enqueue(writeRequest{
 		msg:  msg,
-		done: make(chan error, 1),
+		done: acquireWriteCompletion(),
 	}, true)
 }
 
@@ -87,7 +97,7 @@ func (p *WritePump) WriteBinaryFrame(frameKind byte, id string, wsMessageType in
 		wsMessageType: wsMessageType,
 		payload:       payload,
 		binary:        true,
-		done:          make(chan error, 1),
+		done:          acquireWriteCompletion(),
 	}, false)
 }
 
@@ -99,16 +109,19 @@ func (p *WritePump) Close() {
 
 func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	if p.closed.Load() {
+		releaseWriteCompletion(req.done)
 		return ErrWritePumpClosed
 	}
 	p.enqueueMu.RLock()
 	if p.closed.Load() {
 		p.enqueueMu.RUnlock()
+		releaseWriteCompletion(req.done)
 		return ErrWritePumpClosed
 	}
 	select {
 	case <-p.stop:
 		p.enqueueMu.RUnlock()
+		releaseWriteCompletion(req.done)
 		return ErrWritePumpClosed
 	default:
 	}
@@ -127,10 +140,13 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 		p.enqueueMu.RUnlock()
 	case <-timer.C:
 		p.enqueueMu.RUnlock()
+		releaseWriteCompletion(req.done)
 		p.triggerBackpressure()
 		return ErrWritePumpBackpressure
 	}
-	return <-req.done
+	err := <-req.done.ch
+	releaseWriteCompletion(req.done)
+	return err
 }
 
 func (p *WritePump) run() {
@@ -143,7 +159,7 @@ func (p *WritePump) run() {
 			return
 		}
 		err := p.write(req)
-		req.done <- err
+		req.done.ch <- err
 		if err != nil {
 			p.closed.Store(true)
 			p.signalStop()
@@ -182,6 +198,26 @@ func (p *WritePump) write(req writeRequest) error {
 	return p.writeFn(req)
 }
 
+func acquireWriteCompletion() *writeCompletion {
+	comp := writeCompletionPool.Get().(*writeCompletion)
+	select {
+	case <-comp.ch:
+	default:
+	}
+	return comp
+}
+
+func releaseWriteCompletion(comp *writeCompletion) {
+	if comp == nil {
+		return
+	}
+	select {
+	case <-comp.ch:
+	default:
+	}
+	writeCompletionPool.Put(comp)
+}
+
 func (p *WritePump) signalStop() {
 	p.stopOnce.Do(func() {
 		p.enqueueMu.Lock()
@@ -203,7 +239,7 @@ func (p *WritePump) failPending(err error) {
 		for {
 			select {
 			case req := <-ch:
-				req.done <- err
+				req.done.ch <- err
 			default:
 				return
 			}

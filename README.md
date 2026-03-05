@@ -54,7 +54,7 @@ flowchart TB
 
 1. The **server** terminates TLS, runs WAF inspection, and routes requests by hostname to the correct tunnel
 2. The **client** registers via API key, then opens a persistent WebSocket or HTTP/3 tunnel to the server
-3. Requests and responses flow over the tunnel as JSON envelopes with binary streaming for large bodies
+3. Requests and responses flow over the tunnel as versioned binary frames, with raw body bytes for inline and streamed payloads
 
 For the full request lifecycle and component breakdown, see [Architecture Overview](docs/architecture-overview.md).
 For transport mode details (`auto|ws|quic`) and QUIC requirements, see [Client Configuration](docs/client-configuration.md) and [UDP Deployment Topologies](docs/udp-deployment-topologies.md).

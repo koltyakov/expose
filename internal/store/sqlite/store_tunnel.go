@@ -194,9 +194,6 @@ WHERE id = ?`,
 }
 
 func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) error {
-	s.connectMu.Lock()
-	defer s.connectMu.Unlock()
-
 	return s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {

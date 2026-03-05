@@ -39,7 +39,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	target.Path = strings.TrimSuffix(base.Path, "/") + req.Path
 	target.RawQuery = req.Query
 
-	body, err := tunnelproto.DecodeBody(req.BodyB64)
+	body, err := req.Payload()
 	if err != nil {
 		return &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway}
 	}
@@ -64,7 +64,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
 			Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
-			BodyB64: tunnelproto.EncodeBody([]byte("local upstream unavailable")),
+			Body:    []byte("local upstream unavailable"),
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -86,7 +86,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
 			Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
-			BodyB64: tunnelproto.EncodeBody([]byte("failed to read local upstream response")),
+			Body:    []byte("failed to read local upstream response"),
 		}
 	}
 	if buf.Len() > localForwardResponseMaxB64 {
@@ -94,7 +94,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
 			Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
-			BodyB64: tunnelproto.EncodeBody([]byte("local upstream response too large")),
+			Body:    []byte("local upstream response too large"),
 		}
 	}
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
@@ -102,7 +102,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		ID:      req.ID,
 		Status:  resp.StatusCode,
 		Headers: respHeaders,
-		BodyB64: tunnelproto.EncodeBody(buf.Bytes()),
+		Body:    append([]byte(nil), buf.Bytes()...),
 	}
 }
 
@@ -149,7 +149,7 @@ func (c *Client) forwardAndSend(
 		}()
 		body = pr
 	} else {
-		data, err := tunnelproto.DecodeBody(req.BodyB64)
+		data, err := req.Payload()
 		if err != nil {
 			_ = writeMsg(tunnelproto.Message{
 				Kind:     tunnelproto.KindResponse,
@@ -195,7 +195,7 @@ func (c *Client) forwardAndSend(
 				ID:      req.ID,
 				Status:  http.StatusBadGateway,
 				Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
-				BodyB64: tunnelproto.EncodeBody([]byte("local upstream unavailable")),
+				Body:    []byte("local upstream unavailable"),
 			},
 		})
 		c.logForwardResult(req, http.StatusBadGateway, started)
@@ -238,7 +238,7 @@ func (c *Client) forwardAndSend(
 				ID:      req.ID,
 				Status:  resp.StatusCode,
 				Headers: respHeaders,
-				BodyB64: tunnelproto.EncodeBody(firstBuf[:n]),
+				Body:    append([]byte(nil), firstBuf[:n]...),
 			},
 		})
 		c.logForwardResult(req, resp.StatusCode, started)
@@ -252,7 +252,7 @@ func (c *Client) forwardAndSend(
 				ID:      req.ID,
 				Status:  http.StatusBadGateway,
 				Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
-				BodyB64: tunnelproto.EncodeBody([]byte("failed to read local upstream response")),
+				Body:    []byte("failed to read local upstream response"),
 			},
 		})
 		c.logForwardResult(req, http.StatusBadGateway, started)
@@ -281,7 +281,7 @@ func (c *Client) forwardAndSend(
 		}
 	} else if err := writeMsg(tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, DataB64: tunnelproto.EncodeBody(firstBuf[:n])},
+		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: append([]byte(nil), firstBuf[:n]...)},
 	}); err != nil {
 		c.logForwardResult(req, resp.StatusCode, started)
 		return
@@ -307,7 +307,7 @@ func (c *Client) forwardAndSend(
 				}
 			} else if wErr := writeMsg(tunnelproto.Message{
 				Kind:      tunnelproto.KindRespBody,
-				BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, DataB64: tunnelproto.EncodeBody(chunkBuf[:cn])},
+				BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: append([]byte(nil), chunkBuf[:cn]...)},
 			}); wErr != nil {
 				c.logForwardResult(req, resp.StatusCode, started)
 				return

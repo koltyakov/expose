@@ -347,7 +347,15 @@ func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
 				return err
 			}
 			defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
-			return conn.WriteJSON(msg)
+			writer, err := conn.NextWriter(websocket.BinaryMessage)
+			if err != nil {
+				return err
+			}
+			if err := tunnelproto.WriteMessage(writer, msg); err != nil {
+				_ = writer.Close()
+				return err
+			}
+			return writer.Close()
 		}
 
 		// Request 1: streamed body with an invalid method so the client fails fast
@@ -791,7 +799,7 @@ func TestForwardAndSendSmallResponseInline(t *testing.T) {
 	if msgs[0].Response.Streamed {
 		t.Fatal("expected non-streamed response for small body")
 	}
-	decoded, _ := tunnelproto.DecodeBody(msgs[0].Response.BodyB64)
+	decoded, _ := msgs[0].Response.Payload()
 	if string(decoded) != responseBody {
 		t.Fatalf("expected body %q, got %q", responseBody, string(decoded))
 	}
@@ -852,8 +860,8 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 	if !msgs[0].Response.Streamed {
 		t.Fatal("expected response to be streamed")
 	}
-	if msgs[0].Response.BodyB64 != "" {
-		t.Fatal("expected empty BodyB64 in streamed response header")
+	if len(msgs[0].Response.Body) != 0 {
+		t.Fatal("expected empty inline body in streamed response header")
 	}
 	if msgs[0].Response.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", msgs[0].Response.Status)
@@ -865,7 +873,7 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 		if msg.Kind != tunnelproto.KindRespBody {
 			t.Fatalf("expected body chunk kind %q, got %q", tunnelproto.KindRespBody, msg.Kind)
 		}
-		chunk, _ := tunnelproto.DecodeBody(msg.BodyChunk.DataB64)
+		chunk, _ := msg.BodyChunk.Payload()
 		reassembled = append(reassembled, chunk...)
 	}
 

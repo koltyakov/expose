@@ -106,23 +106,23 @@ func NewWebSocketWritePump(conn *websocket.Conn, writeTimeout time.Duration, hig
 		}
 		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
 
-		if !req.binary {
-			err := conn.WriteJSON(req.msg)
-			if err != nil {
-				_ = conn.Close()
-			}
-			return err
-		}
-
 		w, err := conn.NextWriter(websocket.BinaryMessage)
 		if err != nil {
 			_ = conn.Close()
 			return err
 		}
-		if err := tunnelproto.WriteBinaryFrame(w, req.frameKind, req.id, req.wsMessageType, req.payload); err != nil {
-			_ = w.Close()
-			_ = conn.Close()
-			return err
+		if !req.binary {
+			if err := tunnelproto.WriteMessage(w, req.msg); err != nil {
+				_ = w.Close()
+				_ = conn.Close()
+				return err
+			}
+		} else {
+			if err := tunnelproto.WriteBinaryFrame(w, req.frameKind, req.id, req.wsMessageType, req.payload); err != nil {
+				_ = w.Close()
+				_ = conn.Close()
+				return err
+			}
 		}
 		if err := w.Close(); err != nil {
 			_ = conn.Close()

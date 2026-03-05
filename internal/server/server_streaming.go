@@ -75,7 +75,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 				Path:      r.URL.Path,
 				Query:     r.URL.RawQuery,
 				Headers:   headers,
-				BodyB64:   tunnelproto.EncodeBody(firstBuf[:n]),
+				Body:      append([]byte(nil), firstBuf[:n]...),
 				TimeoutMs: requestTimeoutMs,
 			},
 		})

@@ -16,6 +16,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
 func BenchmarkRouteCacheGetHit(b *testing.B) {
@@ -172,7 +173,15 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-		return conn.WriteJSON(msg)
+		writer, err := conn.NextWriter(websocket.BinaryMessage)
+		if err != nil {
+			return err
+		}
+		if err := tunnelproto.WriteMessage(writer, msg); err != nil {
+			_ = writer.Close()
+			return err
+		}
+		return writer.Close()
 	}
 
 	writeRespBodyChunk := func(conn *websocket.Conn, id string, chunk []byte) error {
@@ -199,7 +208,7 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 		wsSessCh <- &session{
 			tunnelID:  tunnelID,
 			conn:      conn,
-			writer:    tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
+			writer:    tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 			pending:   make(map[string]chan tunnelproto.Message),
 			wsPending: make(map[string]chan tunnelproto.Message),
 		}
@@ -271,7 +280,7 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 						return
 					}
 
-					resp.Response.BodyB64 = tunnelproto.EncodeBody(payload)
+					resp.Response.Body = payload
 					_ = writeJSON(clientConn, resp)
 				}(req.ID)
 			case tunnelproto.KindReqCancel:

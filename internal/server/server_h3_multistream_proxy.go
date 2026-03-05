@@ -94,7 +94,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 			return
 		}
 	} else {
-		b, err := tunnelproto.DecodeBody(resp.BodyB64)
+		b, err := resp.Payload()
 		if err == nil && len(b) > 0 {
 			_, _ = w.Write(b)
 		}
@@ -319,7 +319,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 				Path:      r.URL.Path,
 				Query:     r.URL.RawQuery,
 				Headers:   headers,
-				BodyB64:   tunnelproto.EncodeBody(firstBuf[:n]),
+				Body:      append([]byte(nil), firstBuf[:n]...),
 				TimeoutMs: requestTimeoutMs,
 			},
 		})

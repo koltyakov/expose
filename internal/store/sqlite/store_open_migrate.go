@@ -28,18 +28,24 @@ type Store struct {
 	isHostnameActiveStmt     *sql.Stmt
 	findRouteByHostStmt      *sql.Stmt
 
-	connectMu            sync.Mutex
-	dbWriteMu            sync.Mutex
+	writeRequests        chan storeWriteRequest
+	touchRequests        chan storeTouchRequest
+	writerStop           chan struct{}
+	writerDone           chan struct{}
 	touchMu              sync.Mutex
 	lastDomainTouch      map[string]time.Time
 	touchMinInterval     time.Duration
 	touchCleanupInterval time.Duration
 	nextTouchCleanupAt   time.Time
+	touchFlushInterval   time.Duration
 }
 
 const defaultTouchMinInterval = 30 * time.Second
 const defaultTouchCleanupInterval = 5 * time.Minute
 const defaultConnectTokenPurgeLimit = 1000
+const defaultWriteQueueSize = 4096
+const defaultTouchQueueSize = 4096
+const defaultTouchFlushInterval = 250 * time.Millisecond
 
 const defaultMaxOpenConns = 10
 const defaultMaxIdleConns = 10
@@ -124,11 +130,17 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 		touchMinInterval:     defaultTouchMinInterval,
 		touchCleanupInterval: defaultTouchCleanupInterval,
 		nextTouchCleanupAt:   now.Add(defaultTouchCleanupInterval),
+		touchFlushInterval:   defaultTouchFlushInterval,
+		writeRequests:        make(chan storeWriteRequest, defaultWriteQueueSize),
+		touchRequests:        make(chan storeTouchRequest, defaultTouchQueueSize),
+		writerStop:           make(chan struct{}),
+		writerDone:           make(chan struct{}),
 	}
 	if err := s.Migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	go s.runWriterLoop()
 	if err := s.prepareStatements(context.Background()); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -138,6 +150,7 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
+	s.stopWriterLoop()
 	stmtErr := s.closePreparedStatements()
 	return errors.Join(stmtErr, s.db.Close())
 }

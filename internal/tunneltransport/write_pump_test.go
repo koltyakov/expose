@@ -1,13 +1,15 @@
-package tunnelproto
+package tunneltransport
 
 import (
 	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
-func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
+func TestWritePumpPrioritizesControlWrites(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
@@ -16,7 +18,7 @@ func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
 	var mu sync.Mutex
 	order := make([]string, 0, 3)
 
-	pump := newWSWritePumpWithWriter(func(req wsWriteRequest) error {
+	pump := NewWritePump(func(req writeRequest) error {
 		label := req.msg.Kind
 		if req.binary {
 			label = req.id
@@ -35,27 +37,35 @@ func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
 
 	errCh := make(chan error, 3)
 	go func() {
-		errCh <- pump.WriteBinaryFrame(BinaryFrameRespBody, "low-1", 0, []byte("a"))
+		errCh <- pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "low-1", 0, []byte("a"))
 	}()
 
 	<-started
 
-	lowReq := wsWriteRequest{
-		frameKind: BinaryFrameRespBody,
+	lowReq := writeRequest{
+		frameKind: tunnelproto.BinaryFrameRespBody,
 		id:        "low-2",
 		payload:   []byte("b"),
 		binary:    true,
-		done:      make(chan error, 1),
+		done:      acquireWriteCompletion(),
 	}
-	highReq := wsWriteRequest{
-		msg:  Message{Kind: KindPing},
-		done: make(chan error, 1),
+	highReq := writeRequest{
+		msg:  tunnelproto.Message{Kind: tunnelproto.KindPing},
+		done: acquireWriteCompletion(),
 	}
 	pump.low <- lowReq
 	pump.high <- highReq
 
-	go func() { errCh <- <-lowReq.done }()
-	go func() { errCh <- <-highReq.done }()
+	go func() {
+		err := <-lowReq.done.ch
+		releaseWriteCompletion(lowReq.done)
+		errCh <- err
+	}()
+	go func() {
+		err := <-highReq.done.ch
+		releaseWriteCompletion(highReq.done)
+		errCh <- err
+	}()
 
 	close(release)
 
@@ -69,7 +79,7 @@ func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
 	got := append([]string(nil), order...)
 	mu.Unlock()
 
-	want := []string{"low-1", KindPing, "low-2"}
+	want := []string{"low-1", tunnelproto.KindPing, "low-2"}
 	if len(got) != len(want) {
 		t.Fatalf("unexpected write order length: got %v want %v", got, want)
 	}
@@ -80,25 +90,25 @@ func TestWSWritePumpPrioritizesControlWrites(t *testing.T) {
 	}
 }
 
-func TestWSWritePumpCloseRejectsNewWrites(t *testing.T) {
+func TestWritePumpCloseRejectsNewWrites(t *testing.T) {
 	t.Parallel()
 
-	pump := newWSWritePumpWithWriter(func(req wsWriteRequest) error { return nil }, nil, 1, 1, time.Second, time.Second)
+	pump := NewWritePump(func(writeRequest) error { return nil }, nil, 1, 1, time.Second, time.Second)
 	pump.Close()
 
-	if err := pump.WriteJSON(Message{Kind: KindPing}); err != ErrWSWritePumpClosed {
-		t.Fatalf("expected ErrWSWritePumpClosed, got %v", err)
+	if err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != ErrWritePumpClosed {
+		t.Fatalf("expected ErrWritePumpClosed, got %v", err)
 	}
 }
 
-func TestWSWritePumpBackpressureClosesPump(t *testing.T) {
+func TestWritePumpBackpressureClosesPump(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
 	release := make(chan struct{})
 	closeCalled := make(chan struct{}, 1)
 
-	pump := newWSWritePumpWithWriter(func(req wsWriteRequest) error {
+	pump := NewWritePump(func(req writeRequest) error {
 		if req.id == "in-flight" {
 			close(started)
 			<-release
@@ -111,21 +121,21 @@ func TestWSWritePumpBackpressureClosesPump(t *testing.T) {
 		}
 	}, 1, 1, time.Second, 10*time.Millisecond)
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 2)
 	go func() {
-		errCh <- pump.WriteBinaryFrame(BinaryFrameRespBody, "in-flight", 0, []byte("a"))
+		errCh <- pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "in-flight", 0, []byte("a"))
 	}()
 
 	<-started
 
 	go func() {
-		errCh <- pump.WriteBinaryFrame(BinaryFrameRespBody, "queued", 0, []byte("b"))
+		errCh <- pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "queued", 0, []byte("b"))
 	}()
 
 	time.Sleep(5 * time.Millisecond)
 
-	if err := pump.WriteBinaryFrame(BinaryFrameRespBody, "overflow", 0, []byte("c")); !errors.Is(err, ErrWSWritePumpBackpressure) {
-		t.Fatalf("expected ErrWSWritePumpBackpressure, got %v", err)
+	if err := pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "overflow", 0, []byte("c")); !errors.Is(err, ErrWritePumpBackpressure) {
+		t.Fatalf("expected ErrWritePumpBackpressure, got %v", err)
 	}
 
 	select {
@@ -139,7 +149,7 @@ func TestWSWritePumpBackpressureClosesPump(t *testing.T) {
 	var sawClosed bool
 	for range 2 {
 		err := <-errCh
-		if errors.Is(err, ErrWSWritePumpClosed) {
+		if errors.Is(err, ErrWritePumpClosed) {
 			sawClosed = true
 		}
 	}
@@ -147,7 +157,7 @@ func TestWSWritePumpBackpressureClosesPump(t *testing.T) {
 		t.Fatal("expected queued writes to fail after backpressure closes the pump")
 	}
 
-	if err := pump.WriteJSON(Message{Kind: KindPing}); !errors.Is(err, ErrWSWritePumpClosed) {
+	if err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); !errors.Is(err, ErrWritePumpClosed) {
 		t.Fatalf("expected closed pump after backpressure, got %v", err)
 	}
 }

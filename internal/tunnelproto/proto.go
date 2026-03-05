@@ -1,5 +1,5 @@
-// Package tunnelproto defines the JSON wire protocol exchanged between the
-// expose server and its tunnel clients over a WebSocket connection.
+// Package tunnelproto defines the tunnel wire protocol exchanged between the
+// expose server and its tunnel clients.
 package tunnelproto
 
 import (
@@ -35,16 +35,35 @@ const (
 
 const (
 	// BinaryFrameReqBody carries request body chunks (server -> client).
-	BinaryFrameReqBody byte = 1
+	BinaryFrameReqBody byte = 4
 	// BinaryFrameRespBody carries response body chunks (client -> server).
-	BinaryFrameRespBody byte = 2
+	BinaryFrameRespBody byte = 6
 	// BinaryFrameWSData carries websocket stream frame payloads.
-	BinaryFrameWSData byte = 3
+	BinaryFrameWSData byte = 10
 )
 
 const (
-	binaryFrameVersion = 1
-	binaryFrameHeader  = 6
+	binaryFrameVersion = 2
+	binaryFrameHeader  = 14
+	maxBinaryFrameID   = 0xffff
+)
+
+const (
+	frameKindRequest byte = 1 + iota
+	frameKindResponse
+	frameKindReqCancel
+	frameKindReqBody
+	frameKindReqBodyEnd
+	frameKindRespBody
+	frameKindRespBodyEnd
+	frameKindWSOpen
+	frameKindWSOpenAck
+	frameKindWSData
+	frameKindWSClose
+	frameKindPing
+	frameKindPong
+	frameKindError
+	frameKindClose
 )
 
 // Message is the top-level envelope exchanged on the tunnel WebSocket.
@@ -70,6 +89,7 @@ type HTTPRequest struct {
 	Query     string              `json:"query,omitempty"`
 	Headers   map[string][]string `json:"headers,omitempty"`
 	BodyB64   string              `json:"body_b64,omitempty"`
+	Body      []byte              `json:"-"`
 	Streamed  bool                `json:"streamed,omitempty"`
 	TimeoutMs int                 `json:"timeout_ms,omitempty"`
 }
@@ -80,6 +100,7 @@ type HTTPResponse struct {
 	Status   int                 `json:"status"`
 	Headers  map[string][]string `json:"headers,omitempty"`
 	BodyB64  string              `json:"body_b64,omitempty"`
+	Body     []byte              `json:"-"`
 	Streamed bool                `json:"streamed,omitempty"`
 }
 
@@ -136,6 +157,56 @@ type Stats struct {
 	WAFBlocked int64 `json:"waf_blocked,omitempty"`
 }
 
+type encodedFrame struct {
+	kind          byte
+	id            string
+	wsMessageType int
+	meta          []byte
+	payload       []byte
+}
+
+type requestMeta struct {
+	Method    string              `json:"method"`
+	Path      string              `json:"path"`
+	Query     string              `json:"query,omitempty"`
+	Headers   map[string][]string `json:"headers,omitempty"`
+	Streamed  bool                `json:"streamed,omitempty"`
+	TimeoutMs int                 `json:"timeout_ms,omitempty"`
+}
+
+type responseMeta struct {
+	Status   int                 `json:"status"`
+	Headers  map[string][]string `json:"headers,omitempty"`
+	Streamed bool                `json:"streamed,omitempty"`
+}
+
+type wsOpenMeta struct {
+	Method  string              `json:"method"`
+	Path    string              `json:"path"`
+	Query   string              `json:"query,omitempty"`
+	Headers map[string][]string `json:"headers,omitempty"`
+}
+
+type wsOpenAckMeta struct {
+	OK          bool   `json:"ok"`
+	Status      int    `json:"status,omitempty"`
+	Subprotocol string `json:"subprotocol,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+type wsCloseMeta struct {
+	Code int    `json:"code,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+type pongMeta struct {
+	Stats *Stats `json:"stats,omitempty"`
+}
+
+type errorMeta struct {
+	Error string `json:"error,omitempty"`
+}
+
 // base64BufPool recycles byte slices used by [EncodeBody] so that hot-path
 // body encoding avoids per-call heap allocations.
 var base64BufPool = sync.Pool{
@@ -174,6 +245,30 @@ func DecodeBody(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
 }
 
+// Payload returns the decoded bytes for an inline request body regardless of
+// whether it arrived as a raw payload or JSON base64.
+func (r *HTTPRequest) Payload() ([]byte, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.Body != nil {
+		return r.Body, nil
+	}
+	return DecodeBody(r.BodyB64)
+}
+
+// Payload returns the decoded bytes for an inline response body regardless of
+// whether it arrived as a raw payload or JSON base64.
+func (r *HTTPResponse) Payload() ([]byte, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.Body != nil {
+		return r.Body, nil
+	}
+	return DecodeBody(r.BodyB64)
+}
+
 // Payload returns the decoded bytes for a body chunk regardless of whether it
 // arrived as JSON base64 or as a binary websocket frame.
 func (c *BodyChunk) Payload() ([]byte, error) {
@@ -199,8 +294,8 @@ func (d *WSData) Payload() ([]byte, error) {
 }
 
 // ReadWSMessage reads the next websocket frame and decodes it into a tunnel
-// message. Text frames are JSON control messages; binary frames are compact
-// data frames used for req/resp body chunks and websocket stream payloads.
+// message. The runtime sends binary frames exclusively; text JSON remains as a
+// fallback for older tests and ad hoc peers.
 func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
 	for {
 		msgType, data, err := conn.ReadMessage()
@@ -227,43 +322,40 @@ func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
 	}
 }
 
+// WriteMessage writes a unified binary tunnel frame.
+func WriteMessage(w io.Writer, msg Message) error {
+	enc, err := encodeMessageFrame(msg)
+	if err != nil {
+		return err
+	}
+	return writeEncodedFrame(w, enc)
+}
+
 // WriteBinaryFrame writes a compact binary tunnel frame for high-volume data.
 func WriteBinaryFrame(w io.Writer, frameKind byte, id string, wsMessageType int, payload []byte) error {
-	if len(id) == 0 {
-		return errors.New("binary frame id is required")
-	}
-	if len(id) > 0xffff {
-		return errors.New("binary frame id is too long")
-	}
-	if frameKind != BinaryFrameReqBody && frameKind != BinaryFrameRespBody && frameKind != BinaryFrameWSData {
+	switch frameKind {
+	case BinaryFrameReqBody:
+		return WriteMessage(w, Message{
+			Kind:      KindReqBody,
+			BodyChunk: &BodyChunk{ID: id, Data: payload},
+		})
+	case BinaryFrameRespBody:
+		return WriteMessage(w, Message{
+			Kind:      KindRespBody,
+			BodyChunk: &BodyChunk{ID: id, Data: payload},
+		})
+	case BinaryFrameWSData:
+		return WriteMessage(w, Message{
+			Kind: KindWSData,
+			WSData: &WSData{
+				ID:          id,
+				MessageType: wsMessageType,
+				Data:        payload,
+			},
+		})
+	default:
 		return fmt.Errorf("unsupported binary frame kind: %d", frameKind)
 	}
-
-	wsTypeByte := byte(0)
-	if frameKind == BinaryFrameWSData {
-		if wsMessageType < 0 || wsMessageType > 255 {
-			return fmt.Errorf("invalid websocket message type for binary frame: %d", wsMessageType)
-		}
-		wsTypeByte = byte(wsMessageType)
-	}
-
-	var header [binaryFrameHeader]byte
-	header[0] = binaryFrameVersion
-	header[1] = frameKind
-	header[2] = wsTypeByte
-	binary.BigEndian.PutUint16(header[4:6], uint16(len(id)))
-
-	if _, err := w.Write(header[:]); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(w, id); err != nil {
-		return err
-	}
-	if len(payload) == 0 {
-		return nil
-	}
-	_, err := w.Write(payload)
-	return err
 }
 
 func decodeBinaryFrame(data []byte) (Message, error) {
@@ -277,31 +369,300 @@ func decodeBinaryFrame(data []byte) (Message, error) {
 	frameKind := data[1]
 	wsMsgType := int(data[2])
 	idLen := int(binary.BigEndian.Uint16(data[4:6]))
-	if idLen <= 0 {
-		return Message{}, errors.New("invalid binary frame id length")
+	metaLen := int(binary.BigEndian.Uint32(data[6:10]))
+	payloadLen := int(binary.BigEndian.Uint32(data[10:14]))
+
+	total := binaryFrameHeader + idLen + metaLen + payloadLen
+	if total != len(data) {
+		return Message{}, fmt.Errorf("binary frame length mismatch: got %d want %d", len(data), total)
+	}
+	if idLen < 0 || metaLen < 0 || payloadLen < 0 {
+		return Message{}, errors.New("invalid binary frame lengths")
 	}
 
-	idStart := binaryFrameHeader
-	idEnd := idStart + idLen
-	if len(data) < idEnd {
-		return Message{}, errors.New("binary frame id is truncated")
+	offset := binaryFrameHeader
+	id := ""
+	if idLen > 0 {
+		id = string(data[offset : offset+idLen])
+		offset += idLen
 	}
-	idBytes := data[idStart:idEnd]
-	payload := data[idEnd:]
-	id := string(idBytes)
+	meta := data[offset : offset+metaLen]
+	offset += metaLen
+	payload := data[offset : offset+payloadLen]
 
+	return decodeFrameParts(frameKind, id, wsMsgType, meta, payload)
+}
+
+func encodeMessageFrame(msg Message) (encodedFrame, error) {
+	switch msg.Kind {
+	case KindRequest:
+		if msg.Request == nil {
+			return encodedFrame{}, errors.New("request payload is required")
+		}
+		body, err := msg.Request.Payload()
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		meta, err := json.Marshal(requestMeta{
+			Method:    msg.Request.Method,
+			Path:      msg.Request.Path,
+			Query:     msg.Request.Query,
+			Headers:   msg.Request.Headers,
+			Streamed:  msg.Request.Streamed,
+			TimeoutMs: msg.Request.TimeoutMs,
+		})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindRequest, msg.Request.ID, 0, meta, body)
+	case KindResponse:
+		if msg.Response == nil {
+			return encodedFrame{}, errors.New("response payload is required")
+		}
+		body, err := msg.Response.Payload()
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		meta, err := json.Marshal(responseMeta{
+			Status:   msg.Response.Status,
+			Headers:  msg.Response.Headers,
+			Streamed: msg.Response.Streamed,
+		})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindResponse, msg.Response.ID, 0, meta, body)
+	case KindReqCancel:
+		if msg.ReqCancel == nil {
+			return encodedFrame{}, errors.New("request cancel payload is required")
+		}
+		return newEncodedFrame(frameKindReqCancel, msg.ReqCancel.ID, 0, nil, nil)
+	case KindReqBody:
+		if msg.BodyChunk == nil {
+			return encodedFrame{}, errors.New("body chunk payload is required")
+		}
+		payload, err := msg.BodyChunk.Payload()
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindReqBody, msg.BodyChunk.ID, 0, nil, payload)
+	case KindReqBodyEnd:
+		if msg.BodyChunk == nil {
+			return encodedFrame{}, errors.New("body chunk payload is required")
+		}
+		return newEncodedFrame(frameKindReqBodyEnd, msg.BodyChunk.ID, 0, nil, nil)
+	case KindRespBody:
+		if msg.BodyChunk == nil {
+			return encodedFrame{}, errors.New("body chunk payload is required")
+		}
+		payload, err := msg.BodyChunk.Payload()
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindRespBody, msg.BodyChunk.ID, 0, nil, payload)
+	case KindRespBodyEnd:
+		if msg.BodyChunk == nil {
+			return encodedFrame{}, errors.New("body chunk payload is required")
+		}
+		return newEncodedFrame(frameKindRespBodyEnd, msg.BodyChunk.ID, 0, nil, nil)
+	case KindWSOpen:
+		if msg.WSOpen == nil {
+			return encodedFrame{}, errors.New("ws open payload is required")
+		}
+		meta, err := json.Marshal(wsOpenMeta{
+			Method:  msg.WSOpen.Method,
+			Path:    msg.WSOpen.Path,
+			Query:   msg.WSOpen.Query,
+			Headers: msg.WSOpen.Headers,
+		})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindWSOpen, msg.WSOpen.ID, 0, meta, nil)
+	case KindWSOpenAck:
+		if msg.WSOpenAck == nil {
+			return encodedFrame{}, errors.New("ws open ack payload is required")
+		}
+		meta, err := json.Marshal(wsOpenAckMeta{
+			OK:          msg.WSOpenAck.OK,
+			Status:      msg.WSOpenAck.Status,
+			Subprotocol: msg.WSOpenAck.Subprotocol,
+			Error:       msg.WSOpenAck.Error,
+		})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindWSOpenAck, msg.WSOpenAck.ID, 0, meta, nil)
+	case KindWSData:
+		if msg.WSData == nil {
+			return encodedFrame{}, errors.New("ws data payload is required")
+		}
+		payload, err := msg.WSData.Payload()
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindWSData, msg.WSData.ID, msg.WSData.MessageType, nil, payload)
+	case KindWSClose:
+		if msg.WSClose == nil {
+			return encodedFrame{}, errors.New("ws close payload is required")
+		}
+		meta, err := json.Marshal(wsCloseMeta{
+			Code: msg.WSClose.Code,
+			Text: msg.WSClose.Text,
+		})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindWSClose, msg.WSClose.ID, 0, meta, nil)
+	case KindPing:
+		return newEncodedFrame(frameKindPing, "", 0, nil, nil)
+	case KindPong:
+		var meta []byte
+		var err error
+		if msg.Stats != nil {
+			meta, err = json.Marshal(pongMeta{Stats: msg.Stats})
+			if err != nil {
+				return encodedFrame{}, err
+			}
+		}
+		return newEncodedFrame(frameKindPong, "", 0, meta, nil)
+	case KindError:
+		meta, err := json.Marshal(errorMeta{Error: msg.Error})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindError, "", 0, meta, nil)
+	case KindClose:
+		return newEncodedFrame(frameKindClose, "", 0, nil, nil)
+	default:
+		return encodedFrame{}, fmt.Errorf("unsupported message kind: %q", msg.Kind)
+	}
+}
+
+func newEncodedFrame(kind byte, id string, wsMessageType int, meta, payload []byte) (encodedFrame, error) {
+	if len(id) > maxBinaryFrameID {
+		return encodedFrame{}, errors.New("binary frame id is too long")
+	}
+	if wsMessageType < 0 || wsMessageType > 255 {
+		return encodedFrame{}, fmt.Errorf("invalid websocket message type for binary frame: %d", wsMessageType)
+	}
+	return encodedFrame{
+		kind:          kind,
+		id:            id,
+		wsMessageType: wsMessageType,
+		meta:          meta,
+		payload:       payload,
+	}, nil
+}
+
+func writeEncodedFrame(w io.Writer, enc encodedFrame) error {
+	var header [binaryFrameHeader]byte
+	header[0] = binaryFrameVersion
+	header[1] = enc.kind
+	header[2] = byte(enc.wsMessageType)
+	binary.BigEndian.PutUint16(header[4:6], uint16(len(enc.id)))
+	binary.BigEndian.PutUint32(header[6:10], uint32(len(enc.meta)))
+	binary.BigEndian.PutUint32(header[10:14], uint32(len(enc.payload)))
+	if _, err := w.Write(header[:]); err != nil {
+		return err
+	}
+	if enc.id != "" {
+		if _, err := io.WriteString(w, enc.id); err != nil {
+			return err
+		}
+	}
+	if len(enc.meta) > 0 {
+		if _, err := w.Write(enc.meta); err != nil {
+			return err
+		}
+	}
+	if len(enc.payload) == 0 {
+		return nil
+	}
+	_, err := w.Write(enc.payload)
+	return err
+}
+
+func encodedFrameLen(enc encodedFrame) int {
+	return binaryFrameHeader + len(enc.id) + len(enc.meta) + len(enc.payload)
+}
+
+func decodeFrameParts(frameKind byte, id string, wsMsgType int, meta, payload []byte) (Message, error) {
 	switch frameKind {
-	case BinaryFrameReqBody:
+	case frameKindRequest:
+		var request requestMeta
+		if err := decodeFrameMeta(meta, &request); err != nil {
+			return Message{}, err
+		}
 		return Message{
-			Kind:      KindReqBody,
-			BodyChunk: &BodyChunk{ID: id, Data: payload},
+			Kind: KindRequest,
+			Request: &HTTPRequest{
+				ID:        id,
+				Method:    request.Method,
+				Path:      request.Path,
+				Query:     request.Query,
+				Headers:   request.Headers,
+				Body:      payload,
+				Streamed:  request.Streamed,
+				TimeoutMs: request.TimeoutMs,
+			},
 		}, nil
-	case BinaryFrameRespBody:
+	case frameKindResponse:
+		var response responseMeta
+		if err := decodeFrameMeta(meta, &response); err != nil {
+			return Message{}, err
+		}
 		return Message{
-			Kind:      KindRespBody,
-			BodyChunk: &BodyChunk{ID: id, Data: payload},
+			Kind: KindResponse,
+			Response: &HTTPResponse{
+				ID:       id,
+				Status:   response.Status,
+				Headers:  response.Headers,
+				Body:     payload,
+				Streamed: response.Streamed,
+			},
 		}, nil
-	case BinaryFrameWSData:
+	case frameKindReqCancel:
+		return Message{Kind: KindReqCancel, ReqCancel: &RequestCancel{ID: id}}, nil
+	case frameKindReqBody:
+		return Message{Kind: KindReqBody, BodyChunk: &BodyChunk{ID: id, Data: payload}}, nil
+	case frameKindReqBodyEnd:
+		return Message{Kind: KindReqBodyEnd, BodyChunk: &BodyChunk{ID: id}}, nil
+	case frameKindRespBody:
+		return Message{Kind: KindRespBody, BodyChunk: &BodyChunk{ID: id, Data: payload}}, nil
+	case frameKindRespBodyEnd:
+		return Message{Kind: KindRespBodyEnd, BodyChunk: &BodyChunk{ID: id}}, nil
+	case frameKindWSOpen:
+		var open wsOpenMeta
+		if err := decodeFrameMeta(meta, &open); err != nil {
+			return Message{}, err
+		}
+		return Message{
+			Kind: KindWSOpen,
+			WSOpen: &WSOpen{
+				ID:      id,
+				Method:  open.Method,
+				Path:    open.Path,
+				Query:   open.Query,
+				Headers: open.Headers,
+			},
+		}, nil
+	case frameKindWSOpenAck:
+		var ack wsOpenAckMeta
+		if err := decodeFrameMeta(meta, &ack); err != nil {
+			return Message{}, err
+		}
+		return Message{
+			Kind: KindWSOpenAck,
+			WSOpenAck: &WSOpenAck{
+				ID:          id,
+				OK:          ack.OK,
+				Status:      ack.Status,
+				Subprotocol: ack.Subprotocol,
+				Error:       ack.Error,
+			},
+		}, nil
+	case frameKindWSData:
 		return Message{
 			Kind: KindWSData,
 			WSData: &WSData{
@@ -310,9 +671,45 @@ func decodeBinaryFrame(data []byte) (Message, error) {
 				Data:        payload,
 			},
 		}, nil
+	case frameKindWSClose:
+		var closeMsg wsCloseMeta
+		if err := decodeFrameMeta(meta, &closeMsg); err != nil {
+			return Message{}, err
+		}
+		return Message{
+			Kind: KindWSClose,
+			WSClose: &WSClose{
+				ID:   id,
+				Code: closeMsg.Code,
+				Text: closeMsg.Text,
+			},
+		}, nil
+	case frameKindPing:
+		return Message{Kind: KindPing}, nil
+	case frameKindPong:
+		var pong pongMeta
+		if err := decodeFrameMeta(meta, &pong); err != nil {
+			return Message{}, err
+		}
+		return Message{Kind: KindPong, Stats: pong.Stats}, nil
+	case frameKindError:
+		var errMeta errorMeta
+		if err := decodeFrameMeta(meta, &errMeta); err != nil {
+			return Message{}, err
+		}
+		return Message{Kind: KindError, Error: errMeta.Error}, nil
+	case frameKindClose:
+		return Message{Kind: KindClose}, nil
 	default:
 		return Message{}, fmt.Errorf("unsupported binary frame kind: %d", frameKind)
 	}
+}
+
+func decodeFrameMeta(meta []byte, dst any) error {
+	if len(meta) == 0 {
+		return nil
+	}
+	return json.Unmarshal(meta, dst)
 }
 
 // CloneHeaders returns a deep copy of an HTTP header map.

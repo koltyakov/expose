@@ -2,6 +2,12 @@
 
 Repeatable benchmarks now cover the hot tunnel paths on both the server and client sides.
 
+Recent runtime changes shifted the hot path to a unified binary frame codec, a shared websocket/stream write pump, and a queued SQLite writer. When comparing results across older revisions, expect the biggest changes in:
+
+- server and client allocation counts for inline request/response forwarding
+- WebSocket versus HTTP/3 compatibility framing costs
+- store mutation latency under connect/disconnect churn
+
 For live diagnosis, you can also enable `pprof` on either process with `EXPOSE_PPROF_LISTEN=127.0.0.1:6060` and inspect `/debug/pprof/` while a load or soak run is active.
 
 ## Run Everything
@@ -73,8 +79,9 @@ These are single-node measurements. They are useful for vertical-scaling decisio
 ## How to Read the Results
 
 - Use `ns/op` and `B/op` to spot regressions after protocol or buffering changes.
-- Watch streamed-response benchmarks after changing chunk sizes or websocket write behavior.
+- Watch streamed-response benchmarks after changing chunk sizes, binary frame encoding, or write-pump behavior.
 - Compare sequential and parallel tunnel results before raising concurrency caps; if parallel performance flattens early, the bottleneck is usually websocket serialization or the local upstream, not route lookup.
+- Compare store benchmarks after changing disconnect batching, touch batching, or the SQLite writer loop. Small regressions in single-op latency are acceptable only if churn behavior improves and tail latency stays flatter.
 - Use the soak runner to validate peak connected tunnels and reconnect behavior; use `pprof` during the run if active counts flatten unexpectedly or heap growth looks suspicious.
 
 ## Suggested Workflow

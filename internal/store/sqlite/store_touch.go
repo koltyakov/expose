@@ -12,11 +12,29 @@ func (s *Store) TouchDomain(ctx context.Context, domainID string) error {
 		return nil
 	}
 
-	_, err := s.execWithSQLiteBusyRetry(ctx, `UPDATE domains SET last_seen_at = ? WHERE id = ?`, now, domainID)
-	if err != nil {
-		s.rollbackDomainTouch(domainID, now)
+	req := storeTouchRequest{
+		ctx:      ctx,
+		domainID: domainID,
+		done:     acquireStoreWriteCompletion(),
 	}
-	return err
+	select {
+	case s.touchRequests <- req:
+	case <-ctx.Done():
+		releaseStoreWriteCompletion(req.done)
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-req.done.ch:
+		releaseStoreWriteCompletion(req.done)
+		if err != nil {
+			s.rollbackDomainTouch(domainID, now)
+		}
+		return err
+	case <-ctx.Done():
+		// The writer may still flush this touch; keep the reservation intact.
+		return ctx.Err()
+	}
 }
 
 func (s *Store) reserveDomainTouch(domainID string, now time.Time) bool {

@@ -118,7 +118,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 				s.abortPendingRequest(sess, reqID, respCh)
 			}
 		} else {
-			b, err := tunnelproto.DecodeBody(resp.BodyB64)
+			b, err := resp.Payload()
 			if err == nil && len(b) > 0 {
 				_, _ = w.Write(b)
 			}

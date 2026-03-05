@@ -29,7 +29,7 @@ func (s *Store) CreateAPIKeyWithLimit(ctx context.Context, name, keyHash string,
 		CreatedAt:   now,
 		TunnelLimit: tunnelLimit,
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.execWithSQLiteBusyRetry(ctx, `
 INSERT INTO api_keys(id, name, key_hash, created_at, revoked_at, tunnel_limit)
 VALUES(?, ?, ?, ?, NULL, ?)`, k.ID, k.Name, k.KeyHash, k.CreatedAt, k.TunnelLimit)
 	return k, err
@@ -62,7 +62,7 @@ ORDER BY created_at DESC`)
 }
 
 func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC(), id)
+	res, err := s.execWithSQLiteBusyRetry(ctx, `UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC(), id)
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func (s *Store) GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, er
 
 // SetAPIKeyTunnelLimit updates the per-key tunnel limit. Use -1 for unlimited.
 func (s *Store) SetAPIKeyTunnelLimit(ctx context.Context, keyID string, limit int) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE api_keys SET tunnel_limit = ? WHERE id = ?`, limit, keyID)
+	res, err := s.execWithSQLiteBusyRetry(ctx, `UPDATE api_keys SET tunnel_limit = ? WHERE id = ?`, limit, keyID)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (s *Store) ResolveServerPepper(ctx context.Context, suggested string) (stri
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO server_settings(key, value) VALUES('api_key_pepper', ?)`, suggested); err != nil {
+	if _, err := s.execWithSQLiteBusyRetry(ctx, `INSERT INTO server_settings(key, value) VALUES('api_key_pepper', ?)`, suggested); err != nil {
 		return "", err
 	}
 	return suggested, nil

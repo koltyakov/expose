@@ -70,6 +70,91 @@ func TestBinaryWSDataFrameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteMessageRequestResponseRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []Message{
+		{
+			Kind: KindRequest,
+			Request: &HTTPRequest{
+				ID:        "req_42",
+				Method:    "POST",
+				Path:      "/submit",
+				Query:     "x=1",
+				Headers:   map[string][]string{"Content-Type": {"application/json"}},
+				Body:      []byte(`{"ok":true}`),
+				TimeoutMs: 1500,
+			},
+		},
+		{
+			Kind: KindResponse,
+			Response: &HTTPResponse{
+				ID:      "req_42",
+				Status:  202,
+				Headers: map[string][]string{"X-Test": {"yes"}},
+				Body:    []byte("accepted"),
+			},
+		},
+		{
+			Kind: KindWSOpen,
+			WSOpen: &WSOpen{
+				ID:      "ws_1",
+				Method:  "GET",
+				Path:    "/socket",
+				Headers: map[string][]string{"Upgrade": {"websocket"}},
+			},
+		},
+		{
+			Kind:    KindWSClose,
+			WSClose: &WSClose{ID: "ws_1", Code: 1000, Text: "done"},
+		},
+		{
+			Kind:  KindPong,
+			Stats: &Stats{WAFBlocked: 3},
+		},
+	}
+
+	for _, want := range tests {
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, want); err != nil {
+			t.Fatalf("write %s: %v", want.Kind, err)
+		}
+
+		got, err := decodeBinaryFrame(buf.Bytes())
+		if err != nil {
+			t.Fatalf("decode %s: %v", want.Kind, err)
+		}
+
+		if got.Kind != want.Kind {
+			t.Fatalf("expected kind %q, got %q", want.Kind, got.Kind)
+		}
+		switch want.Kind {
+		case KindRequest:
+			payload, _ := got.Request.Payload()
+			if got.Request.ID != want.Request.ID || string(payload) != string(want.Request.Body) {
+				t.Fatalf("unexpected request round-trip: %+v", got.Request)
+			}
+		case KindResponse:
+			payload, _ := got.Response.Payload()
+			if got.Response.ID != want.Response.ID || string(payload) != string(want.Response.Body) {
+				t.Fatalf("unexpected response round-trip: %+v", got.Response)
+			}
+		case KindWSOpen:
+			if got.WSOpen == nil || got.WSOpen.ID != want.WSOpen.ID || got.WSOpen.Path != want.WSOpen.Path {
+				t.Fatalf("unexpected ws open round-trip: %+v", got.WSOpen)
+			}
+		case KindWSClose:
+			if got.WSClose == nil || got.WSClose.ID != want.WSClose.ID || got.WSClose.Code != want.WSClose.Code {
+				t.Fatalf("unexpected ws close round-trip: %+v", got.WSClose)
+			}
+		case KindPong:
+			if got.Stats == nil || got.Stats.WAFBlocked != want.Stats.WAFBlocked {
+				t.Fatalf("unexpected pong stats round-trip: %+v", got.Stats)
+			}
+		}
+	}
+}
+
 func TestPayloadFallbackToBase64(t *testing.T) {
 	t.Parallel()
 

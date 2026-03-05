@@ -1,6 +1,6 @@
 # Architecture Overview
 
-How **expose** routes public HTTPS traffic to your local machine through a tunnel transport. The client-server tunnel can run over WebSocket or HTTP/3.
+How **expose** routes public HTTPS traffic to your local machine through a tunnel transport. The client-server tunnel can run over WebSocket or HTTP/3, but both transports now use the same versioned binary frame codec and shared write-path semantics.
 
 ## High-Level Flow
 
@@ -46,9 +46,17 @@ sequenceDiagram
 | **Hub**            | In-memory map of active tunnel sessions (WebSocket, HTTP/3 compatibility, HTTP/3 multi-stream) |
 | **WAF**            | Blocks SQL injection, XSS, path traversal, and other attacks before proxying ([details](waf.md)) |
 
+## Tunnel Framing
+
+- All runtime tunnel traffic is encoded as versioned binary frames.
+- Control frames and data frames share the same codec on both WebSocket and HTTP/3.
+- Small inline request and response bodies travel as raw frame payload bytes instead of base64-encoded JSON fields.
+- HTTP/3 compatibility mode keeps an outer length prefix so one H3 stream can carry many frames, but the inner frame format is the same as WebSocket.
+- WebSocket text frames are no longer used by the built-in client and server during normal runtime traffic.
+
 ## HTTP/3 Protocol Versions
 
-- `h3_compat`: single HTTP/3 stream carrying the same framed multiplexing protocol as WebSocket compatibility mode.
+- `h3_compat`: single HTTP/3 stream carrying the same binary frame protocol used by WebSocket compatibility mode, wrapped in a length-prefixed stream record.
 - `h3_multistream`: negotiated multi-stream mode with:
   - one long-lived control stream for keepalive and lifecycle.
   - many short-lived worker streams where each forwarded HTTP request or proxied websocket uses a distinct HTTP/3 stream.

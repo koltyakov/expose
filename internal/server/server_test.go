@@ -21,6 +21,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/tunneltransport"
 	"github.com/koltyakov/expose/internal/waf"
 )
 
@@ -1106,7 +1107,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 		if msg.Request.Streamed {
 			t.Error("expected inline (non-streamed) request for small body")
 		}
-		decoded, _ := tunnelproto.DecodeBody(msg.Request.BodyB64)
+		decoded, _ := msg.Request.Payload()
 		if string(decoded) != "hello" {
 			t.Errorf("expected body %q, got %q", "hello", string(decoded))
 		}
@@ -1125,7 +1126,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 	sess := &session{
 		tunnelID: "test",
 		conn:     conn,
-		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
+		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:  make(map[string]chan tunnelproto.Message),
 	}
 	defer sess.writer.Close()
@@ -1143,7 +1144,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 	}
 
 	var ack tunnelproto.Message
-	_ = conn.ReadJSON(&ack)
+	_ = tunnelproto.ReadWSMessage(conn, &ack)
 }
 
 func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
@@ -1184,7 +1185,7 @@ func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
 	sess := &session{
 		tunnelID: "test",
 		conn:     conn,
-		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
+		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:  make(map[string]chan tunnelproto.Message),
 	}
 	defer sess.writer.Close()
@@ -1228,8 +1229,8 @@ done:
 	if !msgs[0].Request.Streamed {
 		t.Fatal("expected first message to have Streamed=true")
 	}
-	if msgs[0].Request.BodyB64 != "" {
-		t.Fatal("expected first message to have empty BodyB64")
+	if len(msgs[0].Request.Body) != 0 {
+		t.Fatal("expected first message to have empty inline body")
 	}
 
 	var reassembled []byte
@@ -1291,7 +1292,7 @@ func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
 	sess := &session{
 		tunnelID: "test",
 		conn:     conn,
-		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
+		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending:  make(map[string]chan tunnelproto.Message),
 	}
 	defer sess.writer.Close()
@@ -1373,8 +1374,8 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 		if msg.Request.Streamed {
 			t.Error("expected inline (non-streamed) for empty body")
 		}
-		if msg.Request.BodyB64 != "" {
-			t.Error("expected empty BodyB64 for empty body")
+		if len(msg.Request.Body) != 0 {
+			t.Error("expected empty inline body for empty body")
 		}
 		if msg.Request.TimeoutMs != 2500 {
 			t.Errorf("expected timeout 2500ms, got %d", msg.Request.TimeoutMs)
@@ -1389,7 +1390,7 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	sess := &session{tunnelID: "test", conn: conn, writer: tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize), pending: make(map[string]chan tunnelproto.Message)}
+	sess := &session{tunnelID: "test", conn: conn, writer: tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize), pending: make(map[string]chan tunnelproto.Message)}
 	defer sess.writer.Close()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	headers := map[string][]string{}
@@ -1435,7 +1436,7 @@ func TestAbortPendingRequestSendsCancel(t *testing.T) {
 	sess := &session{
 		tunnelID: "t-1",
 		conn:     conn,
-		writer:   tunnelproto.NewWSWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
+		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending: map[string]chan tunnelproto.Message{
 			"req_1": make(chan tunnelproto.Message, 1),
 		},
@@ -1483,11 +1484,11 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 	chunk2 := []byte("world")
 	respCh <- tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: tunnelproto.EncodeBody(chunk1)},
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", Data: chunk1},
 	}
 	respCh <- tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: tunnelproto.EncodeBody(chunk2)},
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", Data: chunk2},
 	}
 	respCh <- tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBodyEnd,
@@ -1514,7 +1515,7 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 
 	respCh <- tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: tunnelproto.EncodeBody([]byte("partial"))},
+		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", Data: []byte("partial")},
 	}
 
 	w := httptest.NewRecorder()

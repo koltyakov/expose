@@ -1,6 +1,13 @@
 package cli
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestUpPathPrefixMatchesSegmentAware(t *testing.T) {
 	if !upPathPrefixMatches("/api", "/api") {
@@ -29,5 +36,89 @@ func TestRewriteUpstreamPath(t *testing.T) {
 	}
 	if got := rewriteUpstreamPath("/api/users", "/api", false); got != "/api/users" {
 		t.Fatalf("rewrite disabled: got %q", got)
+	}
+}
+
+func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
+	type receivedRequest struct {
+		path     string
+		rawQuery string
+		host     string
+		xff      string
+		xfHost   string
+		xfProto  string
+	}
+
+	reqs := make(chan receivedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs <- receivedRequest{
+			path:     r.URL.Path,
+			rawQuery: r.URL.RawQuery,
+			host:     r.Host,
+			xff:      r.Header.Get("X-Forwarded-For"),
+			xfHost:   r.Header.Get("X-Forwarded-Host"),
+			xfProto:  r.Header.Get("X-Forwarded-Proto"),
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	upstreamAddr, ok := upstream.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected upstream addr type %T", upstream.Listener.Addr())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	router, port, err := startUpLocalRouter(ctx, []upLocalRoute{{
+		Name:        "api",
+		PathPrefix:  "/api",
+		StripPrefix: true,
+		LocalPort:   upstreamAddr.Port,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("start router: %v", err)
+	}
+	defer func() {
+		_ = router.server.Close()
+	}()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/users?id=1", port), nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Host = "demo.example.test"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected status code %d", resp.StatusCode)
+	}
+
+	got := <-reqs
+	if got.path != "/users" {
+		t.Fatalf("unexpected upstream path %q", got.path)
+	}
+	if got.rawQuery != "id=1" {
+		t.Fatalf("unexpected upstream query %q", got.rawQuery)
+	}
+	if got.host != "demo.example.test" {
+		t.Fatalf("unexpected upstream host %q", got.host)
+	}
+	if got.xff == "" {
+		t.Fatal("expected X-Forwarded-For header")
+	}
+	if got.xfHost != "demo.example.test" {
+		t.Fatalf("unexpected X-Forwarded-Host %q", got.xfHost)
+	}
+	if got.xfProto != "http" {
+		t.Fatalf("unexpected X-Forwarded-Proto %q", got.xfProto)
 	}
 }

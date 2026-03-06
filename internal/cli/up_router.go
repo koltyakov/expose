@@ -43,13 +43,14 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 			return nil, 0, fmt.Errorf("build target for %s: %w", r.Name, err)
 		}
 		routeCopy := r
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		origDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			originalPath := req.URL.Path
-			origDirector(req)
-			req.URL.Path = rewriteUpstreamPath(originalPath, routeCopy.PathPrefix, routeCopy.StripPrefix)
-			req.URL.RawPath = ""
+		proxy := &httputil.ReverseProxy{
+			Rewrite: func(preq *httputil.ProxyRequest) {
+				preq.SetURL(target)
+				preq.Out.Host = preq.In.Host
+				preq.SetXForwarded()
+				preq.Out.URL.Path = rewriteUpstreamPath(preq.In.URL.Path, routeCopy.PathPrefix, routeCopy.StripPrefix)
+				preq.Out.URL.RawPath = ""
+			},
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
 			if log != nil {

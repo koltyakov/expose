@@ -2,6 +2,10 @@ APP := expose
 PKG := github.com/koltyakov/expose
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BIN_DIR := bin
+GO ?= go
+CGO_ENABLED ?= 0
+BUILD_LDFLAGS := -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
+BUILD_FLAGS := -trimpath -ldflags "$(BUILD_LDFLAGS)"
 
 ifneq (,$(wildcard .env))
 include .env
@@ -75,19 +79,19 @@ bench:
 
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP) ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP) ./cmd/expose
 
 build-linux:
 	@mkdir -p $(BIN_DIR)
-	GOOS=linux GOARCH=amd64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP) ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP) ./cmd/expose
 
 build-all:
 	@mkdir -p $(BIN_DIR)
-	GOOS=linux GOARCH=amd64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP)-linux-amd64 ./cmd/expose
-	GOOS=linux GOARCH=arm64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP)-linux-arm64 ./cmd/expose
-	GOOS=darwin GOARCH=amd64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP)-darwin-amd64 ./cmd/expose
-	GOOS=darwin GOARCH=arm64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP)-darwin-arm64 ./cmd/expose
-	GOOS=windows GOARCH=amd64 go build -ldflags "-X $(PKG)/internal/cli.Version=$(VERSION)" -o $(BIN_DIR)/$(APP)-windows-amd64.exe ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-amd64 ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-arm64 ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-darwin-amd64 ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=arm64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-darwin-arm64 ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-windows-amd64.exe ./cmd/expose
 
 release-check:
 	@if ! command -v goreleaser >/dev/null 2>&1; then \

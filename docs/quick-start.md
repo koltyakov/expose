@@ -11,7 +11,7 @@ Get a local HTTP service publicly accessible in under 5 minutes.
 ## Build
 
 ```bash
-go build -o bin/expose ./cmd/expose
+go build -trimpath -ldflags "-s -w" -o bin/expose ./cmd/expose
 ```
 
 ## 1 - Start the server

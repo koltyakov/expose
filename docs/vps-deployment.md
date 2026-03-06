@@ -36,7 +36,7 @@ sudo apt update && sudo apt install -y golang-go git
 git clone https://github.com/koltyakov/expose.git
 cd expose
 sudo mkdir -p /opt/expose/bin
-go build -o /opt/expose/bin/expose ./cmd/expose
+go build -trimpath -ldflags "-s -w" -o /opt/expose/bin/expose ./cmd/expose
 ```
 
 Or download a prebuilt binary from the [releases page](https://github.com/koltyakov/expose/releases) into `/opt/expose/bin/`.

@@ -23,26 +23,30 @@ expose server
 
 Every setting can be provided as a CLI flag or environment variable. Environment variables take effect when the corresponding flag is not explicitly passed.
 
-| Flag                      | Env Variable                    | Default       | Description                                                  |
-| ------------------------- | ------------------------------- | ------------- | ------------------------------------------------------------ |
-| `--domain`                | `EXPOSE_DOMAIN`                 | _(required)_  | Public base domain (e.g. `example.com`)                      |
-| `--listen`                | `EXPOSE_LISTEN_HTTPS`           | `:10443`      | HTTPS listen address                                         |
-| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE`  | `:10080`      | ACME HTTP-01 challenge listener                              |
-| `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`           | -             | Optional pprof listen address (recommended on loopback only) |
-| `--db`                    | `EXPOSE_DB_PATH`                | `./expose.db` | SQLite database path                                         |
-| `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`      | `10`          | SQLite max open connections                                  |
-| `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`      | `10`          | SQLite max idle connections                                  |
-| `--tls-mode`              | `EXPOSE_TLS_MODE`               | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`                   |
-| `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`         | `./cert`      | ACME certificate cache directory                             |
-| `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`          | -             | Static PEM certificate (for wildcard/auto)                   |
-| `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`           | -             | Static PEM private key (for wildcard/auto)                   |
-| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`         | -             | Explicit pepper for API key hashing                          |
-| `--log-level`             | `EXPOSE_LOG_LEVEL`              | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`              |
-| -                         | `EXPOSE_WAF_ENABLE`             | `true`        | Enable/disable the Web Application Firewall                  |
-| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL` | `32`          | Max in-flight public HTTP requests per active tunnel         |
-| -                         | `EXPOSE_ROUTE_CACHE_TTL`        | `1m`          | Positive hostname route cache TTL before DB revalidation     |
-| -                         | `EXPOSE_WAF_COUNTER_RETENTION`  | `1h`          | Retention window for in-memory per-host WAF counters         |
-| -                         | `EXPOSE_AUTOUPDATE`             | `false`       | Enable automatic self-update (`true`/`1`/`yes`)              |
+| Flag                      | Env Variable                     | Default       | Description                                                    |
+| ------------------------- | -------------------------------- | ------------- | -------------------------------------------------------------- |
+| `--domain`                | `EXPOSE_DOMAIN`                  | _(required)_  | Public base domain (e.g. `example.com`)                        |
+| `--listen`                | `EXPOSE_LISTEN_HTTPS`            | `:10443`      | HTTPS listen address                                           |
+| `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE`   | `:10080`      | ACME HTTP-01 challenge listener                                |
+| `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`            | -             | Optional pprof listen address (recommended on loopback only)   |
+| `--db`                    | `EXPOSE_DB_PATH`                 | `./expose.db` | SQLite database path                                           |
+| `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`       | `10`          | SQLite max open connections                                    |
+| `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`       | `10`          | SQLite max idle connections                                    |
+| `--tls-mode`              | `EXPOSE_TLS_MODE`                | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`                     |
+| `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`          | `./cert`      | ACME certificate cache directory                               |
+| `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`           | -             | Static PEM certificate (for wildcard/auto)                     |
+| `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`            | -             | Static PEM private key (for wildcard/auto)                     |
+| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | -             | Explicit pepper for API key hashing                            |
+| `--log-level`             | `EXPOSE_LOG_LEVEL`               | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`                |
+| -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |
+| -                         | `EXPOSE_WAF_AUDIT_ONLY`          | `false`       | Evaluate WAF rules without blocking requests                   |
+| -                         | `EXPOSE_WAF_BODY_INSPECT_LIMIT`  | `16384`       | Max public request-body bytes the WAF inspects (`0` disables)  |
+| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`  | `32`          | Max in-flight public HTTP requests per active tunnel           |
+| -                         | `EXPOSE_PUBLIC_RATE_LIMIT_RPS`   | `0`           | Optional public request rate limit per hostname+client IP      |
+| -                         | `EXPOSE_PUBLIC_RATE_LIMIT_BURST` | `0`           | Burst for the public request limit (`0` auto-derives from RPS) |
+| -                         | `EXPOSE_ROUTE_CACHE_TTL`         | `1m`          | Positive hostname route cache TTL before DB revalidation       |
+| -                         | `EXPOSE_WAF_COUNTER_RETENTION`   | `1h`          | Retention window for in-memory per-host WAF counters           |
+| -                         | `EXPOSE_AUTOUPDATE`              | `false`       | Enable automatic self-update (`true`/`1`/`yes`)                |
 
 ## HTTP/3 + QUIC Behavior
 
@@ -66,6 +70,10 @@ EXPOSE_CERT_CACHE_DIR=./cert
 EXPOSE_API_KEY_PEPPER=your-secret-pepper
 EXPOSE_LOG_LEVEL=info
 EXPOSE_WAF_ENABLE=true
+EXPOSE_WAF_AUDIT_ONLY=false
+EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
+EXPOSE_PUBLIC_RATE_LIMIT_RPS=0
+EXPOSE_PUBLIC_RATE_LIMIT_BURST=0
 EXPOSE_AUTOUPDATE=true
 ```
 
@@ -148,6 +156,13 @@ The server applies token-bucket rate limiting to tunnel registration requests (`
 - **10 burst** capacity
 
 Clients that exceed the limit receive `429 Too Many Requests`.
+
+You can also enable an optional public traffic limit with:
+
+- `EXPOSE_PUBLIC_RATE_LIMIT_RPS`
+- `EXPOSE_PUBLIC_RATE_LIMIT_BURST`
+
+That limiter is applied per `hostname + client IP` before the request reaches tunnel auth or proxying. Set burst to `0` to derive it automatically as `2 x RPS`.
 
 ## Active Tunnel Limit
 

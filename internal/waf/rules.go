@@ -13,6 +13,7 @@ const (
 	targetHeaders                    // header values (excluding Host)
 	targetUA                         // User-Agent header only
 	targetURI                        // full RequestURI
+	targetBody                       // bounded request body preview
 )
 
 // rule is a single WAF detection pattern.
@@ -28,7 +29,7 @@ func defaultRules() []rule {
 	return []rule{
 		{
 			name:    "sql-injection",
-			targets: targetPath | targetQuery | targetHeaders,
+			targets: targetPath | targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`union\s+(?:all\s+)?select` +
@@ -45,7 +46,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "xss",
-			targets: targetPath | targetQuery | targetHeaders,
+			targets: targetPath | targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`<\s*script` +
@@ -72,7 +73,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "shell-injection",
-			targets: targetQuery | targetHeaders,
+			targets: targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				"(?i)(?:" +
 					`\$\(` +
@@ -84,7 +85,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "log4shell-jndi",
-			targets: targetPath | targetQuery | targetHeaders,
+			targets: targetPath | targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)\$\{.*?(?:jndi|java)\s*:`,
 			),
@@ -154,7 +155,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "protocol-attack",
-			targets: targetQuery | targetHeaders,
+			targets: targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`<\?(?:php|=)` +
@@ -165,7 +166,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "ssrf",
-			targets: targetQuery | targetHeaders,
+			targets: targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					// AWS / cloud metadata endpoints
@@ -182,7 +183,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "xxe",
-			targets: targetQuery | targetHeaders,
+			targets: targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`<!DOCTYPE[^>]*\[` +
@@ -194,7 +195,7 @@ func defaultRules() []rule {
 		},
 		{
 			name:    "ssti",
-			targets: targetQuery | targetHeaders,
+			targets: targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					// Jinja2 / Twig / Django

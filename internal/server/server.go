@@ -56,6 +56,7 @@ type Server struct {
 	wildcardTLSOn bool
 	requestSeq    atomic.Uint64
 	regLimiter    *rateLimiter
+	publicLimiter *rateLimiter
 	routes        routeCache
 	domainTouches chan string
 	domainTouchMu sync.Mutex
@@ -133,6 +134,7 @@ const (
 	disconnectBatchSize         = 64
 	disconnectFlushInterval     = 75 * time.Millisecond
 	disconnectTimeout           = 10 * time.Second
+	publicRateLimitCleanupAge   = 5 * time.Minute
 	wafAuditQueueSize           = 2048
 	wafAuditLookupTimeout       = 250 * time.Millisecond
 	wsDataDispatchWait          = 250 * time.Millisecond
@@ -159,6 +161,14 @@ var wsUpgrader = websocket.Upgrader{
 
 // New creates a Server with the given configuration, store, and logger.
 func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, version string) *Server {
+	var publicLimiter *rateLimiter
+	if cfg.PublicRateLimitRPS > 0 {
+		publicLimiter = newConfiguredRateLimiter(
+			float64(cfg.PublicRateLimitRPS),
+			float64(cfg.PublicRateLimitBurst),
+			publicRateLimitCleanupAge,
+		)
+	}
 	return &Server{
 		cfg:           cfg,
 		store:         store,
@@ -166,6 +176,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		hub:           &hub{sessions: map[string]*session{}},
 		version:       version,
 		regLimiter:    newRateLimiter(),
+		publicLimiter: publicLimiter,
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
 		domainTouches: make(chan string, domainTouchQueueSize),
 		domainTouched: make(map[string]struct{}),

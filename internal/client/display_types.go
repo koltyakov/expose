@@ -98,6 +98,10 @@ type Display struct {
 	totalHTTP  int   // total HTTP requests forwarded
 	wafBlocked int64 // WAF-blocked requests reported by the server
 
+	// most recent client-side notice (retries, updates, provisioning, etc.)
+	noticeText  string
+	noticeLevel string // "warn" or "info"
+
 	// session timing
 	sessionStart    time.Time // when the first successful connection happened
 	onlineSince     time.Time // when the current logical online streak began

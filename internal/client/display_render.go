@@ -116,6 +116,16 @@ func (d *Display) redraw() {
 	} else {
 		d.writeField(&b, "Forwarding", placeholder)
 	}
+	if d.noticeText != "" {
+		notice := d.noticeText
+		switch d.noticeLevel {
+		case "warn":
+			notice = d.styled(ansiYellow, notice)
+		case "info":
+			notice = d.styled(ansiCyan, notice)
+		}
+		d.writeField(&b, "Notice", notice)
+	}
 	// ── Connections counter ─────────────────────────────────────
 	wsCount := max(
 		// Use the debounced floor so the counter never dips below the
@@ -154,30 +164,15 @@ func (d *Display) redraw() {
 	} else {
 		for _, r := range d.requests {
 			ts := r.ts.Format("15:04:05")
-			switch r.method {
-			case "WARN":
-				fmt.Fprintf(&b, "%s  %s  %s\n",
-					d.styled(ansiDim, ts),
-					d.styled(ansiYellow, "WARN   "),
-					r.path,
-				)
-			case "INFO":
-				fmt.Fprintf(&b, "%s  %s  %s\n",
-					d.styled(ansiDim, ts),
-					d.styled(ansiCyan, "INFO   "),
-					r.path,
-				)
-			default:
-				statusStr := d.formatStatus(r.status)
-				dur := displayFormatDuration(r.duration)
-				fmt.Fprintf(&b, "%s  %s  %-40s %s %s\n",
-					d.styled(ansiDim, ts),
-					d.styled(ansiBold, fmt.Sprintf("%-7s", r.method)),
-					displayTruncatePath(r.path, 40),
-					statusStr,
-					d.styled(ansiDim, fmt.Sprintf("%7s", dur)),
-				)
-			}
+			statusStr := d.formatStatus(r.status)
+			dur := displayFormatDuration(r.duration)
+			fmt.Fprintf(&b, "%s  %s  %-40s %s %s\n",
+				d.styled(ansiDim, ts),
+				d.styled(ansiBold, fmt.Sprintf("%-7s", r.method)),
+				displayTruncatePath(r.path, 40),
+				statusStr,
+				d.styled(ansiDim, fmt.Sprintf("%7s", dur)),
+			)
 		}
 	}
 	if p, ok := displayLatencyPercentiles(d.latencySamples); ok {

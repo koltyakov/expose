@@ -82,6 +82,9 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.cleanupStaleWAFCounters()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
+			if s.publicLimiter != nil {
+				s.publicLimiter.cleanup()
+			}
 		}
 	}
 }

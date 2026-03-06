@@ -56,7 +56,11 @@ type ServerConfig struct {
 	CleanupInterval        time.Duration
 	TempRetention          time.Duration
 	WAFEnabled             bool
+	WAFAuditOnly           bool
+	WAFBodyInspectLimit    int64
 	MaxPendingPerTunnel    int
+	PublicRateLimitRPS     int
+	PublicRateLimitBurst   int
 	RouteCacheTTL          time.Duration
 	WAFCounterRetention    time.Duration
 
@@ -188,7 +192,11 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		CleanupInterval:        defaultServerCleanupInterval,
 		TempRetention:          defaultServerTempRetention,
 		WAFEnabled:             envBoolOrDefault("EXPOSE_WAF_ENABLE", true),
+		WAFAuditOnly:           envBoolOrDefault("EXPOSE_WAF_AUDIT_ONLY", false),
+		WAFBodyInspectLimit:    envInt64OrDefault("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024),
 		MaxPendingPerTunnel:    envIntOrDefault("EXPOSE_MAX_PENDING_PER_TUNNEL", 32),
+		PublicRateLimitRPS:     envIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0),
+		PublicRateLimitBurst:   envIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0),
 		RouteCacheTTL:          envDurationOrDefault("EXPOSE_ROUTE_CACHE_TTL", time.Minute),
 		WAFCounterRetention:    envDurationOrDefault("EXPOSE_WAF_COUNTER_RETENTION", time.Hour),
 	}
@@ -249,6 +257,21 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	if cfg.MaxPendingPerTunnel <= 0 {
 		return cfg, errors.New("max pending per tunnel must be > 0")
 	}
+	if cfg.WAFBodyInspectLimit < 0 {
+		return cfg, errors.New("waf body inspect limit must be >= 0")
+	}
+	if cfg.PublicRateLimitRPS < 0 {
+		return cfg, errors.New("public rate limit rps must be >= 0")
+	}
+	if cfg.PublicRateLimitBurst < 0 {
+		return cfg, errors.New("public rate limit burst must be >= 0")
+	}
+	if cfg.PublicRateLimitRPS == 0 && cfg.PublicRateLimitBurst > 0 {
+		return cfg, errors.New("public rate limit burst requires public rate limit rps > 0")
+	}
+	if cfg.PublicRateLimitRPS > 0 && cfg.PublicRateLimitBurst == 0 {
+		cfg.PublicRateLimitBurst = cfg.PublicRateLimitRPS * 2
+	}
 	if cfg.RouteCacheTTL <= 0 {
 		return cfg, errors.New("route cache ttl must be > 0")
 	}
@@ -275,6 +298,18 @@ func envIntOrDefault(key string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func envInt64OrDefault(key string, def int64) int64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return def
 	}

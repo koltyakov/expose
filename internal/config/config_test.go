@@ -233,6 +233,56 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 }
 
+func TestParseServerFlagsWAFAndPublicRateLimitFromEnv(t *testing.T) {
+	t.Setenv("EXPOSE_WAF_AUDIT_ONLY", "true")
+	t.Setenv("EXPOSE_WAF_BODY_INSPECT_LIMIT", "32768")
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_RPS", "12")
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_BURST", "24")
+
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.WAFAuditOnly {
+		t.Fatal("expected WAF audit-only mode to be enabled")
+	}
+	if cfg.WAFBodyInspectLimit != 32768 {
+		t.Fatalf("expected WAF body inspect limit 32768, got %d", cfg.WAFBodyInspectLimit)
+	}
+	if cfg.PublicRateLimitRPS != 12 {
+		t.Fatalf("expected public rate limit rps 12, got %d", cfg.PublicRateLimitRPS)
+	}
+	if cfg.PublicRateLimitBurst != 24 {
+		t.Fatalf("expected public rate limit burst 24, got %d", cfg.PublicRateLimitBurst)
+	}
+}
+
+func TestParseServerFlagsDefaultsPublicRateLimitBurst(t *testing.T) {
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_RPS", "7")
+
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PublicRateLimitBurst != 14 {
+		t.Fatalf("expected derived public rate limit burst 14, got %d", cfg.PublicRateLimitBurst)
+	}
+}
+
+func TestParseServerFlagsRejectsInvalidWAFAndPublicRateLimits(t *testing.T) {
+	t.Setenv("EXPOSE_WAF_BODY_INSPECT_LIMIT", "-1")
+	if _, err := ParseServerFlags([]string{"--domain", "example.com"}); err == nil {
+		t.Fatal("expected negative WAF body inspect limit to fail")
+	}
+
+	t.Setenv("EXPOSE_WAF_BODY_INSPECT_LIMIT", "1024")
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_RPS", "0")
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_BURST", "5")
+	if _, err := ParseServerFlags([]string{"--domain", "example.com"}); err == nil {
+		t.Fatal("expected public rate limit burst without rps to fail")
+	}
+}
+
 func TestParseServerFlagsRejectsRemovedQUICFlags(t *testing.T) {
 	if _, err := ParseServerFlags([]string{"--domain", "example.com", "--quic-listen", ":443"}); err == nil {
 		t.Fatal("expected removed --quic-listen flag to fail parsing")

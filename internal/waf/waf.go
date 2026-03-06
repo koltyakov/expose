@@ -24,6 +24,12 @@ type Config struct {
 	Enabled bool
 	// AuditOnly logs matched rules without blocking the request (dry-run mode).
 	AuditOnly bool
+	// BodyInspectLimit controls how many bytes of a request body are inspected.
+	// Set to 0 to disable body inspection.
+	BodyInspectLimit int64
+	// ShouldInspectBody allows callers to opt specific requests out of body
+	// inspection while still evaluating path, query, header, and UA rules.
+	ShouldInspectBody func(*http.Request) bool
 	// OnBlock is called (if non-nil) every time the WAF blocks (or would
 	// block, in audit mode) a request.
 	OnBlock func(BlockEvent)
@@ -34,6 +40,8 @@ type firewall struct {
 	rules     []rule
 	log       *slog.Logger
 	auditOnly bool
+	bodyLimit int64
+	bodyGuard func(*http.Request) bool
 	onBlock   func(BlockEvent)
 }
 
@@ -55,6 +63,8 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 			rules:     defaultRules(),
 			log:       logger,
 			auditOnly: cfg.AuditOnly,
+			bodyLimit: cfg.BodyInspectLimit,
+			bodyGuard: cfg.ShouldInspectBody,
 			onBlock:   cfg.OnBlock,
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

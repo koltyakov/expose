@@ -62,6 +62,8 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string,
 	d.tlsMode = tlsMode
 	d.transport = transport
 	d.tunnelID = tunnelID
+	d.noticeText = ""
+	d.noticeLevel = ""
 	d.redraw()
 }
 
@@ -228,28 +230,27 @@ func (d *Display) TrackWSClose(id string) {
 	d.redraw()
 }
 
-// ShowWarning appends a warning pseudo-request line and redraws.
+// ShowWarning sets the most recent warning notice and redraws.
 func (d *Display) ShowWarning(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.appendEntry(requestEntry{
-		ts:     d.now(),
-		method: "WARN",
-		path:   msg,
-	})
+	d.setNoticeLocked("warn", msg)
 	d.redraw()
 }
 
-// ShowInfo appends an info pseudo-request line and redraws.
+// ShowInfo sets the most recent info notice and redraws.
 func (d *Display) ShowInfo(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.appendEntry(requestEntry{
-		ts:     d.now(),
-		method: "INFO",
-		path:   msg,
-	})
+	d.setNoticeLocked("info", msg)
 	d.redraw()
+}
+
+func (d *Display) setNoticeLocked(level, msg string) {
+	msg = strings.TrimSpace(msg)
+	level = strings.ToLower(strings.TrimSpace(level))
+	d.noticeText = msg
+	d.noticeLevel = level
 }
 
 // appendEntry adds a request entry to the rolling log, evicting the oldest

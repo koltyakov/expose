@@ -11,14 +11,14 @@
 ## Features
 
 - **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certificates
-- **Built-in WAF** blocks SQL injection, XSS, path traversal, and other attacks before they reach your app
+- **Built-in WAF** blocks SQL injection, XSS, path traversal, and other attacks before they reach your app, including bounded JSON/form/text body inspection
 - **Static site publishing** via `expose static` for quick docs, SPAs, and local folders
 - **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
 - **Auto-update** - server and client can self-update in the background with zero downtime
 - **Password-protected tunnels** with a built-in access form and edge session cookie (per-tunnel or per-config)
 - **Env-first configuration** - minimal CLI flags, `.env` support, and interactive setup wizards
-- **Rate limiting** on tunnel registration to prevent abuse
+- **Rate limiting** on tunnel registration plus optional public traffic throttling per hostname+client IP
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally
 - **Automatic reconnection** with exponential backoff and keepalive pings
 - **HTTP/3 over QUIC support** - clients can use compatibility or negotiated multi-stream mode, with WebSocket fallback in `--transport=auto`

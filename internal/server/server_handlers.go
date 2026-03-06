@@ -126,6 +126,13 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.allowPublicRequest(route, r) {
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	if !s.authorizePublicRequest(w, r, route) {
 		return
 	}

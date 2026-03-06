@@ -26,7 +26,10 @@ type bucket struct {
 // hashing so that concurrent allow() calls on different keys rarely contend
 // on the same mutex.
 type rateLimiter struct {
-	shards [rateLimiterShards]rateLimiterShard
+	rate       float64
+	burst      float64
+	cleanupAge time.Duration
+	shards     [rateLimiterShards]rateLimiterShard
 }
 
 type rateLimiterShard struct {
@@ -35,7 +38,15 @@ type rateLimiterShard struct {
 }
 
 func newRateLimiter() *rateLimiter {
-	rl := &rateLimiter{}
+	return newConfiguredRateLimiter(regRateLimit, regBurstLimit, regCleanupAge)
+}
+
+func newConfiguredRateLimiter(rate, burst float64, cleanupAge time.Duration) *rateLimiter {
+	rl := &rateLimiter{
+		rate:       rate,
+		burst:      burst,
+		cleanupAge: cleanupAge,
+	}
 	for i := range rl.shards {
 		rl.shards[i].buckets = make(map[string]*bucket)
 	}
@@ -67,14 +78,14 @@ func (rl *rateLimiter) allow(key string) bool {
 	now := time.Now()
 	b, ok := s.buckets[key]
 	if !ok {
-		b = &bucket{tokens: regBurstLimit, lastCheck: now}
+		b = &bucket{tokens: rl.burst, lastCheck: now}
 		s.buckets[key] = b
 	}
 
 	elapsed := now.Sub(b.lastCheck).Seconds()
-	b.tokens += elapsed * regRateLimit
-	if b.tokens > regBurstLimit {
-		b.tokens = regBurstLimit
+	b.tokens += elapsed * rl.rate
+	if b.tokens > rl.burst {
+		b.tokens = rl.burst
 	}
 	b.lastCheck = now
 
@@ -94,7 +105,7 @@ func (rl *rateLimiter) cleanup() {
 		s := &rl.shards[i]
 		s.mu.Lock()
 		for k, v := range s.buckets {
-			if now.Sub(v.lastCheck) > regCleanupAge {
+			if now.Sub(v.lastCheck) > rl.cleanupAge {
 				delete(s.buckets, k)
 			}
 		}

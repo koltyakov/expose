@@ -235,19 +235,44 @@ func TestDisplayWarningAndInfo(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
 	d.ShowWarning("something went wrong")
-	d.ShowInfo("just letting you know")
 	out := buf.String()
-	if !strings.Contains(out, "WARN") {
-		t.Fatal("expected WARN label")
+	if !strings.Contains(out, "Notice") {
+		t.Fatal("expected Notice field")
 	}
 	if !strings.Contains(out, "something went wrong") {
 		t.Fatal("expected warning message")
 	}
-	if !strings.Contains(out, "INFO") {
-		t.Fatal("expected INFO label")
+	if strings.Contains(out, "WARN   ") {
+		t.Fatal("did not expect warning pseudo-request in HTTP request log")
+	}
+
+	buf.Reset()
+	d.ShowInfo("just letting you know")
+	out = buf.String()
+	if !strings.Contains(out, "Notice") {
+		t.Fatal("expected Notice field")
 	}
 	if !strings.Contains(out, "just letting you know") {
-		t.Fatal("expected info message")
+		t.Fatal("expected info notice")
+	}
+	if strings.Contains(out, "INFO   ") {
+		t.Fatal("did not expect info pseudo-request in HTTP request log")
+	}
+}
+
+func TestDisplayTunnelInfoClearsNotice(t *testing.T) {
+	t.Parallel()
+	d, buf := newTestDisplay(false)
+	d.ShowWarning("tunnel register failed")
+	buf.Reset()
+
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz", false, "ws")
+	out := buf.String()
+	if strings.Contains(out, "Notice") {
+		t.Fatal("expected tunnel info to clear prior notices")
+	}
+	if strings.Contains(out, "tunnel register failed") {
+		t.Fatal("expected stale warning text to be cleared")
 	}
 }
 

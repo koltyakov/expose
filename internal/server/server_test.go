@@ -1125,6 +1125,105 @@ func TestCleanupStaleWAFCounters(t *testing.T) {
 	}
 }
 
+func TestAllowPublicRequestRateLimitIsolatesHostAndClient(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{
+		publicLimiter: newConfiguredRateLimiter(1, 1, time.Minute),
+	}
+	routeA := domain.TunnelRoute{Domain: domain.Domain{Hostname: "a.example.com"}}
+	routeB := domain.TunnelRoute{Domain: domain.Domain{Hostname: "b.example.com"}}
+
+	req := httptest.NewRequest(http.MethodGet, "https://a.example.com/", nil)
+	req.RemoteAddr = "198.51.100.10:1234"
+	if !srv.allowPublicRequest(routeA, req) {
+		t.Fatal("expected first request for host A / client A to pass")
+	}
+	if srv.allowPublicRequest(routeA, req) {
+		t.Fatal("expected second request for host A / client A to be rate limited")
+	}
+
+	reqOtherHost := httptest.NewRequest(http.MethodGet, "https://b.example.com/", nil)
+	reqOtherHost.RemoteAddr = "198.51.100.10:1234"
+	if !srv.allowPublicRequest(routeB, reqOtherHost) {
+		t.Fatal("expected same client on different host to use a separate bucket")
+	}
+
+	reqOtherClient := httptest.NewRequest(http.MethodGet, "https://a.example.com/", nil)
+	reqOtherClient.RemoteAddr = "198.51.100.11:5678"
+	if !srv.allowPublicRequest(routeA, reqOtherClient) {
+		t.Fatal("expected different client on same host to use a separate bucket")
+	}
+}
+
+func TestHandlePublicAppliesPublicRateLimit(t *testing.T) {
+	t.Parallel()
+
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := "limited.example.com"
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: host},
+		Tunnel: domain.Tunnel{
+			ID:                 "tunnel-limited",
+			State:              domain.TunnelStateConnected,
+			AccessUser:         "admin",
+			AccessMode:         "form",
+			AccessPasswordHash: hash,
+		},
+	}
+	sess := &session{
+		tunnelID: route.Tunnel.ID,
+		pending:  make(map[string]chan tunnelproto.Message),
+	}
+
+	srv := &Server{
+		publicLimiter: newConfiguredRateLimiter(1, 1, time.Minute),
+		hub: &hub{
+			sessions: map[string]*session{
+				route.Tunnel.ID: sess,
+			},
+		},
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+	}
+	srv.routes.set(host, route)
+
+	req1 := httptest.NewRequest(http.MethodGet, "https://"+host+"/private", nil)
+	req1.Host = host
+	req1.RemoteAddr = "198.51.100.20:4444"
+	rr1 := httptest.NewRecorder()
+	srv.handlePublic(rr1, req1)
+
+	if rr1.Code != http.StatusUnauthorized {
+		t.Fatalf("expected first request to hit auth gate with 401, got %d", rr1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "https://"+host+"/private", nil)
+	req2.Host = host
+	req2.RemoteAddr = "198.51.100.20:4444"
+	rr2 := httptest.NewRecorder()
+	srv.handlePublic(rr2, req2)
+
+	if rr2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second request to be rate limited with 429, got %d", rr2.Code)
+	}
+	if got := rr2.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("expected Retry-After 1, got %q", got)
+	}
+	if got := rr2.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected Cache-Control no-store, got %q", got)
+	}
+	if !strings.Contains(rr2.Body.String(), "rate limit exceeded") {
+		t.Fatalf("expected rate limit error body, got %q", rr2.Body.String())
+	}
+}
+
 func TestHandlePublicRejectsTooLargeBody(t *testing.T) {
 	t.Parallel()
 

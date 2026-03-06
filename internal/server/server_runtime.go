@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,7 +59,12 @@ func (s *Server) Run(ctx context.Context) error {
 	var handler http.Handler = mux
 	if s.cfg.WAFEnabled {
 		handler = waf.NewMiddleware(waf.Config{
-			Enabled: true,
+			Enabled:          true,
+			AuditOnly:        s.cfg.WAFAuditOnly,
+			BodyInspectLimit: s.cfg.WAFBodyInspectLimit,
+			ShouldInspectBody: func(r *http.Request) bool {
+				return shouldInspectWAFBody(r)
+			},
 			OnBlock: s.recordWAFBlock,
 		}, s.log)(handler)
 		s.log.Info("WAF enabled")
@@ -187,6 +193,16 @@ func (s *Server) Run(ctx context.Context) error {
 		waitGroupWait(&s.hub.wg, durationOr(s.cfg.ShutdownWaitTime, 15*time.Second))
 		return err
 	}
+}
+
+func shouldInspectWAFBody(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/v1/") {
+		return false
+	}
+	return true
 }
 
 // gracefulShutdown performs an orderly multi-phase shutdown:

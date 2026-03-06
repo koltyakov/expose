@@ -47,6 +47,29 @@ func (s *Server) resolvePublicSession(route domain.TunnelRoute) (*session, int, 
 	return nil, http.StatusNotFound, "unknown host", false
 }
 
+func (s *Server) allowPublicRequest(route domain.TunnelRoute, r *http.Request) bool {
+	if s.publicLimiter == nil {
+		return true
+	}
+	return s.publicLimiter.allow(publicRateLimitKey(route.Domain.Hostname, clientIPFromRemoteAddr(r.RemoteAddr)))
+}
+
+func publicRateLimitKey(host, clientIP string) string {
+	host = normalizeHost(host)
+	clientIP = strings.TrimSpace(clientIP)
+	if host == "" {
+		host = "unknown-host"
+	}
+	if clientIP == "" {
+		clientIP = "unknown-client"
+	}
+	return host + "|" + clientIP
+}
+
+func clientIPFromRemoteAddr(remoteAddr string) string {
+	return netutil.NormalizeHost(remoteAddr)
+}
+
 func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
 	if s.cfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)

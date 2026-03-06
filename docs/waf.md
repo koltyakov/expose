@@ -33,6 +33,9 @@ export EXPOSE_WAF_ENABLE=true
 
 # Audit-only mode — logs matches but does NOT block requests (dry-run)
 export EXPOSE_WAF_AUDIT_ONLY=true
+
+# Inspect up to 16 KiB of eligible public request bodies (0 disables)
+export EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
 ```
 
 > The `/healthz` endpoint is always exempt from WAF inspection regardless of
@@ -40,22 +43,22 @@ export EXPOSE_WAF_AUDIT_ONLY=true
 
 ## Built-in Rules
 
-| Rule                     | Targets Inspected           | Examples                                                                |
-| ------------------------ | --------------------------- | ----------------------------------------------------------------------- |
-| **SQL Injection**        | Path, query string, headers | `UNION SELECT`, `'; DROP TABLE`, `' OR '1'='1`, `sleep()`, hex literals |
-| **XSS**                  | Path, query string, headers | `<script>`, `javascript:`, `onerror=`, `document.cookie`, `eval()`      |
-| **Path Traversal**       | Full URI                    | `../../etc/passwd`, `..%2f`, `%00` null bytes                           |
-| **Shell Injection**      | Query string, headers       | `$(whoami)`, `` `cmd` ``, pipe to `cat`/`curl`/`bash`                   |
-| **Log4Shell / JNDI**     | Path, query string, headers | `${jndi:ldap://…}`, `${jndi:rmi://…}`                                   |
-| **Scanner User-Agents**  | User-Agent header           | sqlmap, nikto, nmap, nuclei, zgrab, Burp Suite, wpscan, ffuf, and more  |
-| **Header Injection**     | All non-exempt headers      | `\r` or `\n` in header values (CRLF injection)                          |
-| **Sensitive File Probe** | URL path                    | `/.env`, `/.git/`, `/.ssh/`, `/.idea/`, `/etc/passwd`, `/proc/self/environ` |
-| **Protocol Attack**      | Query string, headers       | `<?php`, `<% %>`, `data:…base64`                                        |
-| **SSRF**                 | Query string, headers       | `169.254.169.254`, `metadata.google.internal`, `file://`, `gopher://`   |
-| **XXE**                  | Query string, headers       | `<!DOCTYPE … [`, `<!ENTITY`, `SYSTEM "file://…"`                        |
-| **SSTI**                 | Query string, headers       | `{{config}}`, `{{''.__class__}}`, `<#assign`, `${T(…)}`                 |
-| **URI Too Long**         | Request URI length          | URI exceeding 8 KiB (buffer-overflow / smuggling defence)               |
-| **Too Many Headers**     | Header count                | More than 64 non-exempt headers (header-stuffing defence)               |
+| Rule                     | Targets Inspected                 | Examples                                                                    |
+| ------------------------ | --------------------------------- | --------------------------------------------------------------------------- |
+| **SQL Injection**        | Path, query string, headers, body | `UNION SELECT`, `'; DROP TABLE`, `' OR '1'='1`, `sleep()`, hex literals     |
+| **XSS**                  | Path, query string, headers, body | `<script>`, `javascript:`, `onerror=`, `document.cookie`, `eval()`          |
+| **Path Traversal**       | Full URI                          | `../../etc/passwd`, `..%2f`, `%00` null bytes                               |
+| **Shell Injection**      | Query string, headers, body       | `$(whoami)`, `` `cmd` ``, pipe to `cat`/`curl`/`bash`                       |
+| **Log4Shell / JNDI**     | Path, query string, headers, body | `${jndi:ldap://…}`, `${jndi:rmi://…}`                                       |
+| **Scanner User-Agents**  | User-Agent header                 | sqlmap, nikto, nmap, nuclei, zgrab, Burp Suite, wpscan, ffuf, and more      |
+| **Header Injection**     | All non-exempt headers            | `\r` or `\n` in header values (CRLF injection)                              |
+| **Sensitive File Probe** | URL path                          | `/.env`, `/.git/`, `/.ssh/`, `/.idea/`, `/etc/passwd`, `/proc/self/environ` |
+| **Protocol Attack**      | Query string, headers, body       | `<?php`, `<% %>`, `data:…base64`                                            |
+| **SSRF**                 | Query string, headers, body       | `169.254.169.254`, `metadata.google.internal`, `file://`, `gopher://`       |
+| **XXE**                  | Query string, headers, body       | `<!DOCTYPE … [`, `<!ENTITY`, `SYSTEM "file://…"`                            |
+| **SSTI**                 | Query string, headers, body       | `{{config}}`, `{{''.__class__}}`, `<#assign`, `${T(…)}`                     |
+| **URI Too Long**         | Request URI length                | URI exceeding 8 KiB (buffer-overflow / smuggling defence)                   |
+| **Too Many Headers**     | Header count                      | More than 64 non-exempt headers (header-stuffing defence)                   |
 
 Rules use pre-compiled regular expressions and inspect both raw and
 URL-decoded values (including `+` → space decoding and **double-decoded**
@@ -70,6 +73,9 @@ Each rule targets one or more of:
 - **URI** - the full `RequestURI`
 - **User-Agent** - the `User-Agent` header
 - **Headers** - all header values except a safe-list of structural / browser-controlled headers (e.g. `Host`, `Accept`, `Authorization`, `Content-Type`, WebSocket headers, `Sec-*`)
+- **Body** - up to `EXPOSE_WAF_BODY_INSPECT_LIMIT` bytes of eligible **public** request bodies. JSON, URL-encoded forms, and UTF-8 text/XML-like payloads are normalized and inspected; `multipart/*` and `application/octet-stream` are skipped.
+
+Form and JSON fields with password-like names (`password`, `passwd`, `passphrase`, `passcode`, `pin`, `*_pin`, `*-pin`) are excluded from value scanning to reduce false positives on normal login flows.
 
 ## Client Dashboard
 
@@ -112,8 +118,8 @@ stops on the first match.
 - Safe headers are skipped via a hash-set lookup.
 - Structural limits (URI length, header count) are checked before regex
   evaluation for fast-path rejection.
-- Benchmark results typically show sub-microsecond per-request overhead for
-  clean traffic.
+- Re-run `go test ./internal/waf -bench .` after changing rules or body
+  inspection limits to measure the actual overhead in your environment.
 
 ## Audit-Only Mode
 
@@ -126,7 +132,8 @@ fire before switching to enforcement mode.
 ## Limitations
 
 - The WAF applies a **fixed ruleset** - custom rules are not yet supported.
-- Only request metadata is inspected (URL, headers, query string). **Request
-  bodies are not scanned.**
+- Body inspection is **bounded**. Only the first
+  `EXPOSE_WAF_BODY_INSPECT_LIMIT` bytes of eligible public request bodies are
+  scanned, and binary / multipart bodies are skipped.
 - The WAF is a defence-in-depth layer, not a replacement for input validation
   and authentication in your application.

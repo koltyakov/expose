@@ -16,7 +16,12 @@ var dummyHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request)
 
 func newTestMiddleware(t *testing.T) http.Handler {
 	t.Helper()
-	mw := NewMiddleware(Config{Enabled: true}, slog.Default())
+	return newTestMiddlewareWithConfig(t, Config{Enabled: true})
+}
+
+func newTestMiddlewareWithConfig(t *testing.T, cfg Config) http.Handler {
+	t.Helper()
+	mw := NewMiddleware(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return mw(dummyHandler)
 }
 
@@ -426,6 +431,83 @@ func TestAuditOnlyMode(t *testing.T) {
 	if !blocked {
 		t.Error("OnBlock was not called in audit mode")
 	}
+}
+
+func TestWAFBlocksMaliciousJSONBody(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+	})
+
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"query":"1 UNION SELECT password FROM users"}`))
+	r.Header.Set("Content-Type", "application/json")
+	assertBlocked(t, handler, r)
+}
+
+func TestWAFBlocksMaliciousXMLBody(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+	})
+
+	r := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(`<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`))
+	r.Header.Set("Content-Type", "application/xml")
+	assertBlocked(t, handler, r)
+}
+
+func TestWAFRestoresBodyForDownstreamHandler(t *testing.T) {
+	const payload = `{"message":"hello world"}`
+
+	var gotBody string
+	handler := NewMiddleware(Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read downstream body: %v", err)
+		}
+		gotBody = string(body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/submit", strings.NewReader(payload))
+	r.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, r)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rr.Code)
+	}
+	if gotBody != payload {
+		t.Fatalf("expected downstream body %q, got %q", payload, gotBody)
+	}
+}
+
+func TestWAFSkipsSensitiveBodyFields(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+	})
+
+	form := "username=admin&password=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
+	r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	assertAllowed(t, handler, r)
+}
+
+func TestWAFCanSkipBodyInspectionPerRequest(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+		ShouldInspectBody: func(r *http.Request) bool {
+			return false
+		},
+	})
+
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"query":"1 UNION SELECT password FROM users"}`))
+	r.Header.Set("Content-Type", "application/json")
+	assertAllowed(t, handler, r)
 }
 
 func TestLegitimateRequestsAllowed(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 )
@@ -310,13 +311,14 @@ func (rt *clientH3MultiStreamRuntime) openWorker() {
 			if rt.client.log != nil {
 				rt.client.log.Warn("http3 worker stream ended; retrying", "err", shortenError(err), "retry_in", backoff.String())
 			}
-			timer := time.NewTimer(backoff)
+			timer := timerpool.Acquire(backoff)
 			select {
 			case <-rt.ctx.Done():
-				timer.Stop()
+				timerpool.Release(timer)
 				return
 			case <-timer.C:
 			}
+			timerpool.Release(timer)
 			backoff = min(backoff*2, 2*time.Second)
 		}
 	}()

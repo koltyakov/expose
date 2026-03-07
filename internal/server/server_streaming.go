@@ -203,6 +203,7 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 // streamSend attempts to write msg to ch without blocking the read loop for
 // too long. Mirrors wsPendingSend but for HTTP body streaming channels.
 func (s *session) streamSend(ch chan []byte, payload []byte, wait time.Duration) bool {
+	// Fast path: non-blocking attempt.
 	select {
 	case ch <- payload:
 		return true
@@ -210,13 +211,6 @@ func (s *session) streamSend(ch chan []byte, payload []byte, wait time.Duration)
 	}
 	if wait <= 0 {
 		return false
-	}
-	if wait > 0 {
-		select {
-		case ch <- payload:
-			return true
-		default:
-		}
 	}
 	timer := timerpool.Acquire(wait)
 	defer timerpool.Release(timer)

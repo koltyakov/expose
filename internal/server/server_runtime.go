@@ -43,6 +43,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.runDisconnectWorker(disconnectCtx)
 	go s.runJanitor(ctx)
 	go s.runDomainTouchWorker(ctx)
+	s.routes.startClock(ctx.Done())
 	if s.cfg.WAFEnabled {
 		go s.runWAFAuditWorker(ctx)
 	}

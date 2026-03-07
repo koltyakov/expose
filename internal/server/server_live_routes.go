@@ -74,6 +74,9 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 	hostShard := &i.hostShards[liveRouteShardIndex(host)]
 	tunnelShard := &i.tunnelShards[liveRouteShardIndex(tunnelID)]
 
+	// Lock ordering invariant: always acquire hostShard before tunnelShard.
+	// This order must be preserved by every code path that locks both to
+	// prevent deadlocks.
 	hostShard.mu.Lock()
 	defer hostShard.mu.Unlock()
 	tunnelShard.mu.Lock()

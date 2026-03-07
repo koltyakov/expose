@@ -145,6 +145,17 @@ func (s *Store) runWriterLoop() {
 		case req := <-s.writeRequests:
 			flushTouches()
 			req.done.ch <- withSQLiteBusyRetry(req.ctx, req.op)
+			// Drain any additional pending writes that arrived while we were
+			// executing the first one. This reduces SQLite WAL contention
+			// during mass-connect/disconnect bursts.
+			for drained := true; drained; {
+				select {
+				case r := <-s.writeRequests:
+					r.done.ch <- withSQLiteBusyRetry(r.ctx, r.op)
+				default:
+					drained = false
+				}
+			}
 		case req := <-s.touchRequests:
 			pendingTouches[req.domainID] = append(pendingTouches[req.domainID], req.done)
 			if len(pendingTouches) >= defaultTouchQueueSize/8 {

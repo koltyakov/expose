@@ -79,9 +79,9 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	}
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	defer bufferPool.Put(buf)
 	_, err = buf.ReadFrom(io.LimitReader(resp.Body, localForwardResponseMaxB64+1))
 	if err != nil {
+		bufferPool.Put(buf)
 		return &tunnelproto.HTTPResponse{
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
@@ -90,6 +90,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		}
 	}
 	if buf.Len() > localForwardResponseMaxB64 {
+		bufferPool.Put(buf)
 		return &tunnelproto.HTTPResponse{
 			ID:      req.ID,
 			Status:  http.StatusBadGateway,
@@ -97,12 +98,16 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 			Body:    []byte("local upstream response too large"),
 		}
 	}
+	// Take ownership of the buffer contents without copying. The buffer is
+	// not returned to the pool when the response body is used — this trades a
+	// small pool miss for avoiding a full body copy (up to 10MB).
+	bodyBytes := buf.Bytes()
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 	return &tunnelproto.HTTPResponse{
 		ID:      req.ID,
 		Status:  resp.StatusCode,
 		Headers: respHeaders,
-		Body:    append([]byte(nil), buf.Bytes()...),
+		Body:    bodyBytes,
 	}
 }
 

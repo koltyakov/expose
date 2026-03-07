@@ -2,6 +2,7 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
@@ -16,6 +17,9 @@ type routeCache struct {
 	entries       map[string]routeCacheEntry
 	hostsByTunnel map[string]map[string]struct{}
 	ttl           time.Duration
+	// cachedNow is updated periodically to avoid calling time.Now() on every
+	// cache lookup in the hot path.
+	cachedNow atomic.Int64
 }
 
 type routeCacheEntry struct {
@@ -35,7 +39,7 @@ func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
 }
 
 func (c *routeCache) lookup(host string) (domain.TunnelRoute, bool, bool) {
-	nowUnix := time.Now().UnixNano()
+	nowUnix := c.nowNanos()
 	c.mu.RLock()
 	e, ok := c.entries[host]
 	c.mu.RUnlock()
@@ -52,6 +56,34 @@ func (c *routeCache) lookup(host string) (domain.TunnelRoute, bool, bool) {
 		return domain.TunnelRoute{}, false, false
 	}
 	return e.route, e.found, true
+}
+
+// nowNanos returns the cached monotonic timestamp if available, falling back to
+// a live time.Now() call. The cached value is updated every 100ms by
+// startClock, which is accurate enough for a 1-minute TTL.
+func (c *routeCache) nowNanos() int64 {
+	if v := c.cachedNow.Load(); v != 0 {
+		return v
+	}
+	return time.Now().UnixNano()
+}
+
+// startClock begins a background goroutine that updates cachedNow every 100ms.
+// The goroutine exits when ctx is cancelled.
+func (c *routeCache) startClock(done <-chan struct{}) {
+	c.cachedNow.Store(time.Now().UnixNano())
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				c.cachedNow.Store(time.Now().UnixNano())
+			}
+		}
+	}()
 }
 
 func (c *routeCache) set(host string, route domain.TunnelRoute) {

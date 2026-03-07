@@ -123,7 +123,7 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg registerResponse
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
 	}
-	quicConn, h3Transport, clientConn, err := openHTTP3ClientConnection(ctx, target)
+	quicConn, h3Transport, clientConn, err := c.openHTTP3ClientConnection(ctx, target)
 	if err != nil {
 		return sessionTransportConn{}, err
 	}
@@ -187,7 +187,7 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg regis
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
 	}
 	workerURL := h3WorkerURL(target)
-	quicConn, h3Transport, clientConn, err := openHTTP3ClientConnection(ctx, target)
+	quicConn, h3Transport, clientConn, err := c.openHTTP3ClientConnection(ctx, target)
 	if err != nil {
 		return sessionTransportConn{}, err
 	}
@@ -267,12 +267,24 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg regis
 	}, nil
 }
 
-func openHTTP3ClientConnection(ctx context.Context, target *url.URL) (*quic.Conn, *http3.Transport, *http3.ClientConn, error) {
+func (c *Client) openHTTP3ClientConnection(ctx context.Context, target *url.URL) (*quic.Conn, *http3.Transport, *http3.ClientConn, error) {
 	addr := http3DialAuthority(target)
 	tlsConf := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		NextProtos: []string{http3.NextProtoH3},
 		ServerName: target.Hostname(),
+	}
+	if c != nil && c.h3TLSConfig != nil {
+		tlsConf = c.h3TLSConfig.Clone()
+		if tlsConf.MinVersion == 0 {
+			tlsConf.MinVersion = tls.VersionTLS13
+		}
+		if len(tlsConf.NextProtos) == 0 {
+			tlsConf.NextProtos = []string{http3.NextProtoH3}
+		}
+		if strings.TrimSpace(tlsConf.ServerName) == "" {
+			tlsConf.ServerName = target.Hostname()
+		}
 	}
 	quicConn, err := quic.DialAddr(ctx, addr, tlsConf, netutil.TunnelQUICConfig(0))
 	if err != nil {

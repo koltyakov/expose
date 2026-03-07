@@ -232,13 +232,14 @@ func (c *Client) forwardAndSend(
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		// Small response - send inline.
+		body := append([]byte(nil), firstBuf[:n]...)
 		_ = writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindResponse,
 			Response: &tunnelproto.HTTPResponse{
 				ID:      req.ID,
 				Status:  resp.StatusCode,
 				Headers: respHeaders,
-				Body:    firstBuf[:n],
+				Body:    body,
 			},
 		})
 		c.logForwardResult(req, resp.StatusCode, started)

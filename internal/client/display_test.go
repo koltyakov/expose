@@ -4,15 +4,39 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func newTestDisplay(color bool) (*Display, *bytes.Buffer) {
-	var buf bytes.Buffer
-	d := &Display{out: &buf, color: color, wsConns: make(map[string]wsEntry), visitors: make(map[string]time.Time), nowFunc: time.Now}
-	return d, &buf
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	b.buf.Reset()
+	b.mu.Unlock()
+}
+
+func newTestDisplay(color bool) (*Display, *syncBuffer) {
+	buf := &syncBuffer{}
+	d := &Display{out: buf, color: color, wsConns: make(map[string]wsEntry), visitors: make(map[string]time.Time), nowFunc: time.Now}
+	return d, buf
 }
 
 func TestDisplayBannerNoColor(t *testing.T) {

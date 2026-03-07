@@ -3,6 +3,7 @@
 package client
 
 import (
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -54,15 +55,16 @@ var ErrAutoUpdated = errors.New("binary updated; restart required")
 
 // Client connects to the expose server and proxies public traffic to a local port.
 type Client struct {
-	cfg        config.ClientConfig
-	log        *slog.Logger
-	version    string       // client version, set via SetVersion
-	display    *Display     // optional interactive terminal display
-	apiClient  *http.Client // for registration API calls
-	fwdClient  *http.Client // for local upstream forwarding
-	autoUpdate bool         // when true, periodically self-update and restart
-	resumeID   string       // last tunnel ID, reused on reconnect attempts
-	hooks      LifecycleHooks
+	cfg         config.ClientConfig
+	log         *slog.Logger
+	version     string       // client version, set via SetVersion
+	display     *Display     // optional interactive terminal display
+	apiClient   *http.Client // for registration API calls
+	fwdClient   *http.Client // for local upstream forwarding
+	h3TLSConfig *tls.Config  // optional HTTP/3 TLS override for internal use/tests
+	autoUpdate  bool         // when true, periodically self-update and restart
+	resumeID    string       // last tunnel ID, reused on reconnect attempts
+	hooks       LifecycleHooks
 }
 
 // SetDisplay configures the interactive terminal display.

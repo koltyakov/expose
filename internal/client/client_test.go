@@ -1114,6 +1114,52 @@ func TestForwardAndSendCancelsLocalRequest(t *testing.T) {
 	}
 }
 
+func TestPumpStreamedRequestBodyMessagesCancelsOnReadError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	steps := []struct {
+		msg tunnelproto.Message
+		err error
+	}{
+		{
+			msg: tunnelproto.Message{
+				Kind: tunnelproto.KindReqBody,
+				BodyChunk: &tunnelproto.BodyChunk{
+					ID:   "req_1",
+					Data: []byte("chunk-1"),
+				},
+			},
+		},
+		{err: io.ErrUnexpectedEOF},
+	}
+
+	var idx int
+	out := make(chan []byte, 2)
+	pumpStreamedRequestBodyMessages(ctx, "req_1", cancel, func() (tunnelproto.Message, error) {
+		step := steps[idx]
+		idx++
+		return step.msg, step.err
+	}, out)
+
+	var chunks [][]byte
+	for chunk := range out {
+		chunks = append(chunks, append([]byte(nil), chunk...))
+	}
+
+	if len(chunks) != 1 || string(chunks[0]) != "chunk-1" {
+		t.Fatalf("expected first chunk to be forwarded before failure, got %q", chunks)
+	}
+
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected context cancellation on stream read error")
+	}
+}
+
 func TestRequestContextAppliesMessageTimeout(t *testing.T) {
 	t.Parallel()
 

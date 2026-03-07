@@ -11,10 +11,16 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
-const upRouterShutdownTimeout = 5 * time.Second
+const (
+	upRouterShutdownTimeout        = 5 * time.Second
+	upRouterProxyBufferSize        = 32 * 1024
+	upRouterProxyIdleConnTimeout   = 90 * time.Second
+	upRouterProxyResponseHeaderTTL = 2 * time.Minute
+)
 
 type upLocalRoute struct {
 	Name        string
@@ -30,12 +36,14 @@ type upLocalRouter struct {
 	server *http.Server
 	routes []upLocalRoute
 	log    *slog.Logger
+	tr     *http.Transport
 }
 
 func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Logger) (*upLocalRouter, int, error) {
 	if len(routes) == 0 {
 		return nil, 0, errors.New("no routes configured")
 	}
+	transport := newUpRouterTransport(len(routes))
 	compiled := make([]upLocalRoute, 0, len(routes))
 	for _, r := range routes {
 		target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", r.LocalPort))
@@ -51,6 +59,8 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 				preq.Out.URL.Path = rewriteUpstreamPath(preq.In.URL.Path, routeCopy.PathPrefix, routeCopy.StripPrefix)
 				preq.Out.URL.RawPath = ""
 			},
+			Transport:  transport,
+			BufferPool: upRouterProxyBufferPool,
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
 			if log != nil {
@@ -78,6 +88,7 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 		ln:     ln,
 		routes: compiled,
 		log:    log,
+		tr:     transport,
 	}
 	rt.server = &http.Server{Handler: rt}
 
@@ -88,6 +99,7 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 		_ = rt.server.Shutdown(shutdownCtx)
 	}()
 	go func() {
+		defer transport.CloseIdleConnections()
 		if err := rt.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && log != nil {
 			log.Error("up local router stopped", "err", err)
 		}
@@ -149,4 +161,42 @@ func rewriteUpstreamPath(path, prefix string, strip bool) string {
 		return out
 	}
 	return path
+}
+
+func newUpRouterTransport(routeCount int) *http.Transport {
+	base, _ := http.DefaultTransport.(*http.Transport)
+	tr := base.Clone()
+	maxPerHost := max(16, routeCount*8)
+	tr.MaxIdleConns = maxPerHost
+	tr.MaxIdleConnsPerHost = maxPerHost
+	tr.MaxConnsPerHost = maxPerHost
+	tr.IdleConnTimeout = upRouterProxyIdleConnTimeout
+	tr.ResponseHeaderTimeout = upRouterProxyResponseHeaderTTL
+	return tr
+}
+
+type upRouterBufferPoolType struct {
+	pool sync.Pool
+}
+
+var upRouterProxyBufferPool = &upRouterBufferPoolType{
+	pool: sync.Pool{
+		New: func() any {
+			buf := make([]byte, upRouterProxyBufferSize)
+			return &buf
+		},
+	},
+}
+
+func (p *upRouterBufferPoolType) Get() []byte {
+	buf := p.pool.Get().(*[]byte)
+	return (*buf)[:upRouterProxyBufferSize]
+}
+
+func (p *upRouterBufferPoolType) Put(buf []byte) {
+	if cap(buf) < upRouterProxyBufferSize {
+		return
+	}
+	buf = buf[:upRouterProxyBufferSize]
+	p.pool.Put(&buf)
 }

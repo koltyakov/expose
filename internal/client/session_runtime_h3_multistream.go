@@ -402,34 +402,9 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	if reqCopy.Streamed {
 		ch := make(chan []byte, streamingReqBodyBufSize)
 		bodyCh = ch
-		go func() {
-			defer close(ch)
-			for {
-				msg, err := readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
-				if err != nil {
-					return
-				}
-				if msg.Kind == tunnelproto.KindReqBodyEnd && msg.BodyChunk != nil && msg.BodyChunk.ID == reqCopy.ID {
-					return
-				}
-				if msg.Kind == tunnelproto.KindReqCancel && msg.ReqCancel != nil && msg.ReqCancel.ID == reqCopy.ID {
-					cancel()
-					return
-				}
-				if msg.Kind != tunnelproto.KindReqBody || msg.BodyChunk == nil {
-					continue
-				}
-				payload, err := msg.BodyChunk.Payload()
-				if err != nil {
-					continue
-				}
-				select {
-				case ch <- payload:
-				case <-reqCtx.Done():
-					return
-				}
-			}
-		}()
+		go pumpStreamedRequestBodyMessages(reqCtx, reqCopy.ID, cancel, func() (tunnelproto.Message, error) {
+			return readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
+		}, ch)
 	}
 
 	rt.client.forwardAndSend(reqCtx, rt.localBase, &reqCopy, bodyCh, func(msg tunnelproto.Message) error {
@@ -438,6 +413,46 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameRespBody, id, 0, payload, rt.useStreamV2)
 	})
 	return nil
+}
+
+func pumpStreamedRequestBodyMessages(
+	ctx context.Context,
+	reqID string,
+	cancel context.CancelFunc,
+	readNext func() (tunnelproto.Message, error),
+	out chan<- []byte,
+) {
+	defer close(out)
+	for {
+		msg, err := readNext()
+		if err != nil {
+			if ctx.Err() == nil && cancel != nil {
+				cancel()
+			}
+			return
+		}
+		if msg.Kind == tunnelproto.KindReqBodyEnd && msg.BodyChunk != nil && msg.BodyChunk.ID == reqID {
+			return
+		}
+		if msg.Kind == tunnelproto.KindReqCancel && msg.ReqCancel != nil && msg.ReqCancel.ID == reqID {
+			if cancel != nil {
+				cancel()
+			}
+			return
+		}
+		if msg.Kind != tunnelproto.KindReqBody || msg.BodyChunk == nil || msg.BodyChunk.ID != reqID {
+			continue
+		}
+		payload, err := msg.BodyChunk.Payload()
+		if err != nil {
+			continue
+		}
+		select {
+		case out <- payload:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream, open *tunnelproto.WSOpen) error {

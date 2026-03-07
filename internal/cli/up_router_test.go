@@ -9,6 +9,41 @@ import (
 	"testing"
 )
 
+func TestStartUpLocalRouterConfiguresDedicatedProxyResources(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	router, _, err := startUpLocalRouter(ctx, []upLocalRoute{{
+		Name:       "api",
+		PathPrefix: "/",
+		LocalPort:  8080,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("start router: %v", err)
+	}
+	defer func() {
+		_ = router.server.Close()
+	}()
+
+	if router.tr == nil {
+		t.Fatal("expected dedicated proxy transport")
+	}
+	if len(router.routes) != 1 || router.routes[0].proxy == nil {
+		t.Fatal("expected compiled proxy route")
+	}
+	if router.routes[0].proxy.Transport != router.tr {
+		t.Fatal("expected proxy to reuse router transport")
+	}
+	if router.routes[0].proxy.BufferPool == nil {
+		t.Fatal("expected proxy buffer pool to be configured")
+	}
+	if router.tr.ResponseHeaderTimeout != upRouterProxyResponseHeaderTTL {
+		t.Fatalf("expected response header timeout %s, got %s", upRouterProxyResponseHeaderTTL, router.tr.ResponseHeaderTimeout)
+	}
+}
+
 func TestUpPathPrefixMatchesSegmentAware(t *testing.T) {
 	if !upPathPrefixMatches("/api", "/api") {
 		t.Fatal("expected exact match")

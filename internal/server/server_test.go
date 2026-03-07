@@ -753,6 +753,58 @@ func TestSessionWSPendingSendTimeout(t *testing.T) {
 	}
 }
 
+func TestSessionRequestH3WorkersCoalescesPendingDemand(t *testing.T) {
+	t.Parallel()
+
+	writer := &blockingWorkerSignalWriter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	sess := &session{writer: writer}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sess.requestH3Workers(1)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("expected first worker control write to start")
+	}
+
+	sess.requestH3Workers(1)
+	close(writer.release)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected worker demand flush to complete")
+	}
+
+	msgs := writer.Messages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected two worker control messages, got %d", len(msgs))
+	}
+	totalDesired := 0
+	for _, msg := range msgs {
+		if msg.Kind != tunnelproto.KindWorkerCtrl || msg.WorkerCtrl == nil {
+			t.Fatalf("unexpected worker control message: %#v", msg)
+		}
+		totalDesired += msg.WorkerCtrl.Desired
+	}
+	if totalDesired != 2 {
+		t.Fatalf("expected total desired worker count 2, got %d", totalDesired)
+	}
+	if got := sess.h3WorkerDemand.Load(); got != 0 {
+		t.Fatalf("expected worker demand to drain, got %d", got)
+	}
+	if sess.h3WorkerSignal.Load() {
+		t.Fatal("expected worker signal latch to be cleared")
+	}
+}
+
 func TestSessionReplacementPreventsStaleEviction(t *testing.T) {
 	t.Parallel()
 
@@ -812,6 +864,37 @@ func (w *testSessionWriter) Close() {
 	w.mu.Lock()
 	w.closed = true
 	w.mu.Unlock()
+}
+
+type blockingWorkerSignalWriter struct {
+	mu      sync.Mutex
+	msgs    []tunnelproto.Message
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWorkerSignalWriter) WriteJSON(msg tunnelproto.Message) error {
+	w.mu.Lock()
+	w.msgs = append(w.msgs, msg)
+	w.mu.Unlock()
+	if msg.Kind == tunnelproto.KindWorkerCtrl {
+		w.once.Do(func() { close(w.started) })
+		<-w.release
+	}
+	return nil
+}
+
+func (w *blockingWorkerSignalWriter) WriteBinaryFrame(byte, string, int, []byte) error {
+	return nil
+}
+
+func (w *blockingWorkerSignalWriter) Close() {}
+
+func (w *blockingWorkerSignalWriter) Messages() []tunnelproto.Message {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]tunnelproto.Message(nil), w.msgs...)
 }
 
 type testTransport struct {

@@ -25,7 +25,7 @@ func (m *h3WorkerManager) request(desired int) {
 		return
 	}
 	if desired <= 0 {
-		desired = 1
+		return
 	}
 	for {
 		m.mu.Lock()
@@ -36,7 +36,7 @@ func (m *h3WorkerManager) request(desired int) {
 		m.opening++
 		m.mu.Unlock()
 		desired--
-		go m.openFn()
+		m.openFn()
 	}
 }
 

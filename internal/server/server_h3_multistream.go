@@ -18,6 +18,7 @@ import (
 const (
 	h3SessionHeader    = "X-Expose-H3-Session"
 	h3WorkerQueueDepth = 256
+	h3WorkerFastWait   = 10 * time.Millisecond
 )
 
 var errH3WorkerUnavailable = errors.New("http3 worker stream unavailable")
@@ -151,18 +152,11 @@ func (s *session) acquireH3Worker(ctx context.Context, timeout time.Duration) (*
 	if s == nil || s.h3StreamPool == nil {
 		return nil, errH3WorkerUnavailable
 	}
-	stream, err := s.h3StreamPool.acquire(ctx, 10*time.Millisecond)
+	stream, err := s.h3StreamPool.acquire(ctx, h3WorkerFastWait)
 	if err == nil {
 		return stream, nil
 	}
-	if s.writer != nil && s.h3WorkerSignal.CompareAndSwap(false, true) {
-		if wErr := s.writeJSON(tunnelproto.Message{
-			Kind:       tunnelproto.KindWorkerCtrl,
-			WorkerCtrl: &tunnelproto.WorkerControl{Desired: 1},
-		}); wErr != nil {
-			s.h3WorkerSignal.Store(false)
-		}
-	}
+	s.requestH3Workers(1)
 	return s.h3StreamPool.acquire(ctx, timeout)
 }
 
@@ -176,6 +170,41 @@ func (s *session) addH3Worker(stream *http3.Stream) bool {
 		return true
 	}
 	return false
+}
+
+func (s *session) requestH3Workers(desired int) {
+	if s == nil || s.writer == nil || desired <= 0 {
+		return
+	}
+	s.h3WorkerDemand.Add(int32(desired))
+	s.flushH3WorkerDemand()
+}
+
+func (s *session) flushH3WorkerDemand() {
+	if s == nil || s.writer == nil {
+		return
+	}
+	if !s.h3WorkerSignal.CompareAndSwap(false, true) {
+		return
+	}
+	for {
+		desired := int(s.h3WorkerDemand.Swap(0))
+		if desired <= 0 {
+			s.h3WorkerSignal.Store(false)
+			if s.h3WorkerDemand.Load() > 0 && s.h3WorkerSignal.CompareAndSwap(false, true) {
+				continue
+			}
+			return
+		}
+		if err := s.writeJSON(tunnelproto.Message{
+			Kind:       tunnelproto.KindWorkerCtrl,
+			WorkerCtrl: &tunnelproto.WorkerControl{Desired: desired},
+		}); err != nil {
+			s.h3WorkerDemand.Add(int32(desired))
+			s.h3WorkerSignal.Store(false)
+			return
+		}
+	}
 }
 
 func (s *session) closeH3StreamPool() {

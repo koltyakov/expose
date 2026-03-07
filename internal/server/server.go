@@ -99,6 +99,7 @@ type session struct {
 	h3StreamPool     *h3StreamPool
 	h3AuthToken      string
 	h3WorkerSignal   atomic.Bool
+	h3WorkerDemand   atomic.Int32
 	pendingMu        sync.RWMutex
 	pending          map[string]*pendingRequest
 	wsMu             sync.RWMutex

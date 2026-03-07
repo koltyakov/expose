@@ -34,11 +34,7 @@ func (rt *clientSessionRuntime) deleteWSConn(id string) {
 
 	if ok {
 		_ = streamConn.Close()
-		if rt.client.display != nil {
-			rt.client.display.TrackWSClose(id)
-		} else if rt.client.log != nil {
-			rt.client.log.Info("forwarded websocket closed", "stream_id", id)
-		}
+		rt.client.trackWSClose(id)
 	}
 }
 
@@ -95,24 +91,7 @@ func (rt *clientSessionRuntime) handleWSOpen(open *tunnelproto.WSOpen) {
 	}
 
 	rt.setWSConn(streamID, upstreamConn)
-	if rt.client.display != nil {
-		wsPath := open.Path
-		if open.Query != "" {
-			wsPath += "?" + open.Query
-		}
-		rt.client.display.TrackWSOpen(streamID, wsPath, open.Headers)
-	} else if rt.client.log != nil {
-		wsPath := open.Path
-		if open.Query != "" {
-			wsPath += "?" + open.Query
-		}
-		fp := visitorFingerprint(open.Headers)
-		if fp != "" {
-			rt.client.log.Info("forwarded websocket opened", "stream_id", streamID, "path", wsPath, "client_fingerprint", fp)
-		} else {
-			rt.client.log.Info("forwarded websocket opened", "stream_id", streamID, "path", wsPath)
-		}
-	}
+	rt.client.trackWSOpen(streamID, open)
 
 	if err := rt.writeJSON(tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpenAck,

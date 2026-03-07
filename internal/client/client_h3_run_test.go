@@ -17,14 +17,18 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
 func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
@@ -198,6 +202,215 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 	}
 }
 
+func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
+	localUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade local websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer localUpstream.Close()
+
+	localBase, err := url.Parse(localUpstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort, err := strconv.Atoi(localBase.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h3Addr := randomLoopbackUDPAddr(t)
+	controlDone := make(chan struct{})
+	closeWS := make(chan struct{})
+	ackCh := make(chan tunnelproto.Message, 1)
+	var dispatched atomic.Bool
+
+	cleanupH3 := startHTTP3TestServerAtAddr(t, h3Addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tunnels/connect-h3":
+			streamer, ok := w.(http3.HTTPStreamer)
+			if !ok {
+				http.Error(w, "stream takeover unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set(h3SessionHeader, "session-token")
+			w.WriteHeader(http.StatusOK)
+			stream := streamer.HTTPStream()
+			<-controlDone
+			closeHTTP3TestStream(stream)
+		case "/v1/tunnels/connect-h3/stream":
+			if r.Header.Get(h3SessionHeader) == "" {
+				http.Error(w, "missing h3 session", http.StatusUnauthorized)
+				return
+			}
+			streamer, ok := w.(http3.HTTPStreamer)
+			if !ok {
+				http.Error(w, "stream takeover unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			stream := streamer.HTTPStream()
+			defer closeHTTP3TestStream(stream)
+
+			if !dispatched.CompareAndSwap(false, true) {
+				<-controlDone
+				return
+			}
+
+			err := tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{
+				Kind: tunnelproto.KindWSOpen,
+				WSOpen: &tunnelproto.WSOpen{
+					ID:     "ws_h3_display",
+					Method: http.MethodGet,
+					Path:   "/ws",
+					Headers: map[string][]string{
+						"X-Forwarded-For": {"1.2.3.4"},
+						"User-Agent":      {"Browser/1.0"},
+					},
+				},
+			})
+			if err != nil {
+				t.Errorf("write websocket open to worker stream: %v", err)
+				return
+			}
+
+			var ack tunnelproto.Message
+			if err := tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &ack); err != nil {
+				t.Errorf("read websocket open ack from worker stream: %v", err)
+				return
+			}
+			ackCh <- ack
+
+			<-closeWS
+			if err := tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{
+				Kind: tunnelproto.KindWSClose,
+				WSClose: &tunnelproto.WSClose{
+					ID:   "ws_h3_display",
+					Code: websocket.CloseNormalClosure,
+				},
+			}); err != nil {
+				t.Errorf("write websocket close to worker stream: %v", err)
+				return
+			}
+
+			<-controlDone
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() {
+		close(controlDone)
+		cleanupH3()
+	}()
+
+	registerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tunnels/register" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(registerResponse{
+			TunnelID:     "tun_h3_display",
+			PublicURL:    "https://demo.example.com",
+			WSURL:        "wss://unused.example.com/v1/tunnels/connect?token=unused",
+			H3URL:        "https://" + h3Addr + "/v1/tunnels/connect-h3?token=abc",
+			Capabilities: []string{tunnelCapabilityH3MultistreamV2},
+		})
+	}))
+	defer registerSrv.Close()
+
+	display, buf := newTestDisplay(false)
+	readyCh := make(chan TunnelReadyEvent, 1)
+	runErrCh := make(chan error, 1)
+
+	c := New(config.ClientConfig{
+		ServerURL:    registerSrv.URL,
+		APIKey:       "test-key",
+		Transport:    "quic",
+		LocalPort:    localPort,
+		PingInterval: 0,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c.h3TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	c.SetDisplay(display)
+	c.SetLifecycleHooks(LifecycleHooks{
+		OnTunnelReady: func(ev TunnelReadyEvent) {
+			readyCh <- ev
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		runErrCh <- c.Run(ctx)
+	}()
+
+	waitTunnelReadyEvent(t, readyCh, 8*time.Second, "h3 tunnel ready event")
+	ack := waitForCondition(t, 5*time.Second, "websocket open ack on h3 worker", func() (tunnelproto.Message, bool) {
+		select {
+		case msg := <-ackCh:
+			return msg, true
+		default:
+			return tunnelproto.Message{}, false
+		}
+	})
+	if ack.WSOpenAck == nil || !ack.WSOpenAck.OK {
+		t.Fatalf("expected successful websocket open ack, got: %+v", ack.WSOpenAck)
+	}
+
+	buf.Reset()
+	display.mu.Lock()
+	display.redraw()
+	display.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "1 open") {
+		t.Fatalf("expected websocket counter in QUIC display, got: %s", out)
+	}
+
+	close(closeWS)
+	waitForCondition(t, 5*time.Second, "websocket close to reach display state", func() (struct{}, bool) {
+		display.mu.Lock()
+		defer display.mu.Unlock()
+		_, ok := display.wsConns["ws_h3_display"]
+		return struct{}{}, !ok
+	})
+
+	time.Sleep(wsCloseDebounce + 100*time.Millisecond)
+	buf.Reset()
+	display.mu.Lock()
+	display.redraw()
+	display.mu.Unlock()
+	out = buf.String()
+	if strings.Contains(out, "1 open") {
+		t.Fatalf("expected websocket counter to clear after close, got: %s", out)
+	}
+	if !strings.Contains(out, "WebSockets") || !strings.Contains(out, "--") {
+		t.Fatalf("expected websocket placeholder after close, got: %s", out)
+	}
+
+	cancel()
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("client run returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client run did not stop after cancellation")
+	}
+}
+
 func waitTunnelReadyEvent(t testing.TB, ch <-chan TunnelReadyEvent, timeout time.Duration, label string) TunnelReadyEvent {
 	t.Helper()
 	select {
@@ -218,6 +431,20 @@ func waitSessionDropEvent(t testing.TB, ch <-chan SessionDisconnectEvent, timeou
 		t.Fatalf("timed out waiting for %s", label)
 		return SessionDisconnectEvent{}
 	}
+}
+
+func waitForCondition[T any](t testing.TB, timeout time.Duration, label string, fn func() (T, bool)) T {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if value, ok := fn(); ok {
+			return value
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var zero T
+	t.Fatalf("timed out waiting for %s", label)
+	return zero
 }
 
 func startHTTP3TestServerAtAddr(t testing.TB, addr string, handler http.Handler) func() {

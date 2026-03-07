@@ -480,6 +480,8 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 		return nil
 	}
 	defer func() { _ = upstreamConn.Close() }()
+	rt.client.trackWSOpen(streamID, open)
+	defer rt.client.trackWSClose(streamID)
 
 	if err := writeH3RequestStreamJSON(stream, tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpenAck,

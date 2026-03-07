@@ -10,6 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 )
@@ -49,8 +50,8 @@ func (s *streamedRequestState) send(data []byte, wait time.Duration) bool {
 	default:
 	}
 
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
+	timer := timerpool.Acquire(wait)
+	defer timerpool.Release(timer)
 
 	select {
 	case s.ch <- data:

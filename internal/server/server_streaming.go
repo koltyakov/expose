@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -150,15 +151,8 @@ func (s *Server) requestTimeoutMillis() int {
 // It returns true when the upstream stream completed normally.
 func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, bodyCh <-chan []byte, doneCh <-chan struct{}, chunkTimeout time.Duration) bool {
 	flusher, canFlush := w.(http.Flusher)
-	timer := time.NewTimer(chunkTimeout)
-	defer func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-	}()
+	timer := timerpool.Acquire(chunkTimeout)
+	defer timerpool.Release(timer)
 
 	for {
 		select {
@@ -224,8 +218,8 @@ func (s *session) streamSend(ch chan []byte, payload []byte, wait time.Duration)
 		default:
 		}
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
+	timer := timerpool.Acquire(wait)
+	defer timerpool.Release(timer)
 	select {
 	case ch <- payload:
 		return true

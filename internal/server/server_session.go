@@ -14,6 +14,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 	"github.com/koltyakov/expose/internal/waf"
@@ -520,8 +521,8 @@ func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Du
 		}
 	}
 
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
+	timer := timerpool.Acquire(wait)
+	defer timerpool.Release(timer)
 	select {
 	case ch <- msg:
 		return true

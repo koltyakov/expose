@@ -3,12 +3,12 @@ package server
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -177,14 +177,14 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	timer := time.NewTimer(s.cfg.RequestTimeout)
+	timer := timerpool.Acquire(s.cfg.RequestTimeout)
+	timerReleased := false
 	stopTimer := func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
+		if timerReleased {
+			return
 		}
+		timerReleased = true
+		timerpool.Release(timer)
 	}
 	defer stopTimer()
 

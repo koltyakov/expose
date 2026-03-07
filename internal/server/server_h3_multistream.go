@@ -11,6 +11,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -88,8 +89,8 @@ func (p *h3StreamPool) acquire(ctx context.Context, timeout time.Duration) (*htt
 	default:
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	timer := timerpool.Acquire(timeout)
+	defer timerpool.Release(timer)
 
 	select {
 	case <-ctx.Done():

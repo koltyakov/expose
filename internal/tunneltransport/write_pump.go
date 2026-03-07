@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -142,8 +143,8 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	default:
 	}
 
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
+	timer := timerpool.Acquire(wait)
+	defer timerpool.Release(timer)
 
 	select {
 	case target <- req:

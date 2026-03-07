@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +29,7 @@ const (
 	benchTransportResponseSize   = 32 * 1024
 	benchH3WorkerCountFloor      = 2
 	benchH3WorkerCountCeiling    = 64
+	benchRequesterCountCeiling   = 100
 	benchHTTPResponseStatus      = http.StatusOK
 	benchHTTPResponseContentType = "application/octet-stream"
 	benchWSHandshakeTimeout      = 10 * time.Second
@@ -39,38 +42,93 @@ type transportMatrixBenchHarness struct {
 	cleanup   func()
 }
 
-func BenchmarkPublicHTTPRoundTripTransportMatrix(b *testing.B) {
-	cases := []struct {
-		tunnels    int
-		requesters int
-	}{
-		{tunnels: 16, requesters: 64},
-		{tunnels: 64, requesters: 128},
-	}
+type transportMatrixBenchCase struct {
+	tunnels           int
+	requestsPerTunnel int
+}
 
-	for _, tc := range cases {
+var defaultTransportMatrixBenchCases = []transportMatrixBenchCase{
+	{tunnels: 25, requestsPerTunnel: 10},
+	{tunnels: 50, requestsPerTunnel: 10},
+}
+
+const transportMatrixBenchCasesEnv = "EXPOSE_TRANSPORT_MATRIX_CASES"
+
+var transportMatrixBenchScenarioSeparators = func(r rune) bool {
+	return r == ',' || r == ';'
+}
+
+func BenchmarkPublicHTTPRoundTripTransportMatrix(b *testing.B) {
+	for _, tc := range transportMatrixBenchCases(b) {
 		tc := tc
+		totalRequests := benchTotalRequests(tc.tunnels, tc.requestsPerTunnel)
+		requesters := benchConcurrentRequesters(tc.tunnels, totalRequests)
 		for _, transportName := range []string{"ws", "quic"} {
 			transportName := transportName
-			name := fmt.Sprintf("%s_tunnels_%d_requesters_%d", transportName, tc.tunnels, tc.requesters)
+			name := fmt.Sprintf(
+				"%s_tunnels_%d_requests_per_tunnel_%d",
+				transportName,
+				tc.tunnels,
+				tc.requestsPerTunnel,
+			)
 			b.Run(name, func(b *testing.B) {
-				h := newTransportMatrixBenchHarness(b, transportName, tc.tunnels, tc.requesters, benchTransportResponseSize)
+				h := newTransportMatrixBenchHarness(b, transportName, tc.tunnels, requesters, benchTransportResponseSize)
 				defer h.close()
 
 				h.warmup(b)
 
 				b.ReportAllocs()
-				b.SetBytes(benchTransportResponseSize)
+				b.SetBytes(int64(benchTransportResponseSize * totalRequests))
 				b.ReportMetric(float64(tc.tunnels), "tunnels")
-				b.ReportMetric(float64(tc.requesters), "requesters")
+				b.ReportMetric(float64(tc.requestsPerTunnel), "requests_per_tunnel")
+				b.ReportMetric(float64(totalRequests), "total_requests")
+				b.ReportMetric(float64(requesters), "requesters")
 				if transportName == "quic" {
-					b.ReportMetric(float64(benchWorkersPerTunnel(tc.tunnels, tc.requesters)), "workers_per_tunnel")
+					b.ReportMetric(float64(benchWorkersPerTunnel(tc.tunnels, requesters)), "workers_per_tunnel")
 				}
 
-				h.run(b, tc.requesters)
+				h.runSweeps(b, totalRequests, requesters)
 			})
 		}
 	}
+}
+
+func transportMatrixBenchCases(b *testing.B) []transportMatrixBenchCase {
+	b.Helper()
+
+	raw := strings.TrimSpace(os.Getenv(transportMatrixBenchCasesEnv))
+	if raw == "" {
+		return defaultTransportMatrixBenchCases
+	}
+
+	parts := strings.FieldsFunc(raw, transportMatrixBenchScenarioSeparators)
+	cases := make([]transportMatrixBenchCase, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		dims := strings.SplitN(strings.ToLower(part), "x", 2)
+		if len(dims) != 2 {
+			b.Fatalf("invalid %s value %q: expected <tunnels>x<requests-per-tunnel>", transportMatrixBenchCasesEnv, part)
+		}
+		tunnels, err := strconv.Atoi(strings.TrimSpace(dims[0]))
+		if err != nil || tunnels <= 0 {
+			b.Fatalf("invalid tunnel count in %s value %q", transportMatrixBenchCasesEnv, part)
+		}
+		requestsPerTunnel, err := strconv.Atoi(strings.TrimSpace(dims[1]))
+		if err != nil || requestsPerTunnel <= 0 {
+			b.Fatalf("invalid requests-per-tunnel in %s value %q", transportMatrixBenchCasesEnv, part)
+		}
+		cases = append(cases, transportMatrixBenchCase{
+			tunnels:           tunnels,
+			requestsPerTunnel: requestsPerTunnel,
+		})
+	}
+	if len(cases) == 0 {
+		b.Fatalf("%s did not contain any benchmark cases", transportMatrixBenchCasesEnv)
+	}
+	return cases
 }
 
 func newTransportMatrixBenchHarness(
@@ -154,9 +212,20 @@ func (h *transportMatrixBenchHarness) warmup(b *testing.B) {
 	}
 }
 
-func (h *transportMatrixBenchHarness) run(b *testing.B, requesters int) {
+func (h *transportMatrixBenchHarness) runSweeps(b *testing.B, totalRequests, requesters int) {
 	b.Helper()
 
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := h.runSweep(totalRequests, requesters); err != nil {
+			b.StopTimer()
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+}
+
+func (h *transportMatrixBenchHarness) runSweep(totalRequests, requesters int) error {
 	var (
 		nextOp  atomic.Uint64
 		failed  atomic.Bool
@@ -166,6 +235,9 @@ func (h *transportMatrixBenchHarness) run(b *testing.B, requesters int) {
 		start   = make(chan struct{})
 	)
 
+	if totalRequests <= 0 {
+		totalRequests = 1
+	}
 	if requesters <= 0 {
 		requesters = 1
 	}
@@ -189,7 +261,7 @@ func (h *transportMatrixBenchHarness) run(b *testing.B, requesters int) {
 					return
 				}
 				op := int(nextOp.Add(1)) - 1
-				if op >= b.N {
+				if op >= totalRequests {
 					return
 				}
 				host := h.hosts[op%len(h.hosts)]
@@ -201,37 +273,48 @@ func (h *transportMatrixBenchHarness) run(b *testing.B, requesters int) {
 		}()
 	}
 
-	b.ResetTimer()
 	close(start)
 	wg.Wait()
-	b.StopTimer()
 
 	firstMu.Lock()
 	defer firstMu.Unlock()
 	if first != nil {
-		b.Fatal(first)
+		return first
 	}
+	return nil
 }
 
 func (h *transportMatrixBenchHarness) doRequest(host string) error {
-	req, err := http.NewRequest(http.MethodGet, h.publicURL+"/bench", nil)
-	if err != nil {
-		return fmt.Errorf("create benchmark request: %w", err)
-	}
-	req.Host = host
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequest(http.MethodGet, h.publicURL+"/bench", nil)
+		if err != nil {
+			return fmt.Errorf("create benchmark request: %w", err)
+		}
+		req.Host = host
 
-	resp, err := h.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("perform benchmark request: %w", err)
+		resp, err := h.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("perform benchmark request: %w", err)
+			continue
+		}
+		func() {
+			defer func() { _ = resp.Body.Close() }()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				lastErr = fmt.Errorf("drain benchmark response: %w", err)
+				return
+			}
+			if resp.StatusCode != benchHTTPResponseStatus {
+				lastErr = fmt.Errorf("unexpected benchmark status: %d", resp.StatusCode)
+				return
+			}
+			lastErr = nil
+		}()
+		if lastErr == nil {
+			return nil
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		return fmt.Errorf("drain benchmark response: %w", err)
-	}
-	if resp.StatusCode != benchHTTPResponseStatus {
-		return fmt.Errorf("unexpected benchmark status: %d", resp.StatusCode)
-	}
-	return nil
+	return lastErr
 }
 
 func setupBenchmarkWSSessions(
@@ -542,6 +625,34 @@ func benchWorkersPerTunnel(tunnels, requesters int) int {
 		return benchH3WorkerCountCeiling
 	}
 	return workers
+}
+
+func benchTotalRequests(tunnels, requestsPerTunnel int) int {
+	if tunnels <= 0 {
+		tunnels = 1
+	}
+	if requestsPerTunnel <= 0 {
+		requestsPerTunnel = 1
+	}
+	return tunnels * requestsPerTunnel
+}
+
+func benchConcurrentRequesters(tunnels, totalRequests int) int {
+	if tunnels <= 0 {
+		tunnels = 1
+	}
+	requesters := (tunnels + 1) / 2
+	if requesters < 8 {
+		requesters = min(8, totalRequests)
+	}
+	if totalRequests < requesters {
+		requesters = totalRequests
+	}
+	// Keep loopback benchmark reruns stable at higher request counts.
+	if requesters > benchRequesterCountCeiling {
+		requesters = benchRequesterCountCeiling
+	}
+	return requesters
 }
 
 func makeBenchmarkPayload(size int) []byte {

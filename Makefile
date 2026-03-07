@@ -12,7 +12,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint vet test test-race test-coverage bench build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint vet test test-race test-coverage bench bench-transport-matrix build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -26,6 +26,7 @@ help:
 	@echo "  make test-race      - Run tests with race detector"
 	@echo "  make test-coverage  - Run tests with coverage output"
 	@echo "  make bench          - Run focused performance benchmarks"
+	@echo "  make bench-transport-matrix - Refresh docs/benchmark.md with the heavy WS vs QUIC matrix"
 	@echo "  make build          - Build binary to ./$(BIN_DIR)/$(APP)"
 	@echo "  make build-all      - Cross-build common release binaries"
 	@echo "  make release-check  - Validate GoReleaser config"
@@ -76,6 +77,9 @@ test-coverage:
 
 bench:
 	go test ./internal/client ./internal/server ./internal/store/sqlite ./internal/tunnelproto -bench . -run ^$
+
+bench-transport-matrix:
+	go run ./cmd/benchmark
 
 build:
 	@mkdir -p $(BIN_DIR)

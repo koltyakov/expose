@@ -61,6 +61,7 @@ type Server struct {
 	routes        routeCache
 	liveRoutes    *liveRouteIndex
 	activeTunnels *activeTunnelTracker
+	runtimeCtx    atomic.Value // context.Context
 	domainTouches chan string
 	domainTouchMu sync.Mutex
 	domainTouched map[string]struct{}

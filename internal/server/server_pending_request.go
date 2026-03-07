@@ -46,6 +46,7 @@ func (p *pendingRequest) reset() {
 	p.bodyMu.Lock()
 	if p.bodyCh != nil {
 		drainPendingBodies(p.bodyCh)
+		p.bodyCh = nil
 	}
 	p.doneCh = make(chan struct{})
 	p.bodyMu.Unlock()

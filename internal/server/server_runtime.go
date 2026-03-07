@@ -24,6 +24,8 @@ import (
 // Run starts the HTTPS server, ACME challenge server, and background janitor.
 // It blocks until ctx is cancelled or a fatal error occurs.
 func (s *Server) Run(ctx context.Context) error {
+	s.runtimeCtx.Store(ctx)
+
 	resetCount, err := s.store.ResetConnectedTunnels(ctx)
 	if err != nil {
 		return fmt.Errorf("reset connected tunnels: %w", err)
@@ -32,7 +34,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Info("reconciled stale connected tunnels", "count", resetCount)
 	}
 
-	disconnectCtx, disconnectCancel := context.WithCancel(context.Background())
+	disconnectCtx, disconnectCancel := context.WithCancel(ctx)
 	defer func() {
 		disconnectCancel()
 		s.disconnectWg.Wait()

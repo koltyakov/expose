@@ -75,7 +75,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-heartbeatTicker.C:
-			s.expireStaleSessions()
+			s.expireStaleSessions(ctx)
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
 			s.cleanupStaleWAFCounters()
@@ -88,7 +88,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 	}
 }
 
-func (s *Server) expireStaleSessions() {
+func (s *Server) expireStaleSessions(ctx context.Context) {
 	now := time.Now()
 
 	sessions := s.liveRoutes.snapshotSessions()
@@ -103,7 +103,7 @@ func (s *Server) expireStaleSessions() {
 		}
 
 		s.log.Warn("client heartbeat timeout", "tunnel_id", sess.tunnelID, "last_seen", lastSeen.UTC().Format(time.RFC3339))
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		closeCtx, closeCancel := context.WithTimeout(contextOrBackground(ctx), 10*time.Second)
 		hostname, closed, err := s.store.CloseTemporaryTunnel(closeCtx, sess.tunnelID)
 		closeCancel()
 		if err != nil {

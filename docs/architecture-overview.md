@@ -61,10 +61,9 @@ sequenceDiagram
   - one long-lived control stream for keepalive and lifecycle.
   - many short-lived worker streams where each forwarded HTTP request or proxied websocket uses a distinct HTTP/3 stream.
 - Registration currently advertises `ws_v1`, `h3_compat`, and `h3_multistream` capabilities.
-- Client selection order is:
-  - `--transport=auto`: `h3_multistream` -> `h3_compat` -> `ws_v1`
+- Client transport selection:
+  - `--transport=ws` (default): `ws_v1`
   - `--transport=quic`: `h3_multistream` -> `h3_compat` (no WebSocket fallback)
-  - `--transport=ws`: `ws_v1` only
 
 The server accepts HTTP/3 `POST` and `CONNECT` on H3 endpoints for compatibility. The built-in client uses `POST`.
 

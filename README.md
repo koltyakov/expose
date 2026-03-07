@@ -21,7 +21,7 @@
 - **Rate limiting** on tunnel registration plus optional public traffic throttling per hostname+client IP
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally
 - **Automatic reconnection** with exponential backoff and keepalive pings
-- **HTTP/3 over QUIC support** - clients can use compatibility or negotiated multi-stream mode, with WebSocket fallback in `--transport=auto`
+- **HTTP/3 over QUIC support** - clients can use `--transport=quic` for compatibility or negotiated multi-stream mode
 
 ## How It Works
 
@@ -57,7 +57,7 @@ flowchart TB
 3. Requests and responses flow over the tunnel as versioned binary frames, with raw body bytes for inline and streamed payloads
 
 For the full request lifecycle and component breakdown, see [Architecture Overview](docs/architecture-overview.md).
-For transport mode details (`auto|ws|quic`) and QUIC requirements, see [Client Configuration](docs/client-configuration.md) and [UDP Deployment Topologies](docs/udp-deployment-topologies.md).
+For transport mode details (`ws|quic`) and QUIC requirements, see [Client Configuration](docs/client-configuration.md) and [UDP Deployment Topologies](docs/udp-deployment-topologies.md).
 
 ## Quick Start
 

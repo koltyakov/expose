@@ -92,10 +92,10 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 
 ## HTTP/3 fallback / QUIC issues
 
-- **Symptom**: `--transport=quic` fails to connect, or `--transport=auto` consistently uses WebSocket.
+- **Symptom**: `--transport=quic` fails to connect.
 - **Check mode semantics**:
   - `--transport=quic` tries HTTP/3 only and never falls back to WebSocket.
-  - `--transport=auto` tries HTTP/3 first, then WebSocket fallback.
+  - The default transport is `ws` (WebSocket). Switch to `--transport=quic` only when QUIC benefits apply (lossy networks, mobile).
 - **Check UDP reachability**: Open or forward UDP on the same public port as HTTPS (for example `10443/udp` when HTTPS is `:10443`).
 - **Check local listener**: Confirm server binds UDP on the HTTPS port (example: `lsof -nP -iUDP:10443`).
 - **Check topology limits**: Mixed public ports such as `443/tcp` + `8443/udp` are not supported for QUIC in current versions.

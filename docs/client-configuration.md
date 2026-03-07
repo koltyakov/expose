@@ -24,7 +24,7 @@ Complete reference for all client flags, environment variables, and credential m
 | `--domain`       | `EXPOSE_SUBDOMAIN`               | Requested subdomain label (e.g. `myapp`)                                             |
 | `--server`       | `EXPOSE_DOMAIN`                  | Server URL (e.g. `example.com`)                                                      |
 | `--api-key`      | `EXPOSE_API_KEY`                 | API key for authentication                                                           |
-| `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `auto`, `ws`, `quic`                                               |
+| `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `ws` (default), `quic`                                             |
 | `--pprof-listen` | `EXPOSE_PPROF_LISTEN`            | Optional pprof listen address for the client process                                 |
 | `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
 | `--allow`        | -                                | Allow blocked static paths matching a glob pattern                                   |
@@ -48,15 +48,14 @@ This means you can `expose login` once and never pass credentials again, or over
 
 | Value  | Behavior                                                                                          |
 | ------ | ------------------------------------------------------------------------------------------------- |
-| `auto` | Tries HTTP/3 multi-stream first, then HTTP/3 compatibility mode, then falls back to WebSocket     |
+| `ws`   | WebSocket (default). Highest throughput and lowest latency in the common case.                    |
 | `quic` | Uses HTTP/3 only (multi-stream preferred, then compatibility mode), never falls back to WebSocket |
-| `ws`   | Uses WebSocket only                                                                               |
 
 Notes:
 
 - `--transport` applies to `expose http` and `expose static`.
+- WebSocket is the default because it delivers higher throughput and lower latency in the common case (see [Benchmark Report](benchmark.md)). Use `--transport=quic` when you need QUIC benefits: lossy or high-latency networks, mobile/roaming clients, or environments where middleboxes break long-lived WebSocket connections.
 - HTTP/3 requires UDP reachability on the same public port as HTTPS.
-- In `quic` mode, a QUIC failure is terminal for that connection attempt; use `auto` when fallback is desired.
 
 ## Login
 

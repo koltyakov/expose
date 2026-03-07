@@ -18,8 +18,8 @@ The runner executes each transport/scenario sample in a fresh `go test` process 
 
 | Field                | Value                                                                                                                                                                        |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Generated            | 2026-03-07T14:47:53-06:00                                                                                                                                                    |
-| Git commit           | `ce89abc`                                                                                                                                                                    |
+| Generated            | 2026-03-07T15:15:07-06:00                                                                                                                                                    |
+| Git commit           | `b7668c7`                                                                                                                                                                    |
 | Git dirty            | `true`                                                                                                                                                                       |
 | Go                   | `go version go1.26.0 darwin/arm64`                                                                                                                                           |
 | GOOS/GOARCH          | `darwin/arm64`                                                                                                                                                               |
@@ -31,40 +31,62 @@ The runner executes each transport/scenario sample in a fresh `go test` process 
 
 | Tunnels | Req/tunnel | Total req | WS sweep ms | QUIC sweep ms | Faster (smaller) | WS req/s | QUIC req/s | Faster (larger) |
 | ------- | ---------- | --------- | ----------- | ------------- | ---------------- | -------- | ---------- | --------------- |
-| 25      | 10         | 250       | 18.64       | 40.17         | WS               | 13411    | 6223       | WS              |
-| 25      | 25         | 625       | 40.08       | 86.70         | WS               | 15595    | 7209       | WS              |
-| 25      | 50         | 1250      | 72.60       | 160.49        | WS               | 17217    | 7789       | WS              |
-| 25      | 100        | 2500      | 136.73      | 314.30        | WS               | 18285    | 7954       | WS              |
-| 50      | 10         | 500       | 33.45       | 70.41         | WS               | 14946    | 7101       | WS              |
-| 50      | 25         | 1250      | 65.89       | 156.24        | WS               | 18971    | 8001       | WS              |
-| 50      | 50         | 2500      | 125.53      | 305.70        | WS               | 19916    | 8178       | WS              |
-| 50      | 100        | 5000      | 226.90      | 610.62        | WS               | 22036    | 8188       | WS              |
-| 100     | 10         | 1000      | 52.00       | 133.17        | WS               | 19229    | 7509       | WS              |
-| 100     | 25         | 2500      | 109.06      | 315.54        | WS               | 22924    | 7923       | WS              |
-| 100     | 50         | 5000      | 206.06      | 620.54        | WS               | 24265    | 8058       | WS              |
-| 100     | 100        | 10000     | 381.53      | 1203.71       | WS               | 26210    | 8308       | WS              |
-| 200     | 10         | 2000      | 89.73       | 255.52        | WS               | 22290    | 7827       | WS              |
-| 200     | 25         | 5000      | 193.14      | 627.20        | WS               | 25887    | 7972       | WS              |
-| 200     | 50         | 10000     | 357.22      | 1254.24       | WS               | 27994    | 7973       | WS              |
-| 200     | 100        | 20000     | 708.00      | 2489.30       | WS               | 28249    | 8034       | WS              |
+| 25      | 10         | 250       | 18.93       | 39.77         | WS               | 13204    | 6286       | WS              |
+| 25      | 25         | 625       | 40.66       | 85.46         | WS               | 15373    | 7314       | WS              |
+| 25      | 50         | 1250      | 71.50       | 161.53        | WS               | 17483    | 7738       | WS              |
+| 25      | 100        | 2500      | 133.68      | 315.84        | WS               | 18702    | 7915       | WS              |
+| 50      | 10         | 500       | 32.22       | 70.85         | WS               | 15517    | 7058       | WS              |
+| 50      | 25         | 1250      | 63.88       | 159.54        | WS               | 19567    | 7835       | WS              |
+| 50      | 50         | 2500      | 115.88      | 307.56        | WS               | 21574    | 8128       | WS              |
+| 50      | 100        | 5000      | 221.21      | 603.87        | WS               | 22603    | 8280       | WS              |
+| 100     | 10         | 1000      | 53.62       | 132.52        | WS               | 18649    | 7546       | WS              |
+| 100     | 25         | 2500      | 107.78      | 311.02        | WS               | 23195    | 8038       | WS              |
+| 100     | 50         | 5000      | 199.17      | 608.03        | WS               | 25104    | 8223       | WS              |
+| 100     | 100        | 10000     | 386.81      | 1202.58       | WS               | 25853    | 8315       | WS              |
+| 200     | 10         | 2000      | 89.20       | 259.81        | WS               | 22422    | 7698       | WS              |
+| 200     | 25         | 5000      | 189.61      | 634.72        | WS               | 26370    | 7878       | WS              |
+| 200     | 50         | 10000     | 366.65      | 1241.62       | WS               | 27274    | 8054       | WS              |
+| 200     | 100        | 20000     | 701.21      | 2459.30       | WS               | 28522    | 8132       | WS              |
 
 ## Request Cost
 
 | Tunnels | WS us/request | QUIC us/request | Smaller | WS KiB/request | QUIC KiB/request | Smaller | WS allocs/request | QUIC allocs/request | Smaller |
 | ------- | ------------- | --------------- | ------- | -------------- | ---------------- | ------- | ----------------- | ------------------- | ------- |
-| 25      | 74.57         | 160.69          | WS      | 108.65         | 78.49            | QUIC    | 231.95            | 725.97              | WS      |
-| 25      | 64.12         | 138.72          | WS      | 106.15         | 73.49            | QUIC    | 227.10            | 696.36              | WS      |
-| 25      | 58.08         | 128.39          | WS      | 105.54         | 71.89            | QUIC    | 225.34            | 685.59              | WS      |
-| 25      | 54.69         | 125.72          | WS      | 105.07         | 71.02            | QUIC    | 224.11            | 679.46              | WS      |
-| 50      | 66.91         | 140.83          | WS      | 106.34         | 76.63            | QUIC    | 226.58            | 711.14              | WS      |
-| 50      | 52.71         | 124.99          | WS      | 103.94         | 71.70            | QUIC    | 221.89            | 670.79              | WS      |
-| 50      | 50.21         | 122.28          | WS      | 103.17         | 70.85            | QUIC    | 220.71            | 677.92              | WS      |
-| 50      | 45.38         | 122.12          | WS      | 102.64         | 69.82            | QUIC    | 219.67            | 667.40              | WS      |
-| 100     | 52.00         | 133.17          | WS      | 104.88         | 75.71            | QUIC    | 222.89            | 701.23              | WS      |
-| 100     | 43.62         | 126.21          | WS      | 102.62         | 71.45            | QUIC    | 219.49            | 675.61              | WS      |
-| 100     | 41.21         | 124.11          | WS      | 101.90         | 70.41            | QUIC    | 218.14            | 674.52              | WS      |
-| 100     | 38.15         | 120.37          | WS      | 101.46         | 69.93            | QUIC    | 217.69            | 673.97              | WS      |
-| 200     | 44.86         | 127.76          | WS      | 104.23         | 75.66            | QUIC    | 221.52            | 700.97              | WS      |
-| 200     | 38.63         | 125.44          | WS      | 102.03         | 72.02            | QUIC    | 218.18            | 686.73              | WS      |
-| 200     | 35.72         | 125.42          | WS      | 101.40         | 70.56            | QUIC    | 216.81            | 680.38              | WS      |
-| 200     | 35.40         | 124.46          | WS      | 100.99         | 69.95            | QUIC    | 216.24            | 676.52              | WS      |
+| 25      | 75.73         | 159.09          | WS      | 108.60         | 77.97            | QUIC    | 231.87            | 728.23              | WS      |
+| 25      | 65.05         | 136.73          | WS      | 106.25         | 73.50            | QUIC    | 227.52            | 699.02              | WS      |
+| 25      | 57.20         | 129.23          | WS      | 105.63         | 72.02            | QUIC    | 225.39            | 689.39              | WS      |
+| 25      | 53.47         | 126.34          | WS      | 104.96         | 71.22            | QUIC    | 224.05            | 685.70              | WS      |
+| 50      | 64.45         | 141.69          | WS      | 106.35         | 76.84            | QUIC    | 226.56            | 716.22              | WS      |
+| 50      | 51.11         | 127.63          | WS      | 103.82         | 72.48            | QUIC    | 222.31            | 690.58              | WS      |
+| 50      | 46.35         | 123.03          | WS      | 103.02         | 71.04            | QUIC    | 220.81            | 682.96              | WS      |
+| 50      | 44.24         | 120.77          | WS      | 102.68         | 70.01            | QUIC    | 219.96            | 671.59              | WS      |
+| 100     | 53.62         | 132.52          | WS      | 104.80         | 75.94            | QUIC    | 223.02            | 706.24              | WS      |
+| 100     | 43.11         | 124.41          | WS      | 102.61         | 72.05            | QUIC    | 219.66            | 683.41              | WS      |
+| 100     | 39.83         | 121.61          | WS      | 101.82         | 70.88            | QUIC    | 218.17            | 681.58              | WS      |
+| 100     | 38.68         | 120.26          | WS      | 101.46         | 70.07            | QUIC    | 217.51            | 676.81              | WS      |
+| 200     | 44.60         | 129.90          | WS      | 104.22         | 75.44            | QUIC    | 221.56            | 708.86              | WS      |
+| 200     | 37.92         | 126.94          | WS      | 102.06         | 71.94            | QUIC    | 218.09            | 688.68              | WS      |
+| 200     | 36.66         | 124.16          | WS      | 101.29         | 70.93            | QUIC    | 216.77            | 685.43              | WS      |
+| 200     | 35.06         | 122.97          | WS      | 100.94         | 70.35            | QUIC    | 216.27            | 682.82              | WS      |
+
+## Analysis
+
+### Why WebSocket Is Faster
+
+These benchmarks run on loopback (zero packet loss, zero RTT), which removes the network conditions where QUIC's design advantages apply. The key factors:
+
+1. **Per-stream overhead** — QUIC H3 multistream opens a new HTTP/3 POST stream per request, paying stream-setup, flow-control, and TLS bookkeeping costs each time. WebSocket multiplexes all traffic over a single persistent connection with minimal framing.
+2. **~3× more allocations** — QUIC averages ~680 allocs/request vs ~220 for WebSocket, driven by per-stream state in the QUIC stack.
+3. **Worker-pool contention** — The server-side `h3StreamPool` and client-side `h3WorkerManager` add acquire/release overhead and contention under load.
+4. **Throughput ceiling** — QUIC plateaus around 8K req/s regardless of concurrency, while WebSocket scales from ~13K to ~28K req/s with increasing load.
+
+### Where QUIC Wins
+
+- **Memory per request**: QUIC uses ~30% less heap memory per request (70–78 KiB vs 101–108 KiB).
+- **Lossy / high-latency networks**: QUIC's per-stream loss recovery avoids head-of-line blocking that degrades WebSocket (single TCP stream) on poor connections.
+- **Mobile / roaming clients**: QUIC connection migration survives network changes without a full reconnect.
+- **Firewall-restricted environments**: Some middleboxes interfere with long-lived WebSocket connections but pass UDP/QUIC cleanly.
+
+### Recommendation
+
+WebSocket is the default transport (`--transport=ws`) for best throughput and lowest latency in the common case. Use `--transport=quic` explicitly when operating on lossy, high-latency, or mobile networks where QUIC's loss recovery and connection migration outweigh its per-stream overhead.

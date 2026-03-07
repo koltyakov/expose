@@ -85,18 +85,6 @@ func (c *Client) connectSessionTransport(ctx context.Context, reg registerRespon
 		}
 		return sessionTransportConn{}, nonRetriableSessionError{err: errors.Join(errs...)}
 	default:
-		if canUseH3MultiStream(reg) {
-			conn, err := c.connectHTTP3MultiStreamTransport(ctx, reg)
-			if err == nil {
-				return conn, nil
-			}
-		}
-		if canUseH3Compat(reg) {
-			conn, err := c.connectHTTP3Transport(ctx, reg)
-			if err == nil {
-				return conn, nil
-			}
-		}
 		return c.connectWebSocketTransport(ctx, reg)
 	}
 }

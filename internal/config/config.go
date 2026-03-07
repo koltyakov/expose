@@ -90,7 +90,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg := ClientConfig{
 		ServerURL:             envOrDefault("EXPOSE_DOMAIN", ""),
 		APIKey:                envOrDefault("EXPOSE_API_KEY", ""),
-		Transport:             normalizeClientTransport(envOrDefault("EXPOSE_TRANSPORT", "auto")),
+		Transport:             normalizeClientTransport(envOrDefault("EXPOSE_TRANSPORT", "ws")),
 		User:                  envOrDefault("EXPOSE_USER", "admin"),
 		Password:              envOrDefault("EXPOSE_PASSWORD", ""),
 		LocalPort:             envIntOrDefault("EXPOSE_PORT", 0),
@@ -104,7 +104,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
-	fs.StringVar(&cfg.Transport, "transport", cfg.Transport, "Tunnel transport: auto|ws|quic")
+	fs.StringVar(&cfg.Transport, "transport", cfg.Transport, "Tunnel transport: ws|quic")
 	fs.StringVar(&cfg.ProtectMode, "protect", cfg.ProtectMode, "Protect this tunnel; modes: form (default) or basic")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
@@ -136,9 +136,9 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		return cfg, errors.New("max concurrent forwards must be > 0")
 	}
 	switch cfg.Transport {
-	case "auto", "ws", "quic":
+	case "ws", "quic":
 	default:
-		return cfg, errors.New("transport must be one of: auto, ws, quic")
+		return cfg, errors.New("transport must be one of: ws, quic")
 	}
 	if cfg.Password != "" && cfg.ProtectMode == "" {
 		cfg.ProtectMode = access.ModeForm
@@ -282,7 +282,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	return cfg, nil
 }
 func normalizeClientTransport(v string) string {
-	return normalizeLowerOrDefault(v, "auto")
+	return normalizeLowerOrDefault(v, "ws")
 }
 
 func envOrDefault(key, def string) string {

@@ -52,8 +52,8 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 
 - The server always starts HTTP/3 on the same listen address as HTTPS (`EXPOSE_LISTEN_HTTPS`).
 - There is no separate QUIC listen or advertise setting in current versions.
-- For clients using QUIC (`--transport=auto` or `--transport=quic`), your public TCP and UDP paths must use the same authority/port.
-- If UDP is unavailable, clients can still connect over WebSocket when using `--transport=auto`.
+- For clients using QUIC (`--transport=quic`), your public TCP and UDP paths must use the same authority/port.
+- If UDP is unavailable, clients connect over WebSocket (the default transport).
 
 ## `.env` File Support
 

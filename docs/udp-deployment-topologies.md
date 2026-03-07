@@ -9,7 +9,7 @@ Operator guidance for HTTP/3 tunnel traffic when your network path is not the de
 - TCP must reach that port for HTTPS.
 - UDP must also reach that same port for QUIC / HTTP/3.
 
-If UDP is blocked, clients still work through WebSocket fallback (`--transport=auto`) but lose HTTP/3 benefits.
+If UDP is blocked, clients work normally — WebSocket is the default transport and does not require UDP.
 
 ## Topology 1: Direct Edge Host
 
@@ -47,7 +47,7 @@ Current `expose` versions do not support advertising a different public UDP port
 
 - Example unsupported edge mapping: `443/tcp` + `8443/udp`.
 - Use the same public port for both TCP and UDP if you need QUIC.
-- If you cannot do that, run clients with `--transport=auto` (or `--transport=ws`) and rely on WebSocket transport.
+- If you cannot do that, use the default WebSocket transport (no flags needed).
 
 ## Validation Checklist
 
@@ -58,4 +58,4 @@ Current `expose` versions do not support advertising a different public UDP port
 3. Confirm advertise/connect behavior:
    - Run client with `--transport=quic` and verify it does not fall back.
 4. Confirm fallback behavior:
-   - Run client with `--transport=auto` and verify it reconnects via `ws` when UDP is blocked.
+   - Verify client connects normally without `--transport=quic` (WebSocket, the default, does not need UDP).

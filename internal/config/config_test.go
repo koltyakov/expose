@@ -41,8 +41,8 @@ func TestParseClientFlagsTransportDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Transport != "auto" {
-		t.Fatalf("expected default transport auto, got %q", cfg.Transport)
+	if cfg.Transport != "ws" {
+		t.Fatalf("expected default transport ws, got %q", cfg.Transport)
 	}
 
 	cfg, err = ParseClientFlags([]string{"--port", "8080", "--transport", "quic"})

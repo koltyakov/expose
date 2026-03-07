@@ -56,19 +56,16 @@ func (d *Display) redraw() {
 			statusText += d.styled(ansiDim, " for ")
 			statusText += displayFormatUptime(now.Sub(statusSince))
 		}
-		if d.tunnelID != "" {
-			statusText += d.styled(ansiDim, " (ID: "+d.tunnelID+")")
+		if detail := d.sessionDetail(d.now()); detail != "" {
+			statusText += d.styled(ansiDim, " ("+detail+")")
 		}
 		d.writeField(&b, "Session", statusText)
 	} else {
 		statusText := placeholder
-		if d.tunnelID != "" {
-			statusText += d.styled(ansiDim, " (ID: "+d.tunnelID+")")
+		if detail := d.sessionDetail(d.now()); detail != "" {
+			statusText += d.styled(ansiDim, " ("+detail+")")
 		}
 		d.writeField(&b, "Session", statusText)
-	}
-	if !d.sessionStart.IsZero() {
-		d.writeField(&b, "Started", displayFormatStartedAt(d.sessionStart))
 	}
 	sv := d.serverVersion
 	if sv == "" {
@@ -324,6 +321,38 @@ func displayFormatDuration(d time.Duration) string {
 
 func displayFormatStartedAt(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05 MST")
+}
+
+func (d *Display) sessionDetail(now time.Time) string {
+	switch {
+	case d.tunnelID == "" && d.sessionStart.IsZero():
+		return ""
+	case d.tunnelID == "":
+		return "Started: " + displayFormatStartedAt(d.sessionStart)
+	case d.sessionStart.IsZero():
+		return "ID: " + d.tunnelID
+	}
+
+	idFor := displaySessionDetailIDFor
+	startFor := displaySessionDetailStartFor
+	if idFor <= 0 {
+		idFor = 15 * time.Second
+	}
+	if startFor <= 0 {
+		startFor = 30 * time.Second
+	}
+	cycle := idFor + startFor
+	if cycle <= 0 {
+		return "ID: " + d.tunnelID
+	}
+	elapsed := now.Sub(d.sessionStart)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed%cycle < idFor {
+		return "ID: " + d.tunnelID
+	}
+	return "Started: " + displayFormatStartedAt(d.sessionStart)
 }
 
 type displayLatencyPercentilesValues struct {

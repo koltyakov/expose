@@ -43,12 +43,14 @@ const activeClientWindow = 60 * time.Second
 const wsCloseDebounce = 500 * time.Millisecond
 
 const (
-	displayLocalHealthCacheTTL = 2 * time.Second
-	displayLocalHealthTimeout  = 200 * time.Millisecond
-	displayLatencySampleMax    = 1024
-	displayAutoRefreshInterval = 5 * time.Second
-	displayMicroDisconnectMax  = 5 * time.Second
-	displayLockIcon            = "🔒"
+	displayLocalHealthCacheTTL   = 2 * time.Second
+	displayLocalHealthTimeout    = 200 * time.Millisecond
+	displayLatencySampleMax      = 1024
+	displayAutoRefreshInterval   = 5 * time.Second
+	displaySessionDetailIDFor    = 15 * time.Second
+	displaySessionDetailStartFor = 30 * time.Second
+	displayMicroDisconnectMax    = 5 * time.Second
+	displayLockIcon              = "🔒"
 )
 
 // requestEntry stores one logged HTTP request for the rolling display.

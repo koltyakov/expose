@@ -71,7 +71,7 @@ func TestDisplayBannerColor(t *testing.T) {
 func TestDisplayTunnelInfo(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
-	now := time.Date(2026, time.March, 5, 16, 26, 54, 0, time.FixedZone("CST", -6*60*60))
+	now := time.Unix(20, 0).In(time.FixedZone("CST", -6*60*60))
 	d.nowFunc = func() time.Time { return now }
 	d.ShowTunnelInfo("https://myapp.example.com", "http://localhost:3000", "autocert", "tun_abc123", true, "ws")
 	out := buf.String()
@@ -105,17 +105,16 @@ func TestDisplayTunnelInfo(t *testing.T) {
 	if !strings.Contains(out, "Clients") {
 		t.Fatal("expected Clients counter")
 	}
-	if !strings.Contains(out, "Started") {
-		t.Fatal("expected Started field")
-	}
-	if !strings.Contains(out, "2026-03-05 16:26:54 CST") {
-		t.Fatal("expected local tunnel start timestamp")
+	if strings.Contains(out, "\nStarted") {
+		t.Fatal("did not expect separate Started field")
 	}
 }
 
 func TestDisplayTunnelInfoNoTLSMode(t *testing.T) {
 	t.Parallel()
 	d, buf := newTestDisplay(false)
+	now := time.Unix(20, 0)
+	d.nowFunc = func() time.Time { return now }
 	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz", false, "ws")
 	out := buf.String()
 	if strings.Contains(out, "TLS Mode") {
@@ -130,11 +129,64 @@ func TestDisplayTunnelInfoNoTLSMode(t *testing.T) {
 	if strings.Contains(out, "Tunnel ID") {
 		t.Fatal("did not expect separate Tunnel ID field")
 	}
+	if strings.Contains(out, "\nStarted") {
+		t.Fatal("did not expect separate Started field")
+	}
 	if !strings.Contains(out, "Server") {
 		t.Fatal("expected Server field")
 	}
 	if strings.Contains(out, "(TLS:") || strings.Contains(out, "[TLS:") {
 		t.Fatal("did not expect TLS suffix when TLS mode is empty")
+	}
+}
+
+func TestDisplaySessionDetailRotatesBetweenIDAndStarted(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	out := buf.String()
+	if !strings.Contains(out, "(ID: tun_1)") {
+		t.Fatalf("expected ID session detail on initial render, got: %s", out)
+	}
+	if strings.Contains(out, "(Started:") {
+		t.Fatalf("did not expect Started detail on initial render, got: %s", out)
+	}
+
+	now = now.Add(displaySessionDetailIDFor - time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "(ID: tun_1)") {
+		t.Fatalf("expected ID detail before the 15 second boundary, got: %s", out)
+	}
+
+	now = now.Add(2 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "(Started: 2026-03-05 16:00:00 CST)") {
+		t.Fatalf("expected Started detail after rotation, got: %s", out)
+	}
+	if strings.Contains(out, "\nStarted") {
+		t.Fatalf("did not expect separate Started row after rotation, got: %s", out)
+	}
+
+	now = now.Add(displaySessionDetailStartFor)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "(ID: tun_1)") {
+		t.Fatalf("expected loop to return to ID detail after the Started window, got: %s", out)
 	}
 }
 
@@ -843,11 +895,8 @@ func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
 	if strings.Contains(out, "14 minutes") {
 		t.Fatal("expected no total session uptime in status line")
 	}
-	if !strings.Contains(out, "Started") {
-		t.Fatal("expected Started field")
-	}
-	if !strings.Contains(out, "2026-03-05 16:00:00 CST") {
-		t.Fatal("expected Started to remain at original session start")
+	if strings.Contains(out, "\nStarted") {
+		t.Fatal("did not expect separate Started field")
 	}
 }
 
@@ -892,7 +941,7 @@ func TestDisplayUptimeNotShownBeforeConnect(t *testing.T) {
 	if strings.Contains(out, "online for ") || strings.Contains(out, "reconnecting for ") {
 		t.Fatal("expected no status duration before first connection")
 	}
-	if strings.Contains(out, "Started") {
+	if strings.Contains(out, "\nStarted") {
 		t.Fatal("expected no Started field before first connection")
 	}
 }

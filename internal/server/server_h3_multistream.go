@@ -154,10 +154,14 @@ func (s *session) acquireH3Worker(ctx context.Context, timeout time.Duration) (*
 	if err == nil {
 		return stream, nil
 	}
-	_ = s.writeJSON(tunnelproto.Message{
-		Kind:       tunnelproto.KindWorkerCtrl,
-		WorkerCtrl: &tunnelproto.WorkerControl{Desired: 1},
-	})
+	if s.writer != nil && s.h3WorkerSignal.CompareAndSwap(false, true) {
+		if wErr := s.writeJSON(tunnelproto.Message{
+			Kind:       tunnelproto.KindWorkerCtrl,
+			WorkerCtrl: &tunnelproto.WorkerControl{Desired: 1},
+		}); wErr != nil {
+			s.h3WorkerSignal.Store(false)
+		}
+	}
 	return s.h3StreamPool.acquire(ctx, timeout)
 }
 
@@ -166,7 +170,11 @@ func (s *session) addH3Worker(stream *http3.Stream) bool {
 		closeH3Stream(stream)
 		return false
 	}
-	return s.h3StreamPool.enqueue(stream)
+	if s.h3StreamPool.enqueue(stream) {
+		s.h3WorkerSignal.Store(false)
+		return true
+	}
+	return false
 }
 
 func (s *session) closeH3StreamPool() {

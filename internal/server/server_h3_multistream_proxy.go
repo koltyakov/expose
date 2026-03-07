@@ -44,7 +44,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		closeH3Stream(stream)
 	}()
 
-	requestHeaders := tunnelproto.CloneHeaders(r.Header)
+	requestHeaders := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
 	stripPublicAccessCookie(requestHeaders)
 	injectForwardedProxyHeaders(requestHeaders, r)
@@ -79,7 +79,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		s.queueDomainTouch(route.Domain.ID)
 		return
 	}
-	respHeaders := tunnelproto.CloneHeaders(resp.Headers)
+	respHeaders := resp.Headers
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 	for k, vals := range respHeaders {
 		for _, v := range vals {
@@ -111,7 +111,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	}
 	defer closeH3Stream(stream)
 
-	headers := tunnelproto.CloneHeaders(r.Header)
+	headers := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	stripPublicAccessCookie(headers)
 	injectForwardedProxyHeaders(headers, r)
@@ -335,7 +335,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 				Path:      r.URL.Path,
 				Query:     r.URL.RawQuery,
 				Headers:   headers,
-				Body:      append([]byte(nil), firstBuf[:n]...),
+				Body:      firstBuf[:n],
 				TimeoutMs: requestTimeoutMs,
 			},
 		}, useV2)

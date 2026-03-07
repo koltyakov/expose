@@ -157,7 +157,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	sess.wsPendingStore(streamID, streamCh)
 	defer sess.wsPendingDelete(streamID)
 
-	headers := tunnelproto.CloneHeaders(r.Header)
+	headers := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	stripPublicAccessCookie(headers)
 	injectForwardedProxyHeaders(headers, r)

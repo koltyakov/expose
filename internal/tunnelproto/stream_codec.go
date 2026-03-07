@@ -64,15 +64,7 @@ func readStreamMessageVersion(r io.Reader, maxPayloadBytes int64, dst *Message, 
 		return fmt.Errorf("stream payload/frame length mismatch: stream=%d frame=%d", payloadLen, total)
 	}
 
-	id, err := readStreamFrameSection(r, idLen)
-	if err != nil {
-		return err
-	}
-	meta, err := readStreamFrameSection(r, metaLen)
-	if err != nil {
-		return err
-	}
-	payload, err := readStreamFrameSection(r, bodyLen)
+	id, meta, payload, err := readStreamFrameSections(r, idLen, metaLen, bodyLen)
 	if err != nil {
 		return err
 	}
@@ -175,4 +167,29 @@ func readStreamFrameSection(r io.Reader, n int) ([]byte, error) {
 	buf := make([]byte, n)
 	_, err := io.ReadFull(r, buf)
 	return buf, err
+}
+
+func readStreamFrameSections(r io.Reader, idLen, metaLen, bodyLen int) ([]byte, []byte, []byte, error) {
+	total := idLen + metaLen + bodyLen
+	if total <= 0 {
+		return nil, nil, nil, nil
+	}
+	buf, err := readStreamFrameSection(r, total)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	offset := 0
+	var id, meta, payload []byte
+	if idLen > 0 {
+		id = buf[:idLen]
+		offset = idLen
+	}
+	if metaLen > 0 {
+		meta = buf[offset : offset+metaLen]
+		offset += metaLen
+	}
+	if bodyLen > 0 {
+		payload = buf[offset : offset+bodyLen]
+	}
+	return id, meta, payload, nil
 }

@@ -30,7 +30,7 @@ func (c *Client) openLocalWebSocket(ctx context.Context, base *url.URL, req *tun
 		target.Scheme = "ws"
 	}
 
-	headers := tunnelproto.CloneHeaders(req.Headers)
+	headers := tunnelproto.ShallowCloneHeaders(req.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	for key := range headers {
 		lowerKey := strings.ToLower(strings.TrimSpace(key))

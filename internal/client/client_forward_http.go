@@ -47,7 +47,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	if err != nil {
 		return &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway}
 	}
-	headers := tunnelproto.CloneHeaders(req.Headers)
+	headers := tunnelproto.ShallowCloneHeaders(req.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
 	localReq.Header = headers
@@ -68,7 +68,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respHeaders := tunnelproto.CloneHeaders(resp.Header)
+	respHeaders := tunnelproto.ShallowCloneHeaders(resp.Header)
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 		return &tunnelproto.HTTPResponse{
@@ -176,7 +176,7 @@ func (c *Client) forwardAndSend(
 		return
 	}
 
-	headers := tunnelproto.CloneHeaders(req.Headers)
+	headers := tunnelproto.ShallowCloneHeaders(req.Headers)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
 	localReq.Header = headers
@@ -203,7 +203,7 @@ func (c *Client) forwardAndSend(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respHeaders := tunnelproto.CloneHeaders(resp.Header)
+	respHeaders := tunnelproto.ShallowCloneHeaders(resp.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
 
 	if resp.StatusCode == http.StatusSwitchingProtocols {

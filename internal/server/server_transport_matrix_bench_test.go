@@ -368,6 +368,7 @@ func setupBenchmarkQUICSessions(
 		sess := &session{
 			tunnelID:      tunnelID,
 			transportName: "quic",
+			h3StreamV2:    true,
 			h3StreamPool:  newH3StreamPool(workersPerTunnel * 2),
 			pending:       make(map[string]*pendingRequest),
 			wsPending:     make(map[string]chan tunnelproto.Message),
@@ -465,7 +466,7 @@ func runBenchmarkH3WorkerResponder(stream *http3.RequestStream, payload []byte) 
 
 		switch msg.Kind {
 		case tunnelproto.KindPing:
-			if err := tunnelproto.WriteStreamJSON(stream, tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil {
+			if err := tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil {
 				return
 			}
 		case tunnelproto.KindRequest:
@@ -481,7 +482,7 @@ func runBenchmarkH3WorkerResponder(stream *http3.RequestStream, payload []byte) 
 					Body:    payload,
 				},
 			}
-			if err := tunnelproto.WriteStreamJSON(stream, resp); err != nil {
+			if err := tunnelproto.WriteStreamJSONV2(stream, resp); err != nil {
 				return
 			}
 		case tunnelproto.KindReqCancel:
@@ -523,7 +524,7 @@ func readBenchmarkH3RequestStreamMessage(stream *http3.RequestStream) (tunnelpro
 	if stream == nil {
 		return msg, io.EOF
 	}
-	if err := tunnelproto.ReadStreamMessage(stream, minWSReadLimit*2, &msg); err != nil {
+	if err := tunnelproto.ReadStreamMessageV2(stream, minWSReadLimit*2, &msg); err != nil {
 		return tunnelproto.Message{}, err
 	}
 	return msg, nil

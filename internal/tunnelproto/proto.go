@@ -748,3 +748,17 @@ func CloneHeaders(h map[string][]string) map[string][]string {
 	}
 	return out
 }
+
+// ShallowCloneHeaders copies the header map but reuses the existing value
+// slices. Use it only when callers mutate keys, delete entries, or replace
+// whole header values without appending to existing slices in-place.
+func ShallowCloneHeaders(h map[string][]string) map[string][]string {
+	if len(h) == 0 {
+		return map[string][]string{}
+	}
+	out := make(map[string][]string, len(h))
+	for k, v := range h {
+		out[k] = v
+	}
+	return out
+}

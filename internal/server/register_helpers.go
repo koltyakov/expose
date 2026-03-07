@@ -176,6 +176,7 @@ func (s *Server) tryResumeRegisterRoute(
 	if resumeTunnelID != "" {
 		domainRec, tunnelRec, err := s.store.ResumeTunnelSession(ctx, resumeTunnelID, keyID, prepared.clientMachineID)
 		if err == nil {
+			s.liveRoutes.upsert(domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec})
 			if s.log != nil {
 				s.log.Info("tunnel session resumed", "tunnel_id", tunnelRec.ID, "hostname", domainRec.Hostname, "source", "header")
 			}
@@ -215,6 +216,7 @@ func (s *Server) tryResumeRegisterRoute(
 		}
 		return domain.Domain{}, domain.Tunnel{}, false, err
 	}
+	s.liveRoutes.upsert(domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec})
 	if s.log != nil {
 		s.log.Info("tunnel session resumed", "tunnel_id", tunnelRec.ID, "hostname", domainRec.Hostname, "source", "hostname")
 	}

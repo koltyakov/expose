@@ -148,7 +148,7 @@ func (s *Server) requestTimeoutMillis() int {
 // writeStreamedResponseBody reads body chunks from the pending channel and
 // writes them to the HTTP response writer, flushing after each chunk.
 // It returns true when the upstream stream completed normally.
-func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, respCh <-chan tunnelproto.Message, chunkTimeout time.Duration) bool {
+func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, bodyCh <-chan []byte, doneCh <-chan struct{}, chunkTimeout time.Duration) bool {
 	flusher, canFlush := w.(http.Flusher)
 	timer := time.NewTimer(chunkTimeout)
 	defer func() {
@@ -162,9 +162,9 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 
 	for {
 		select {
-		case msg, ok := <-respCh:
-			if !ok {
-				return false // tunnel closed
+		case chunk := <-bodyCh:
+			if chunk == nil {
+				continue
 			}
 			if !timer.Stop() {
 				select {
@@ -173,23 +173,30 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 				}
 			}
 			timer.Reset(chunkTimeout)
-
-			switch msg.Kind {
-			case tunnelproto.KindRespBody:
-				if msg.BodyChunk == nil {
-					continue
+			if len(chunk) > 0 {
+				if _, wErr := w.Write(chunk); wErr != nil {
+					return false
 				}
-				b, err := msg.BodyChunk.Payload()
-				if err == nil && len(b) > 0 {
-					if _, wErr := w.Write(b); wErr != nil {
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+		case <-doneCh:
+			for {
+				select {
+				case chunk := <-bodyCh:
+					if len(chunk) == 0 {
+						continue
+					}
+					if _, wErr := w.Write(chunk); wErr != nil {
 						return false
 					}
 					if canFlush {
 						flusher.Flush()
 					}
+				default:
+					return true
 				}
-			case tunnelproto.KindRespBodyEnd:
-				return true
 			}
 		case <-timer.C:
 			return false // chunk timeout
@@ -201,19 +208,26 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 
 // streamSend attempts to write msg to ch without blocking the read loop for
 // too long. Mirrors wsPendingSend but for HTTP body streaming channels.
-func (s *session) streamSend(ch chan tunnelproto.Message, msg tunnelproto.Message, wait time.Duration) bool {
+func (s *session) streamSend(ch chan []byte, payload []byte, wait time.Duration) bool {
 	select {
-	case ch <- msg:
+	case ch <- payload:
 		return true
 	default:
 	}
 	if wait <= 0 {
 		return false
 	}
+	if wait > 0 {
+		select {
+		case ch <- payload:
+			return true
+		default:
+		}
+	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case ch <- msg:
+	case ch <- payload:
 		return true
 	case <-timer.C:
 		return false

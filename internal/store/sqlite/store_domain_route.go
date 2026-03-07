@@ -13,6 +13,26 @@ import (
 
 func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error) {
 	host = normalizeHostname(host)
+	return s.findRoute(ctx, findRouteByHostQuery, host)
+}
+
+func (s *Store) FindRouteByTunnelID(ctx context.Context, tunnelID string) (domain.TunnelRoute, error) {
+	tunnelID = strings.TrimSpace(tunnelID)
+	if tunnelID == "" {
+		return domain.TunnelRoute{}, sql.ErrNoRows
+	}
+	const query = `
+SELECT
+ d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.connected_at, t.disconnected_at
+FROM tunnels t
+JOIN domains d ON d.id = t.domain_id
+WHERE t.id = ?
+LIMIT 1`
+	return s.findRoute(ctx, query, tunnelID)
+}
+
+func (s *Store) findRoute(ctx context.Context, query string, arg any) (domain.TunnelRoute, error) {
 	var r domain.TunnelRoute
 	var lastSeen sql.NullTime
 	var connectedAt sql.NullTime
@@ -24,13 +44,13 @@ func (s *Store) FindRouteByHost(ctx context.Context, host string) (domain.Tunnel
 
 	stmt := s.findRouteByHostStmt
 	var err error
-	if stmt == nil {
-		err = s.db.QueryRowContext(ctx, findRouteByHostQuery, host).Scan(
+	if stmt != nil && query == findRouteByHostQuery {
+		err = stmt.QueryRowContext(ctx, arg).Scan(
 			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
 			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
 		)
 	} else {
-		err = stmt.QueryRowContext(ctx, host).Scan(
+		err = s.db.QueryRowContext(ctx, query, arg).Scan(
 			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
 			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
 		)

@@ -34,6 +34,7 @@ type StreamTransport struct {
 	maxReadBytes int64
 	name         string
 	closeFn      func() error
+	codecV2      bool
 }
 
 func NewStreamTransport(name string, stream io.ReadWriteCloser, closeFn func() error) *StreamTransport {
@@ -44,11 +45,23 @@ func NewStreamTransport(name string, stream io.ReadWriteCloser, closeFn func() e
 	}
 }
 
+func NewStreamTransportV2(name string, stream io.ReadWriteCloser, closeFn func() error) *StreamTransport {
+	return &StreamTransport{
+		stream:  stream,
+		name:    name,
+		closeFn: closeFn,
+		codecV2: true,
+	}
+}
+
 func (t *StreamTransport) Name() string {
 	return t.name
 }
 
 func (t *StreamTransport) ReadMessage(dst *tunnelproto.Message) error {
+	if t.codecV2 {
+		return tunnelproto.ReadStreamMessageV2(t.stream, t.maxReadBytes, dst)
+	}
 	return tunnelproto.ReadStreamMessage(t.stream, t.maxReadBytes, dst)
 }
 
@@ -137,6 +150,14 @@ func NewWebSocketWritePump(conn *websocket.Conn, writeTimeout time.Duration, hig
 }
 
 func NewStreamWritePump(stream io.ReadWriteCloser, writeTimeout time.Duration, highCap, lowCap int, closeFn func()) *WritePump {
+	return newStreamWritePump(stream, writeTimeout, highCap, lowCap, closeFn, false)
+}
+
+func NewStreamWritePumpV2(stream io.ReadWriteCloser, writeTimeout time.Duration, highCap, lowCap int, closeFn func()) *WritePump {
+	return newStreamWritePump(stream, writeTimeout, highCap, lowCap, closeFn, true)
+}
+
+func newStreamWritePump(stream io.ReadWriteCloser, writeTimeout time.Duration, highCap, lowCap int, closeFn func(), codecV2 bool) *WritePump {
 	type deadlineWriter interface {
 		SetWriteDeadline(time.Time) error
 	}
@@ -156,7 +177,13 @@ func NewStreamWritePump(stream io.ReadWriteCloser, writeTimeout time.Duration, h
 		}
 
 		if !req.binary {
+			if codecV2 {
+				return tunnelproto.WriteStreamJSONV2(stream, req.msg)
+			}
 			return tunnelproto.WriteStreamJSON(stream, req.msg)
+		}
+		if codecV2 {
+			return tunnelproto.WriteStreamBinaryFrameV2(stream, req.frameKind, req.id, req.wsMessageType, req.payload)
 		}
 		return tunnelproto.WriteStreamBinaryFrame(stream, req.frameKind, req.id, req.wsMessageType, req.payload)
 	}, closeFn, highCap, lowCap, defaultWriteControlEnqueueTimeout, defaultWriteDataEnqueueTimeout)

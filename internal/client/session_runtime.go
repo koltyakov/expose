@@ -43,6 +43,12 @@ func (s *streamedRequestState) send(data []byte, wait time.Duration) bool {
 		}
 	}
 
+	select {
+	case s.ch <- data:
+		return true
+	default:
+	}
+
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 

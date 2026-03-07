@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+
+	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
 const (
@@ -140,10 +142,22 @@ func (s *session) hasH3MultiStream() bool {
 	return s != nil && s.h3StreamPool != nil
 }
 
+func (s *session) usesH3StreamV2() bool {
+	return s != nil && s.h3StreamV2
+}
+
 func (s *session) acquireH3Worker(ctx context.Context, timeout time.Duration) (*http3.Stream, error) {
 	if s == nil || s.h3StreamPool == nil {
 		return nil, errH3WorkerUnavailable
 	}
+	stream, err := s.h3StreamPool.acquire(ctx, 10*time.Millisecond)
+	if err == nil {
+		return stream, nil
+	}
+	_ = s.writeJSON(tunnelproto.Message{
+		Kind:       tunnelproto.KindWorkerCtrl,
+		WorkerCtrl: &tunnelproto.WorkerControl{Desired: 1},
+	})
 	return s.h3StreamPool.acquire(ctx, timeout)
 }
 

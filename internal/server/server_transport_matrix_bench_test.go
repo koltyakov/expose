@@ -285,15 +285,18 @@ func setupBenchmarkWSSessions(
 			transport:     tunneltransport.NewWebSocketTransport(serverConn),
 			writer:        tunneltransport.NewWebSocketWritePump(serverConn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 			transportName: "ws",
-			pending:       make(map[string]chan tunnelproto.Message),
+			pending:       make(map[string]*pendingRequest),
 			wsPending:     make(map[string]chan tunnelproto.Message),
 		}
 		sess.touch(time.Now())
 		srv.hub.sessions[tunnelID] = sess
-		srv.routes.set(host, domain.TunnelRoute{
+		route := domain.TunnelRoute{
 			Domain: domain.Domain{ID: fmt.Sprintf("d-ws-%03d", i+1), Hostname: host},
 			Tunnel: domain.Tunnel{ID: tunnelID, State: domain.TunnelStateConnected},
-		})
+		}
+		srv.routes.set(host, route)
+		srv.liveRoutes.upsert(route)
+		srv.liveRoutes.attachSession(tunnelID, sess)
 
 		go runBenchmarkSessionReadLoop(sess)
 		go runBenchmarkWSResponder(clientConn, payload, &pendingResponses)
@@ -366,15 +369,17 @@ func setupBenchmarkQUICSessions(
 			tunnelID:      tunnelID,
 			transportName: "quic",
 			h3StreamPool:  newH3StreamPool(workersPerTunnel * 2),
-			pending:       make(map[string]chan tunnelproto.Message),
+			pending:       make(map[string]*pendingRequest),
 			wsPending:     make(map[string]chan tunnelproto.Message),
 		}
 		sess.touch(time.Now())
 		srv.hub.sessions[tunnelID] = sess
-		srv.routes.set(host, domain.TunnelRoute{
+		route := domain.TunnelRoute{
 			Domain: domain.Domain{ID: fmt.Sprintf("d-quic-%03d", i+1), Hostname: host},
 			Tunnel: domain.Tunnel{ID: tunnelID, State: domain.TunnelStateConnected},
-		})
+		}
+		srv.routes.set(host, route)
+		srv.liveRoutes.upsert(route)
 
 		for w := 0; w < workersPerTunnel; w++ {
 			stream := openBenchmarkH3WorkerStream(b, clientConn, "https://"+addr+"/worker", tunnelID)

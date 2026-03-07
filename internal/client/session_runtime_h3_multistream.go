@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 const (
 	h3SessionHeader          = "X-Expose-H3-Session"
 	h3WorkerConnectTimeout   = 15 * time.Second
+	h3WorkerIdleTTL          = 30 * time.Second
 	h3WorkerOpenCountFloor   = 2
 	h3WorkerOpenCountCeiling = 64
 )
@@ -59,6 +59,9 @@ type clientH3MultiStreamRuntime struct {
 
 	pingSentMu sync.Mutex
 	pingSentAt time.Time
+
+	h3Workers   *h3WorkerManager
+	useStreamV2 bool
 }
 
 func newClientH3MultiStreamRuntime(
@@ -89,7 +92,9 @@ func newClientH3MultiStreamRuntime(
 		msgCh:          make(chan tunnelproto.Message, wsMessageBufferSize),
 		readErr:        make(chan error, 1),
 		keepaliveErr:   make(chan error, 1),
+		useStreamV2:    conn.protocol == tunnelCapabilityH3MultistreamV2,
 	}
+	rt.h3Workers = newH3WorkerManager(rt.maxWorkers(), rt.openWorker)
 	rt.transport.SetReadLimit(clientWSReadLimit)
 	go func() {
 		<-rt.ctx.Done()
@@ -102,7 +107,6 @@ func newClientH3MultiStreamRuntime(
 	}
 	rt.startKeepaliveLoop()
 	rt.startControlReadLoop()
-	rt.startWorkers()
 	return rt, nil
 }
 
@@ -207,6 +211,11 @@ func (rt *clientH3MultiStreamRuntime) handleControlMessage(msg tunnelproto.Messa
 	switch msg.Kind {
 	case tunnelproto.KindPong, tunnelproto.KindPing:
 		return rt.handlePingPong(msg)
+	case tunnelproto.KindWorkerCtrl:
+		if msg.WorkerCtrl != nil {
+			rt.h3Workers.request(msg.WorkerCtrl.Desired)
+		}
+		return nil
 	case tunnelproto.KindClose:
 		return errors.New("server closed tunnel")
 	default:
@@ -253,52 +262,52 @@ func (rt *clientH3MultiStreamRuntime) writeControlJSON(msg tunnelproto.Message) 
 	return rt.writer.WriteJSON(msg)
 }
 
-func (rt *clientH3MultiStreamRuntime) startWorkers() {
+func (rt *clientH3MultiStreamRuntime) maxWorkers() int {
 	workers := maxConcurrentForwardsFor(rt.client.cfg)
-	if workers < h3WorkerOpenCountFloor {
-		workers = h3WorkerOpenCountFloor
-	}
 	if workers > h3WorkerOpenCountCeiling {
 		workers = h3WorkerOpenCountCeiling
 	}
-
-	for i := 0; i < workers; i++ {
-		rt.workerWG.Add(1)
-		go func() {
-			defer rt.workerWG.Done()
-			backoff := 100 * time.Millisecond
-			for {
-				if rt.ctx.Err() != nil {
-					return
-				}
-				err := rt.runWorkerStream()
-				if rt.ctx.Err() != nil {
-					return
-				}
-
-				// A single worker stream failure should not tear down the whole
-				// tunnel session; retry worker attach with bounded backoff.
-				if err != nil {
-					if rt.client.log != nil {
-						rt.client.log.Warn("http3 worker stream ended; retrying", "err", shortenError(err), "retry_in", backoff.String())
-					}
-					timer := time.NewTimer(backoff)
-					select {
-					case <-rt.ctx.Done():
-						timer.Stop()
-						return
-					case <-timer.C:
-					}
-					backoff = min(backoff*2, 2*time.Second)
-					continue
-				}
-				backoff = 100 * time.Millisecond
-			}
-		}()
+	if workers < 1 {
+		workers = 1
 	}
+	return workers
+}
+
+func (rt *clientH3MultiStreamRuntime) openWorker() {
+	rt.workerWG.Add(1)
+	go func() {
+		defer rt.workerWG.Done()
+		backoff := 100 * time.Millisecond
+		for {
+			if rt.ctx.Err() != nil {
+				return
+			}
+			err := rt.runWorkerStream()
+			if rt.ctx.Err() != nil {
+				return
+			}
+			if err == nil {
+				return
+			}
+			if rt.client.log != nil {
+				rt.client.log.Warn("http3 worker stream ended; retrying", "err", shortenError(err), "retry_in", backoff.String())
+			}
+			timer := time.NewTimer(backoff)
+			select {
+			case <-rt.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			backoff = min(backoff*2, 2*time.Second)
+		}
+	}()
 }
 
 func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
+	rt.h3Workers.opened()
+	defer rt.h3Workers.closed()
+
 	openCtx, cancel := context.WithTimeout(rt.ctx, h3WorkerConnectTimeout)
 	defer cancel()
 
@@ -335,8 +344,11 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
 	}
 
 	for {
-		msg, err := readH3RequestStreamMessage(stream, 0)
+		msg, err := readH3RequestStreamMessage(stream, h3WorkerIdleTTL, rt.useStreamV2)
 		if err != nil {
+			if isTimeoutError(err) {
+				return nil
+			}
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
@@ -344,7 +356,7 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
 		}
 		switch msg.Kind {
 		case tunnelproto.KindPing:
-			if err := writeH3RequestStreamJSON(stream, tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil {
+			if err := writeH3RequestStreamJSON(stream, tunnelproto.Message{Kind: tunnelproto.KindPong}, rt.useStreamV2); err != nil {
 				return err
 			}
 		case tunnelproto.KindRequest:
@@ -372,7 +384,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 		go func() {
 			defer close(ch)
 			for {
-				msg, err := readH3RequestStreamMessage(stream, 0)
+				msg, err := readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
 				if err != nil {
 					return
 				}
@@ -391,7 +403,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 					continue
 				}
 				select {
-				case ch <- bytes.Clone(payload):
+				case ch <- payload:
 				case <-reqCtx.Done():
 					return
 				}
@@ -400,9 +412,9 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	}
 
 	rt.client.forwardAndSend(reqCtx, rt.localBase, &reqCopy, bodyCh, func(msg tunnelproto.Message) error {
-		return writeH3RequestStreamJSON(stream, msg)
+		return writeH3RequestStreamJSON(stream, msg, rt.useStreamV2)
 	}, func(id string, payload []byte) error {
-		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameRespBody, id, 0, payload)
+		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameRespBody, id, 0, payload, rt.useStreamV2)
 	})
 	return nil
 }
@@ -426,7 +438,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 				Status: status,
 				Error:  err.Error(),
 			},
-		})
+		}, rt.useStreamV2)
 		return nil
 	}
 	defer func() { _ = upstreamConn.Close() }()
@@ -439,7 +451,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			Status:      http.StatusSwitchingProtocols,
 			Subprotocol: subprotocol,
 		},
-	}); err != nil {
+	}, rt.useStreamV2); err != nil {
 		return err
 	}
 
@@ -447,12 +459,12 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 	writeStreamJSON := func(msg tunnelproto.Message) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return writeH3RequestStreamJSON(stream, msg)
+		return writeH3RequestStreamJSON(stream, msg, rt.useStreamV2)
 	}
 	writeStreamWSData := func(messageType int, payload []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameWSData, streamID, messageType, payload)
+		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameWSData, streamID, messageType, payload, rt.useStreamV2)
 	}
 
 	localErr := make(chan struct{})
@@ -489,7 +501,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 		default:
 		}
 
-		msg, err := readH3RequestStreamMessage(stream, 0)
+		msg, err := readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
 		if err != nil {
 			return nil
 		}
@@ -519,7 +531,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 	}
 }
 
-func readH3RequestStreamMessage(stream *http3.RequestStream, timeout time.Duration) (tunnelproto.Message, error) {
+func readH3RequestStreamMessage(stream *http3.RequestStream, timeout time.Duration, useV2 bool) (tunnelproto.Message, error) {
 	var msg tunnelproto.Message
 	if stream == nil {
 		return msg, io.EOF
@@ -528,27 +540,39 @@ func readH3RequestStreamMessage(stream *http3.RequestStream, timeout time.Durati
 		_ = stream.SetReadDeadline(time.Now().Add(timeout))
 		defer func() { _ = stream.SetReadDeadline(time.Time{}) }()
 	}
-	if err := tunnelproto.ReadStreamMessage(stream, clientWSReadLimit, &msg); err != nil {
+	var err error
+	if useV2 {
+		err = tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &msg)
+	} else {
+		err = tunnelproto.ReadStreamMessage(stream, clientWSReadLimit, &msg)
+	}
+	if err != nil {
 		return tunnelproto.Message{}, err
 	}
 	return msg, nil
 }
 
-func writeH3RequestStreamJSON(stream *http3.RequestStream, msg tunnelproto.Message) error {
+func writeH3RequestStreamJSON(stream *http3.RequestStream, msg tunnelproto.Message, useV2 bool) error {
 	if stream == nil {
 		return io.EOF
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout))
 	defer func() { _ = stream.SetWriteDeadline(time.Time{}) }()
+	if useV2 {
+		return tunnelproto.WriteStreamJSONV2(stream, msg)
+	}
 	return tunnelproto.WriteStreamJSON(stream, msg)
 }
 
-func writeH3RequestStreamBinary(stream *http3.RequestStream, frameKind byte, id string, wsMessageType int, payload []byte) error {
+func writeH3RequestStreamBinary(stream *http3.RequestStream, frameKind byte, id string, wsMessageType int, payload []byte, useV2 bool) error {
 	if stream == nil {
 		return io.EOF
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout))
 	defer func() { _ = stream.SetWriteDeadline(time.Time{}) }()
+	if useV2 {
+		return tunnelproto.WriteStreamBinaryFrameV2(stream, frameKind, id, wsMessageType, payload)
+	}
 	return tunnelproto.WriteStreamBinaryFrame(stream, frameKind, id, wsMessageType, payload)
 }
 
@@ -559,4 +583,17 @@ func closeH3RequestStream(stream *http3.RequestStream) {
 	stream.CancelRead(0)
 	stream.CancelWrite(0)
 	_ = stream.Close()
+}
+
+func isTimeoutError(err error) bool {
+	type timeout interface {
+		Timeout() bool
+	}
+	if err == nil {
+		return false
+	}
+	if te, ok := err.(timeout); ok {
+		return te.Timeout()
+	}
+	return false
 }

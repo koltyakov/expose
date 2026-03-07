@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	streamRecordVersion = 2
-	streamRecordHeader  = 6
+	streamRecordVersion   = 2
+	streamRecordVersionV2 = 3
+	streamRecordHeader    = 6
 )
 
 const (
@@ -18,11 +19,19 @@ const (
 
 // ReadStreamMessage reads a tunnel message framed over an opaque byte stream.
 func ReadStreamMessage(r io.Reader, maxPayloadBytes int64, dst *Message) error {
+	return readStreamMessageVersion(r, maxPayloadBytes, dst, streamRecordVersion)
+}
+
+func ReadStreamMessageV2(r io.Reader, maxPayloadBytes int64, dst *Message) error {
+	return readStreamMessageVersion(r, maxPayloadBytes, dst, streamRecordVersionV2)
+}
+
+func readStreamMessageVersion(r io.Reader, maxPayloadBytes int64, dst *Message, recordVersion byte) error {
 	var header [streamRecordHeader]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return err
 	}
-	if header[0] != streamRecordVersion {
+	if header[0] != recordVersion {
 		return fmt.Errorf("unsupported stream record version: %d", header[0])
 	}
 	payloadLen := int64(binary.BigEndian.Uint32(header[2:6]))
@@ -78,15 +87,38 @@ func ReadStreamMessage(r io.Reader, maxPayloadBytes int64, dst *Message) error {
 
 // WriteStreamJSON writes a JSON control message to an opaque byte stream.
 func WriteStreamJSON(w io.Writer, msg Message) error {
+	return writeStreamJSONVersion(w, msg, streamRecordVersion)
+}
+
+func WriteStreamJSONV2(w io.Writer, msg Message) error {
+	return writeStreamJSONVersion(w, msg, streamRecordVersionV2)
+}
+
+func writeStreamJSONVersion(w io.Writer, msg Message, recordVersion byte) error {
 	enc, err := encodeMessageFrame(msg)
 	if err != nil {
 		return err
 	}
-	return writeStreamRecord(w, enc)
+	return writeStreamRecord(w, enc, recordVersion)
 }
 
 // WriteStreamBinaryFrame writes a binary tunnel frame to an opaque byte stream.
 func WriteStreamBinaryFrame(w io.Writer, frameKind byte, id string, wsMessageType int, payload []byte) error {
+	return writeStreamBinaryFrameVersion(w, frameKind, id, wsMessageType, payload, streamRecordVersion)
+}
+
+func WriteStreamBinaryFrameV2(w io.Writer, frameKind byte, id string, wsMessageType int, payload []byte) error {
+	return writeStreamBinaryFrameVersion(w, frameKind, id, wsMessageType, payload, streamRecordVersionV2)
+}
+
+func writeStreamBinaryFrameVersion(w io.Writer, frameKind byte, id string, wsMessageType int, payload []byte, recordVersion byte) error {
+	if recordVersion == streamRecordVersionV2 {
+		enc, err := newEncodedFrame(streamFrameKind(frameKind), id, wsMessageType, nil, payload)
+		if err != nil {
+			return err
+		}
+		return writeStreamRecord(w, enc, recordVersion)
+	}
 	switch frameKind {
 	case BinaryFrameReqBody:
 		return WriteStreamJSON(w, Message{
@@ -112,15 +144,28 @@ func WriteStreamBinaryFrame(w io.Writer, frameKind byte, id string, wsMessageTyp
 	}
 }
 
-func writeStreamRecord(w io.Writer, enc encodedFrame) error {
+func writeStreamRecord(w io.Writer, enc encodedFrame, recordVersion byte) error {
 	var header [streamRecordHeader]byte
-	header[0] = streamRecordVersion
+	header[0] = recordVersion
 	header[1] = streamRecordFrame
 	binary.BigEndian.PutUint32(header[2:6], uint32(encodedFrameLen(enc)))
 	if _, err := w.Write(header[:]); err != nil {
 		return err
 	}
 	return writeEncodedFrame(w, enc)
+}
+
+func streamFrameKind(frameKind byte) byte {
+	switch frameKind {
+	case BinaryFrameReqBody:
+		return frameKindReqBody
+	case BinaryFrameRespBody:
+		return frameKindRespBody
+	case BinaryFrameWSData:
+		return frameKindWSData
+	default:
+		return frameKind
+	}
 }
 
 func readStreamFrameSection(r io.Reader, n int) ([]byte, error) {

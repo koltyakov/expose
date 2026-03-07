@@ -209,7 +209,7 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 			tunnelID:  tunnelID,
 			conn:      conn,
 			writer:    tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
-			pending:   make(map[string]chan tunnelproto.Message),
+			pending:   make(map[string]*pendingRequest),
 			wsPending: make(map[string]chan tunnelproto.Message),
 		}
 	}))
@@ -300,6 +300,7 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 				tunnelID: sess,
 			},
 		},
+		liveRoutes: newLiveRouteIndex(),
 		routes: routeCache{
 			entries:       make(map[string]routeCacheEntry),
 			hostsByTunnel: make(map[string]map[string]struct{}),
@@ -310,6 +311,11 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 		Domain: domain.Domain{ID: "d-bench", Hostname: host},
 		Tunnel: domain.Tunnel{ID: tunnelID, State: domain.TunnelStateConnected},
 	})
+	srv.liveRoutes.upsert(domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-bench", Hostname: host},
+		Tunnel: domain.Tunnel{ID: tunnelID, State: domain.TunnelStateConnected},
+	})
+	srv.liveRoutes.attachSession(tunnelID, sess)
 
 	publicSrv := httptest.NewServer(http.HandlerFunc(srv.handlePublic))
 	b.Cleanup(publicSrv.Close)
@@ -374,31 +380,30 @@ func runBenchmarkSessionReadLoop(sess *session) {
 				continue
 			}
 			if msg.Response.Streamed {
-				if ch, ok := sess.pendingLoad(msg.Response.ID); ok {
-					select {
-					case ch <- msg:
-					default:
-					}
+				if pending, ok := sess.pendingLoad(msg.Response.ID); ok {
+					pending.deliverHeader(msg.Response)
 				}
 				continue
 			}
-			if ch, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
+			if pending, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
 				sess.releasePending()
-				select {
-				case ch <- msg:
-				default:
-				}
-				close(ch)
+				pending.deliverHeader(msg.Response)
+				pending.finish()
 			}
 		case tunnelproto.KindRespBody:
 			if msg.BodyChunk == nil {
 				continue
 			}
-			if ch, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
-				if !sess.streamSend(ch, msg, streamBodySendTimeout) {
-					if sess.pendingDelete(msg.BodyChunk.ID) {
+			if pending, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
+				bodyCh := pending.ensureBodyCh()
+				payload, err := msg.BodyChunk.Payload()
+				if err != nil {
+					continue
+				}
+				if !sess.streamSend(bodyCh, payload, streamBodySendTimeout) {
+					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {
 						sess.releasePending()
-						close(ch)
+						pending.abort()
 					}
 				}
 			}
@@ -406,13 +411,9 @@ func runBenchmarkSessionReadLoop(sess *session) {
 			if msg.BodyChunk == nil {
 				continue
 			}
-			if ch, ok := sess.pendingLoadAndDelete(msg.BodyChunk.ID); ok {
+			if pending, ok := sess.pendingLoadAndDelete(msg.BodyChunk.ID); ok {
 				sess.releasePending()
-				select {
-				case ch <- msg:
-				default:
-				}
-				close(ch)
+				pending.finish()
 			}
 		}
 	}

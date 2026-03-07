@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
@@ -14,34 +13,32 @@ import (
 	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
-func (s *Server) resolvePublicRoute(ctx context.Context, host string) (domain.TunnelRoute, error) {
-	route, found, cached := s.routes.lookup(host)
-	if cached {
-		if found {
-			return route, nil
-		}
-		return domain.TunnelRoute{}, sql.ErrNoRows
+func (s *Server) resolvePublicRoute(ctx context.Context, host string) (liveRouteSnapshot, error) {
+	if snap, ok := s.liveRoutes.lookupHost(host); ok {
+		return snap, nil
 	}
-
-	route, err := s.store.FindRouteByHost(ctx, host)
+	if route, found, cached := s.routes.lookup(host); cached && found {
+		return liveRouteSnapshot{route: route}, nil
+	} else if cached {
+		return liveRouteSnapshot{}, sql.ErrNoRows
+	}
+	snap, err := s.liveRoutes.upsertFromStore(ctx, s.store, host)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			s.routes.setMiss(host)
-		}
-		return domain.TunnelRoute{}, err
+		return liveRouteSnapshot{}, err
 	}
-	s.routes.set(host, route)
-	return route, nil
+	return snap, nil
 }
 
-func (s *Server) resolvePublicSession(route domain.TunnelRoute) (*session, int, string, bool) {
-	s.hub.mu.RLock()
-	sess := s.hub.sessions[route.Tunnel.ID]
-	s.hub.mu.RUnlock()
-	if sess != nil && route.Tunnel.State == domain.TunnelStateConnected {
-		return sess, 0, "", true
+func (s *Server) resolvePublicSession(snap liveRouteSnapshot) (*session, int, string, bool) {
+	if snap.session == nil && strings.TrimSpace(snap.route.Tunnel.ID) != "" {
+		s.hub.mu.RLock()
+		snap.session = s.hub.sessions[snap.route.Tunnel.ID]
+		s.hub.mu.RUnlock()
 	}
-	if !route.Tunnel.IsTemporary {
+	if snap.session != nil && (snap.active || snap.route.Tunnel.State == domain.TunnelStateConnected) {
+		return snap.session, 0, "", true
+	}
+	if !snap.route.Tunnel.IsTemporary {
 		return nil, http.StatusServiceUnavailable, "tunnel offline", false
 	}
 	return nil, http.StatusNotFound, "unknown host", false
@@ -87,11 +84,12 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 
-	respCh := make(chan tunnelproto.Message, streamingChanSize)
-	sess.pendingStore(reqID, respCh)
+	pending := acquirePendingRequest()
+	defer releasePendingRequest(pending)
+	sess.pendingStore(reqID, pending)
 
 	if _, err := s.sendRequestBody(sess, reqID, r, requestHeaders); err != nil {
-		s.abortPendingRequest(sess, reqID, respCh)
+		s.abortPendingRequest(sess, reqID)
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else if errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
@@ -102,68 +100,59 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		return
 	}
 
-	timer := time.NewTimer(s.cfg.RequestTimeout)
-	stopTimer := func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-	}
-	defer stopTimer()
+	waitCtx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
 
-	select {
-	case msg, ok := <-respCh:
-		if !ok || msg.Kind != tunnelproto.KindResponse || msg.Response == nil {
+	resp, ok := pending.waitHeader(waitCtx)
+	if !ok || resp == nil {
+		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+			s.abortPendingRequest(sess, reqID)
+			http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+			return
+		}
+		s.abortPendingRequest(sess, reqID)
+		if r.Context().Err() == nil {
 			http.Error(w, "tunnel closed", http.StatusBadGateway)
-			return
 		}
-		resp := msg.Response
-		if shouldServeFallbackFavicon(r, resp.Status) {
-			if resp.Streamed {
-				s.abortPendingRequest(sess, reqID, respCh)
-			}
-			writeFallbackFavicon(w, r)
-			s.queueDomainTouch(route.Domain.ID)
-			return
-		}
-		respHeaders := tunnelproto.CloneHeaders(resp.Headers)
-		netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
-		for k, vals := range respHeaders {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.Status)
-		if resp.Streamed {
-			if !s.writeStreamedResponseBody(w, r, respCh, s.cfg.RequestTimeout) {
-				s.abortPendingRequest(sess, reqID, respCh)
-			}
-		} else {
-			b, err := resp.Payload()
-			if err == nil && len(b) > 0 {
-				_, _ = w.Write(b)
-			}
-		}
-		s.queueDomainTouch(route.Domain.ID)
-	case <-timer.C:
-		s.abortPendingRequest(sess, reqID, respCh)
-		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
-	case <-r.Context().Done():
-		s.abortPendingRequest(sess, reqID, respCh)
+		return
 	}
+	if shouldServeFallbackFavicon(r, resp.Status) {
+		if resp.Streamed {
+			s.abortPendingRequest(sess, reqID)
+		}
+		writeFallbackFavicon(w, r)
+		s.queueDomainTouch(route.Domain.ID)
+		return
+	}
+	respHeaders := resp.Headers
+	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
+	for k, vals := range respHeaders {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.Status)
+	if resp.Streamed {
+		bodyCh, doneCh := pending.bodyStream()
+		if !s.writeStreamedResponseBody(w, r, bodyCh, doneCh, s.cfg.RequestTimeout) {
+			s.abortPendingRequest(sess, reqID)
+		}
+	} else {
+		b, err := resp.Payload()
+		if err == nil && len(b) > 0 {
+			_, _ = w.Write(b)
+		}
+	}
+	s.queueDomainTouch(route.Domain.ID)
 }
 
-func (s *Server) abortPendingRequest(sess *session, reqID string, respCh chan tunnelproto.Message) {
+func (s *Server) abortPendingRequest(sess *session, reqID string) {
 	if sess == nil || strings.TrimSpace(reqID) == "" {
 		return
 	}
-	if sess.pendingDelete(reqID) {
+	if pending, ok := sess.pendingDelete(reqID); ok {
 		sess.releasePending()
-		if respCh != nil {
-			close(respCh)
-		}
+		pending.abort()
 	}
 	_ = sess.cancelRequest(reqID)
 }

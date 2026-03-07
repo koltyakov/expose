@@ -44,16 +44,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !resumed {
-		active, err := s.store.ActiveTunnelCountByKey(r.Context(), keyID)
+		keyLimit, err := s.activeTunnels.limitFor(r.Context(), s.store, keyID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		keyLimit, err := s.store.GetAPIKeyTunnelLimit(r.Context(), keyID)
-		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
+		active := s.activeTunnels.activeCount(keyID)
 		if keyLimit >= 0 && active >= keyLimit {
 			writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
 			return
@@ -79,10 +75,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to persist tunnel auth settings", http.StatusInternalServerError)
 		return
 	}
-	// Access credentials can change between registrations for the same host.
-	// Evict any cached host->route entry so public auth checks do not use stale
-	// access settings (e.g. a previous protected session) before reconnect.
-	s.routes.deleteHost(domainRec.Hostname)
+	tunnelRec.AccessUser = prepared.accessUser
+	tunnelRec.AccessMode = prepared.accessMode
+	tunnelRec.AccessPasswordHash = prepared.passwordHash
+	s.liveRoutes.upsert(domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec})
+	s.liveRoutes.setAccess(tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash)
 
 	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
 	if err != nil {
@@ -91,7 +88,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	publicURL, wsURL, h3URL := s.registerURLs(r.Host, domainRec.Hostname, token)
-	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream"}
+	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream_v2", "h3_multistream"}
 
 	resp := registerResponse{
 		TunnelID:      tunnelRec.ID,
@@ -113,14 +110,15 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := normalizeHost(r.Host)
-	route, err := s.resolvePublicRoute(r.Context(), host)
+	snap, err := s.resolvePublicRoute(r.Context(), host)
 	if err != nil {
 		status, msg := publicRouteLookupErrorStatus(err)
 		http.Error(w, msg, status)
 		return
 	}
 
-	sess, status, msg, ok := s.resolvePublicSession(route)
+	route := snap.route
+	sess, status, msg, ok := s.resolvePublicSession(snap)
 	if !ok {
 		http.Error(w, msg, status)
 		return

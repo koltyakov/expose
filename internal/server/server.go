@@ -36,6 +36,7 @@ type serverStore interface {
 	SetTunnelDisconnected(ctx context.Context, tunnelID string) error
 	SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) error
 	FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error)
+	FindRouteByTunnelID(ctx context.Context, tunnelID string) (domain.TunnelRoute, error)
 	TouchDomain(ctx context.Context, domainID string) error
 	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
 	PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error)
@@ -58,6 +59,8 @@ type Server struct {
 	regLimiter    *rateLimiter
 	publicLimiter *rateLimiter
 	routes        routeCache
+	liveRoutes    *liveRouteIndex
+	activeTunnels *activeTunnelTracker
 	domainTouches chan string
 	domainTouchMu sync.Mutex
 	domainTouched map[string]struct{}
@@ -92,10 +95,11 @@ type session struct {
 	transport        tunneltransport.Transport
 	writer           sessionWriter
 	transportName    string
+	h3StreamV2       bool
 	h3StreamPool     *h3StreamPool
 	h3AuthToken      string
 	pendingMu        sync.RWMutex
-	pending          map[string]chan tunnelproto.Message
+	pending          map[string]*pendingRequest
 	wsMu             sync.RWMutex
 	wsPending        map[string]chan tunnelproto.Message
 	pendingCount     atomic.Int64
@@ -178,6 +182,8 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		regLimiter:    newRateLimiter(),
 		publicLimiter: publicLimiter,
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
+		liveRoutes:    newLiveRouteIndex(),
+		activeTunnels: newActiveTunnelTracker(),
 		domainTouches: make(chan string, domainTouchQueueSize),
 		domainTouched: make(map[string]struct{}),
 		disconnects:   make(chan string, disconnectQueueSize),

@@ -29,6 +29,7 @@ const (
 	KindWSClose     = "ws_close"
 	KindPing        = "ping"
 	KindPong        = "pong"
+	KindWorkerCtrl  = "worker_ctrl"
 	KindError       = "error"
 	KindClose       = "close"
 )
@@ -62,23 +63,25 @@ const (
 	frameKindWSClose
 	frameKindPing
 	frameKindPong
+	frameKindWorkerCtrl
 	frameKindError
 	frameKindClose
 )
 
 // Message is the top-level envelope exchanged on the tunnel WebSocket.
 type Message struct {
-	Kind      string         `json:"kind"`
-	Request   *HTTPRequest   `json:"request,omitempty"`
-	Response  *HTTPResponse  `json:"response,omitempty"`
-	ReqCancel *RequestCancel `json:"req_cancel,omitempty"`
-	BodyChunk *BodyChunk     `json:"body_chunk,omitempty"`
-	WSOpen    *WSOpen        `json:"ws_open,omitempty"`
-	WSOpenAck *WSOpenAck     `json:"ws_open_ack,omitempty"`
-	WSData    *WSData        `json:"ws_data,omitempty"`
-	WSClose   *WSClose       `json:"ws_close,omitempty"`
-	Stats     *Stats         `json:"stats,omitempty"`
-	Error     string         `json:"error,omitempty"`
+	Kind       string         `json:"kind"`
+	Request    *HTTPRequest   `json:"request,omitempty"`
+	Response   *HTTPResponse  `json:"response,omitempty"`
+	ReqCancel  *RequestCancel `json:"req_cancel,omitempty"`
+	BodyChunk  *BodyChunk     `json:"body_chunk,omitempty"`
+	WSOpen     *WSOpen        `json:"ws_open,omitempty"`
+	WSOpenAck  *WSOpenAck     `json:"ws_open_ack,omitempty"`
+	WSData     *WSData        `json:"ws_data,omitempty"`
+	WSClose    *WSClose       `json:"ws_close,omitempty"`
+	Stats      *Stats         `json:"stats,omitempty"`
+	WorkerCtrl *WorkerControl `json:"worker_ctrl,omitempty"`
+	Error      string         `json:"error,omitempty"`
 }
 
 // HTTPRequest represents an inbound public HTTP request forwarded to the client.
@@ -157,6 +160,10 @@ type Stats struct {
 	WAFBlocked int64 `json:"waf_blocked,omitempty"`
 }
 
+type WorkerControl struct {
+	Desired int `json:"desired,omitempty"`
+}
+
 type encodedFrame struct {
 	kind          byte
 	id            string
@@ -205,6 +212,10 @@ type pongMeta struct {
 
 type errorMeta struct {
 	Error string `json:"error,omitempty"`
+}
+
+type workerControlMeta struct {
+	Desired int `json:"desired,omitempty"`
 }
 
 // base64BufPool recycles byte slices used by [EncodeBody] so that hot-path
@@ -526,6 +537,15 @@ func encodeMessageFrame(msg Message) (encodedFrame, error) {
 			}
 		}
 		return newEncodedFrame(frameKindPong, "", 0, meta, nil)
+	case KindWorkerCtrl:
+		if msg.WorkerCtrl == nil {
+			return encodedFrame{}, errors.New("worker control payload is required")
+		}
+		meta, err := json.Marshal(workerControlMeta{Desired: msg.WorkerCtrl.Desired})
+		if err != nil {
+			return encodedFrame{}, err
+		}
+		return newEncodedFrame(frameKindWorkerCtrl, "", 0, meta, nil)
 	case KindError:
 		meta, err := json.Marshal(errorMeta{Error: msg.Error})
 		if err != nil {
@@ -692,6 +712,12 @@ func decodeFrameParts(frameKind byte, id string, wsMsgType int, meta, payload []
 			return Message{}, err
 		}
 		return Message{Kind: KindPong, Stats: pong.Stats}, nil
+	case frameKindWorkerCtrl:
+		var ctrl workerControlMeta
+		if err := decodeFrameMeta(meta, &ctrl); err != nil {
+			return Message{}, err
+		}
+		return Message{Kind: KindWorkerCtrl, WorkerCtrl: &WorkerControl{Desired: ctrl.Desired}}, nil
 	case frameKindError:
 		var errMeta errorMeta
 		if err := decodeFrameMeta(meta, &errMeta); err != nil {

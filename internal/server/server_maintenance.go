@@ -78,7 +78,6 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.expireStaleSessions()
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
-			s.routes.cleanup()
 			s.cleanupStaleWAFCounters()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
@@ -92,12 +91,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 func (s *Server) expireStaleSessions() {
 	now := time.Now()
 
-	s.hub.mu.RLock()
-	sessions := make([]*session, 0, len(s.hub.sessions))
-	for _, sess := range s.hub.sessions {
-		sessions = append(sessions, sess)
-	}
-	s.hub.mu.RUnlock()
+	sessions := s.liveRoutes.snapshotSessions()
 
 	for _, sess := range sessions {
 		lastSeen := sess.lastSeen()

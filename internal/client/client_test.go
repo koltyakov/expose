@@ -704,13 +704,16 @@ func TestCanUseH3Modes(t *testing.T) {
 
 	reg := registerResponse{
 		H3URL:        "https://example.com/v1/tunnels/connect-h3?token=abc",
-		Capabilities: []string{"h3_compat", "h3_multistream"},
+		Capabilities: []string{"h3_compat", "h3_multistream_v2", "h3_multistream"},
 	}
 	if !canUseH3Compat(reg) {
 		t.Fatal("expected h3 compatibility mode to be available")
 	}
 	if !canUseH3MultiStream(reg) {
 		t.Fatal("expected h3 multistream mode to be available")
+	}
+	if got := h3MultiStreamProtocol(reg); got != tunnelCapabilityH3MultistreamV2 {
+		t.Fatalf("expected multistream v2 preference, got %q", got)
 	}
 
 	reg.Capabilities = []string{"h3_compat"}

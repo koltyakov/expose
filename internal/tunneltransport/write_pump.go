@@ -132,6 +132,16 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 		target = p.high
 		wait = p.highTimeout
 	}
+
+	select {
+	case target <- req:
+		p.enqueueMu.RUnlock()
+		err := <-req.done.ch
+		releaseWriteCompletion(req.done)
+		return err
+	default:
+	}
+
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 

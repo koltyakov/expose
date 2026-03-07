@@ -55,8 +55,9 @@ func isNonRetriableSessionError(err error) bool {
 }
 
 const (
-	tunnelCapabilityH3CompatV1    = "h3_compat"
-	tunnelCapabilityH3Multistream = "h3_multistream"
+	tunnelCapabilityH3CompatV1      = "h3_compat"
+	tunnelCapabilityH3MultistreamV2 = "h3_multistream_v2"
+	tunnelCapabilityH3Multistream   = "h3_multistream"
 )
 
 func (c *Client) connectSessionTransport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
@@ -202,7 +203,12 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg regis
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
-	req.Header.Set("X-Expose-H3-Mode", "multistream")
+	protocol := h3MultiStreamProtocol(reg)
+	mode := "multistream"
+	if protocol == tunnelCapabilityH3MultistreamV2 {
+		mode = "multistream-v2"
+	}
+	req.Header.Set("X-Expose-H3-Mode", mode)
 	if err := stream.SendRequestHeader(req); err != nil {
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
@@ -241,11 +247,18 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg regis
 		return err
 	}
 
+	transport := tunneltransport.NewStreamTransport("quic", stream, closeFn)
+	writer := tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	if protocol == tunnelCapabilityH3MultistreamV2 {
+		transport = tunneltransport.NewStreamTransportV2("quic", stream, closeFn)
+		writer = tunneltransport.NewStreamWritePumpV2(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	}
+
 	return sessionTransportConn{
-		transport:      tunneltransport.NewStreamTransport("quic", stream, closeFn),
-		writer:         tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() }),
+		transport:      transport,
+		writer:         writer,
 		name:           "quic",
-		protocol:       tunnelCapabilityH3Multistream,
+		protocol:       protocol,
 		h3Conn:         quicConn,
 		h3Transport:    h3Transport,
 		h3ClientConn:   clientConn,
@@ -304,7 +317,15 @@ func canUseH3MultiStream(reg registerResponse) bool {
 	if len(reg.Capabilities) == 0 {
 		return false
 	}
-	return hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3Multistream)
+	return hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3MultistreamV2) ||
+		hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3Multistream)
+}
+
+func h3MultiStreamProtocol(reg registerResponse) string {
+	if hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3MultistreamV2) {
+		return tunnelCapabilityH3MultistreamV2
+	}
+	return tunnelCapabilityH3Multistream
 }
 
 func hasTunnelCapability(caps []string, want string) bool {

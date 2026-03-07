@@ -50,7 +50,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 
-	if _, err := s.sendRequestBodyToH3Stream(stream, reqID, r, requestHeaders); err != nil {
+	if _, err := s.sendRequestBodyToH3Stream(stream, reqID, r, requestHeaders, sess.usesH3StreamV2()); err != nil {
 		requeue = false
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -62,7 +62,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	msg, err := readH3StreamMessage(stream, s.cfg.RequestTimeout)
+	msg, err := readH3StreamMessage(stream, s.cfg.RequestTimeout, sess.usesH3StreamV2())
 	if err != nil || msg.Kind != tunnelproto.KindResponse || msg.Response == nil {
 		requeue = false
 		http.Error(w, "tunnel closed", http.StatusBadGateway)
@@ -89,7 +89,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(resp.Status)
 
 	if resp.Streamed {
-		if !writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout) {
+		if !writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2()) {
 			requeue = false
 			return
 		}
@@ -126,12 +126,12 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 			Headers: headers,
 		},
 	}
-	if err := writeH3StreamJSON(stream, openMsg); err != nil {
+	if err := writeH3StreamJSON(stream, openMsg, sess.usesH3StreamV2()); err != nil {
 		http.Error(w, "tunnel write failed", http.StatusBadGateway)
 		return
 	}
 
-	msg, err := readH3StreamMessage(stream, s.cfg.RequestTimeout)
+	msg, err := readH3StreamMessage(stream, s.cfg.RequestTimeout, sess.usesH3StreamV2())
 	if err != nil || msg.Kind != tunnelproto.KindWSOpenAck || msg.WSOpenAck == nil {
 		http.Error(w, "tunnel closed", http.StatusBadGateway)
 		return
@@ -152,7 +152,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 		_ = writeH3StreamJSON(stream, tunnelproto.Message{
 			Kind:    tunnelproto.KindWSClose,
 			WSClose: &tunnelproto.WSClose{ID: streamID, Code: websocket.CloseGoingAway, Text: "public upgrade failed"},
-		})
+		}, sess.usesH3StreamV2())
 		return
 	}
 	defer func() { _ = publicConn.Close() }()
@@ -162,12 +162,12 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	writeStreamJSON := func(msg tunnelproto.Message) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return writeH3StreamJSON(stream, msg)
+		return writeH3StreamJSON(stream, msg, sess.usesH3StreamV2())
 	}
 	writeWSData := func(payload []byte, msgType int) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return writeH3StreamWSData(stream, streamID, msgType, payload)
+		return writeH3StreamWSData(stream, streamID, msgType, payload, sess.usesH3StreamV2())
 	}
 
 	readDone := make(chan struct{})
@@ -198,7 +198,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	go func() {
 		defer close(writeDone)
 		for {
-			msg, err := readH3StreamMessage(stream, 0)
+			msg, err := readH3StreamMessage(stream, 0, sess.usesH3StreamV2())
 			if err != nil {
 				return
 			}
@@ -235,7 +235,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	}
 }
 
-func readH3StreamMessage(stream *http3.Stream, timeout time.Duration) (tunnelproto.Message, error) {
+func readH3StreamMessage(stream *http3.Stream, timeout time.Duration, useV2 bool) (tunnelproto.Message, error) {
 	var msg tunnelproto.Message
 	if stream == nil {
 		return msg, io.EOF
@@ -244,36 +244,51 @@ func readH3StreamMessage(stream *http3.Stream, timeout time.Duration) (tunnelpro
 		_ = stream.SetReadDeadline(time.Now().Add(timeout))
 		defer func() { _ = stream.SetReadDeadline(time.Time{}) }()
 	}
-	if err := tunnelproto.ReadStreamMessage(stream, minWSReadLimit*2, &msg); err != nil {
+	var err error
+	if useV2 {
+		err = tunnelproto.ReadStreamMessageV2(stream, minWSReadLimit*2, &msg)
+	} else {
+		err = tunnelproto.ReadStreamMessage(stream, minWSReadLimit*2, &msg)
+	}
+	if err != nil {
 		return tunnelproto.Message{}, err
 	}
 	return msg, nil
 }
 
-func writeH3StreamJSON(stream *http3.Stream, msg tunnelproto.Message) error {
+func writeH3StreamJSON(stream *http3.Stream, msg tunnelproto.Message, useV2 bool) error {
 	if stream == nil {
 		return io.EOF
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	defer func() { _ = stream.SetWriteDeadline(time.Time{}) }()
+	if useV2 {
+		return tunnelproto.WriteStreamJSONV2(stream, msg)
+	}
 	return tunnelproto.WriteStreamJSON(stream, msg)
 }
 
-func writeH3StreamWSData(stream *http3.Stream, streamID string, messageType int, payload []byte) error {
+func writeH3StreamWSData(stream *http3.Stream, streamID string, messageType int, payload []byte, useV2 bool) error {
 	if stream == nil {
 		return io.EOF
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	defer func() { _ = stream.SetWriteDeadline(time.Time{}) }()
+	if useV2 {
+		return tunnelproto.WriteStreamBinaryFrameV2(stream, tunnelproto.BinaryFrameWSData, streamID, messageType, payload)
+	}
 	return tunnelproto.WriteStreamBinaryFrame(stream, tunnelproto.BinaryFrameWSData, streamID, messageType, payload)
 }
 
-func writeH3StreamReqBody(stream *http3.Stream, reqID string, payload []byte) error {
+func writeH3StreamReqBody(stream *http3.Stream, reqID string, payload []byte, useV2 bool) error {
 	if stream == nil {
 		return io.EOF
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	defer func() { _ = stream.SetWriteDeadline(time.Time{}) }()
+	if useV2 {
+		return tunnelproto.WriteStreamBinaryFrameV2(stream, tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
+	}
 	return tunnelproto.WriteStreamBinaryFrame(stream, tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
 }
 
@@ -282,6 +297,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 	reqID string,
 	r *http.Request,
 	headers map[string][]string,
+	useV2 bool,
 ) (bool, error) {
 	requestTimeoutMs := s.requestTimeoutMillis()
 	if r.Body == nil || r.Body == http.NoBody {
@@ -295,7 +311,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 				Headers:   headers,
 				TimeoutMs: requestTimeoutMs,
 			},
-		})
+		}, useV2)
 	}
 	defer func() { _ = r.Body.Close() }()
 
@@ -322,7 +338,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 				Body:      append([]byte(nil), firstBuf[:n]...),
 				TimeoutMs: requestTimeoutMs,
 			},
-		})
+		}, useV2)
 	}
 	if readErr != nil {
 		return false, readErr
@@ -339,10 +355,10 @@ func (s *Server) sendRequestBodyToH3Stream(
 			Streamed:  true,
 			TimeoutMs: requestTimeoutMs,
 		},
-	}); err != nil {
+	}, useV2); err != nil {
 		return true, err
 	}
-	if err := writeH3StreamReqBody(stream, reqID, firstBuf[:n]); err != nil {
+	if err := writeH3StreamReqBody(stream, reqID, firstBuf[:n], useV2); err != nil {
 		return true, err
 	}
 
@@ -358,7 +374,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 	for {
 		cn, err := r.Body.Read(chunkBuf)
 		if cn > 0 {
-			if wErr := writeH3StreamReqBody(stream, reqID, chunkBuf[:cn]); wErr != nil {
+			if wErr := writeH3StreamReqBody(stream, reqID, chunkBuf[:cn], useV2); wErr != nil {
 				return true, wErr
 			}
 		}
@@ -372,7 +388,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 	return true, writeH3StreamJSON(stream, tunnelproto.Message{
 		Kind:      tunnelproto.KindReqBodyEnd,
 		BodyChunk: &tunnelproto.BodyChunk{ID: reqID},
-	})
+	}, useV2)
 }
 
 func writeH3StreamedResponseBody(
@@ -380,10 +396,11 @@ func writeH3StreamedResponseBody(
 	r *http.Request,
 	stream *http3.Stream,
 	chunkTimeout time.Duration,
+	useV2 bool,
 ) bool {
 	flusher, canFlush := w.(http.Flusher)
 	for {
-		msg, err := readH3StreamMessage(stream, chunkTimeout)
+		msg, err := readH3StreamMessage(stream, chunkTimeout, useV2)
 		if err != nil {
 			return false
 		}

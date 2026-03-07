@@ -113,6 +113,7 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 }
 
 func (s *Server) markTunnelDisconnectedNow(tunnelID string) {
+	s.activeTunnels.markDisconnected(tunnelID)
 	disconnectCtx, cancel := context.WithTimeout(context.Background(), disconnectTimeout)
 	err := s.store.SetTunnelDisconnected(disconnectCtx, tunnelID)
 	cancel()

@@ -238,7 +238,7 @@ func (c *Client) forwardAndSend(
 				ID:      req.ID,
 				Status:  resp.StatusCode,
 				Headers: respHeaders,
-				Body:    append([]byte(nil), firstBuf[:n]...),
+				Body:    firstBuf[:n],
 			},
 		})
 		c.logForwardResult(req, resp.StatusCode, started)

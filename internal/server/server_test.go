@@ -1177,7 +1177,7 @@ func TestHandlePublicAppliesPublicRateLimit(t *testing.T) {
 	}
 	sess := &session{
 		tunnelID: route.Tunnel.ID,
-		pending:  make(map[string]chan tunnelproto.Message),
+		pending:  make(map[string]*pendingRequest),
 	}
 
 	srv := &Server{
@@ -1238,7 +1238,7 @@ func TestHandlePublicRejectsTooLargeBody(t *testing.T) {
 	}
 	sess := &session{
 		tunnelID: route.Tunnel.ID,
-		pending:  make(map[string]chan tunnelproto.Message),
+		pending:  make(map[string]*pendingRequest),
 	}
 
 	srv := &Server{
@@ -1288,7 +1288,7 @@ func TestHandlePublicReturnsServiceUnavailableWhenTunnelPendingLimitReached(t *t
 
 	sess := &session{
 		tunnelID: route.Tunnel.ID,
-		pending:  make(map[string]chan tunnelproto.Message),
+		pending:  make(map[string]*pendingRequest),
 	}
 	sess.pendingCount.Store(1)
 
@@ -1368,7 +1368,7 @@ func TestSendRequestBodySmallPayloadSendsInline(t *testing.T) {
 		tunnelID: "test",
 		conn:     conn,
 		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
-		pending:  make(map[string]chan tunnelproto.Message),
+		pending:  make(map[string]*pendingRequest),
 	}
 	defer sess.writer.Close()
 
@@ -1427,7 +1427,7 @@ func TestSendRequestBodyLargePayloadStreams(t *testing.T) {
 		tunnelID: "test",
 		conn:     conn,
 		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
-		pending:  make(map[string]chan tunnelproto.Message),
+		pending:  make(map[string]*pendingRequest),
 	}
 	defer sess.writer.Close()
 
@@ -1534,7 +1534,7 @@ func TestSendRequestBodyStreamLimitExceededReturnsError(t *testing.T) {
 		tunnelID: "test",
 		conn:     conn,
 		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
-		pending:  make(map[string]chan tunnelproto.Message),
+		pending:  make(map[string]*pendingRequest),
 	}
 	defer sess.writer.Close()
 
@@ -1631,7 +1631,7 @@ func TestSendRequestBodyEmptyBody(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	sess := &session{tunnelID: "test", conn: conn, writer: tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize), pending: make(map[string]chan tunnelproto.Message)}
+	sess := &session{tunnelID: "test", conn: conn, writer: tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize), pending: make(map[string]*pendingRequest)}
 	defer sess.writer.Close()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	headers := map[string][]string{}
@@ -1678,24 +1678,22 @@ func TestAbortPendingRequestSendsCancel(t *testing.T) {
 		tunnelID: "t-1",
 		conn:     conn,
 		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
-		pending: map[string]chan tunnelproto.Message{
-			"req_1": make(chan tunnelproto.Message, 1),
+		pending: map[string]*pendingRequest{
+			"req_1": acquirePendingRequest(),
 		},
 	}
 	defer sess.writer.Close()
 	sess.pendingCount.Store(1)
 
-	respCh := sess.pending["req_1"]
+	respPending := sess.pending["req_1"]
 	s := &Server{}
-	s.abortPendingRequest(sess, "req_1", respCh)
+	defer releasePendingRequest(respPending)
+	s.abortPendingRequest(sess, "req_1")
 
 	select {
-	case _, ok := <-respCh:
-		if ok {
-			t.Fatal("expected pending response channel to be closed")
-		}
+	case <-respPending.doneCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("pending response channel was not closed")
+		t.Fatal("pending request was not aborted")
 	}
 
 	select {
@@ -1719,27 +1717,19 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
-	respCh := make(chan tunnelproto.Message, 8)
+	respCh := make(chan []byte, 8)
+	doneCh := make(chan struct{})
 
 	chunk1 := []byte("hello ")
 	chunk2 := []byte("world")
-	respCh <- tunnelproto.Message{
-		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", Data: chunk1},
-	}
-	respCh <- tunnelproto.Message{
-		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", Data: chunk2},
-	}
-	respCh <- tunnelproto.Message{
-		Kind:      tunnelproto.KindRespBodyEnd,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1"},
-	}
+	respCh <- chunk1
+	respCh <- chunk2
+	close(doneCh)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	if ok := s.writeStreamedResponseBody(w, req, respCh, 5*time.Second); !ok {
+	if ok := s.writeStreamedResponseBody(w, req, respCh, doneCh, 5*time.Second); !ok {
 		t.Fatal("expected streamed response to complete")
 	}
 
@@ -1752,18 +1742,16 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 100 * time.Millisecond}}
-	respCh := make(chan tunnelproto.Message, 8)
+	respCh := make(chan []byte, 8)
+	doneCh := make(chan struct{})
 
-	respCh <- tunnelproto.Message{
-		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", Data: []byte("partial")},
-	}
+	respCh <- []byte("partial")
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 	start := time.Now()
-	if ok := s.writeStreamedResponseBody(w, req, respCh, 100*time.Millisecond); ok {
+	if ok := s.writeStreamedResponseBody(w, req, respCh, doneCh, 100*time.Millisecond); ok {
 		t.Fatal("expected streamed response to time out")
 	}
 	elapsed := time.Since(start)
@@ -1777,25 +1765,25 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 }
 
 func TestSessionStreamSend(t *testing.T) {
-	ch := make(chan tunnelproto.Message, 1)
-	sess := &session{pending: make(map[string]chan tunnelproto.Message)}
-	msg := tunnelproto.Message{Kind: tunnelproto.KindRespBody}
+	ch := make(chan []byte, 1)
+	sess := &session{pending: make(map[string]*pendingRequest)}
+	msg := []byte("hello")
 
 	if ok := sess.streamSend(ch, msg, 0); !ok {
 		t.Fatal("expected streamSend to succeed for buffered channel")
 	}
 	got := <-ch
-	if got.Kind != tunnelproto.KindRespBody {
-		t.Fatalf("expected resp_body message, got %q", got.Kind)
+	if string(got) != "hello" {
+		t.Fatalf("expected body payload, got %q", string(got))
 	}
 }
 
 func TestSessionStreamSendTimeout(t *testing.T) {
-	ch := make(chan tunnelproto.Message)
-	sess := &session{pending: make(map[string]chan tunnelproto.Message)}
+	ch := make(chan []byte)
+	sess := &session{pending: make(map[string]*pendingRequest)}
 
 	start := time.Now()
-	ok := sess.streamSend(ch, tunnelproto.Message{Kind: tunnelproto.KindRespBody}, 15*time.Millisecond)
+	ok := sess.streamSend(ch, []byte("hello"), 15*time.Millisecond)
 	if ok {
 		t.Fatal("expected streamSend to fail on timeout")
 	}
@@ -1805,24 +1793,25 @@ func TestSessionStreamSendTimeout(t *testing.T) {
 }
 
 func TestSessionPendingLoad(t *testing.T) {
-	sess := &session{pending: make(map[string]chan tunnelproto.Message)}
+	sess := &session{pending: make(map[string]*pendingRequest)}
 
-	ch := make(chan tunnelproto.Message, 1)
-	sess.pendingStore("req_1", ch)
+	req := acquirePendingRequest()
+	defer releasePendingRequest(req)
+	sess.pendingStore("req_1", req)
 
 	got, ok := sess.pendingLoad("req_1")
-	if !ok || got != ch {
-		t.Fatal("expected pendingLoad to find the channel")
+	if !ok || got != req {
+		t.Fatal("expected pendingLoad to find the request")
 	}
 
 	got2, ok2 := sess.pendingLoad("req_1")
-	if !ok2 || got2 != ch {
-		t.Fatal("expected channel to remain after pendingLoad")
+	if !ok2 || got2 != req {
+		t.Fatal("expected request to remain after pendingLoad")
 	}
 
 	got3, ok3 := sess.pendingLoadAndDelete("req_1")
-	if !ok3 || got3 != ch {
-		t.Fatal("expected pendingLoadAndDelete to find the channel")
+	if !ok3 || got3 != req {
+		t.Fatal("expected pendingLoadAndDelete to find the request")
 	}
 
 	_, ok4 := sess.pendingLoad("req_1")

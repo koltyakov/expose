@@ -25,11 +25,17 @@ type sessionActivateOptions struct {
 	transportName string
 	h3Pool        *h3StreamPool
 	h3AuthToken   string
+	h3StreamV2    bool
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tunnelID, ok := s.consumeConnectToken(w, r)
 	if !ok {
+		return
+	}
+	snap, err := s.ensureLiveRouteForTunnel(r.Context(), tunnelID)
+	if err != nil {
+		http.Error(w, "invalid tunnel", http.StatusUnauthorized)
 		return
 	}
 
@@ -41,7 +47,23 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	transport := tunneltransport.NewWebSocketTransport(conn)
 	writer := tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize)
 
-	if err := s.store.TrySetTunnelConnected(r.Context(), tunnelID); err != nil {
+	limit, err := s.activeTunnels.limitFor(r.Context(), s.store, snap.route.Domain.APIKeyID)
+	if err != nil {
+		_ = conn.Close()
+		s.log.Error("failed to resolve tunnel limit", "tunnel_id", tunnelID, "err", err)
+		return
+	}
+	if !s.activeTunnels.canConnect(snap.route.Domain.APIKeyID, tunnelID, limit) {
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, domain.ErrTunnelLimitReached.Error()),
+			time.Now().Add(5*time.Second),
+		)
+		_ = conn.Close()
+		s.log.Warn("refused tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
+		return
+	}
+	if err := s.store.SetTunnelConnected(r.Context(), tunnelID); err != nil {
 		if errors.Is(err, domain.ErrTunnelLimitReached) {
 			_ = conn.WriteControl(
 				websocket.CloseMessage,
@@ -56,6 +78,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("failed to mark tunnel connected", "tunnel_id", tunnelID, "err", err)
 		return
 	}
+	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
 	s.activateSession(tunnelID, conn, transport, writer, sessionActivateOptions{})
 }
 
@@ -68,12 +91,28 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	snap, err := s.ensureLiveRouteForTunnel(r.Context(), tunnelID)
+	if err != nil {
+		http.Error(w, "invalid tunnel", http.StatusUnauthorized)
+		return
+	}
 	httpStreamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
 		http.Error(w, "http3 stream takeover unavailable", http.StatusInternalServerError)
 		return
 	}
-	if err := s.store.TrySetTunnelConnected(r.Context(), tunnelID); err != nil {
+	limit, err := s.activeTunnels.limitFor(r.Context(), s.store, snap.route.Domain.APIKeyID)
+	if err != nil {
+		s.log.Error("failed to resolve tunnel limit", "tunnel_id", tunnelID, "err", err)
+		http.Error(w, "failed to resolve tunnel limit", http.StatusInternalServerError)
+		return
+	}
+	if !s.activeTunnels.canConnect(snap.route.Domain.APIKeyID, tunnelID, limit) {
+		http.Error(w, domain.ErrTunnelLimitReached.Error(), http.StatusTooManyRequests)
+		s.log.Warn("refused http3 tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
+		return
+	}
+	if err := s.store.SetTunnelConnected(r.Context(), tunnelID); err != nil {
 		if errors.Is(err, domain.ErrTunnelLimitReached) {
 			http.Error(w, domain.ErrTunnelLimitReached.Error(), http.StatusTooManyRequests)
 			s.log.Warn("refused http3 tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
@@ -83,10 +122,12 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to mark tunnel connected", http.StatusInternalServerError)
 		return
 	}
+	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
 
 	wantMultiStream := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Expose-H3-Mode")), "multistream")
+	wantMultiStreamV2 := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Expose-H3-Mode")), "multistream-v2")
 	var opts sessionActivateOptions
-	if wantMultiStream {
+	if wantMultiStream || wantMultiStreamV2 {
 		sessionToken, err := newH3SessionToken()
 		if err != nil {
 			http.Error(w, "failed to establish h3 session", http.StatusInternalServerError)
@@ -95,6 +136,10 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(h3SessionHeader, sessionToken)
 		opts.h3Pool = newH3StreamPool(h3WorkerQueueDepth)
 		opts.h3AuthToken = sessionToken
+		if wantMultiStreamV2 {
+			opts.transportName = "quic_v2"
+			opts.h3StreamV2 = true
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	stream := httpStreamer.HTTPStream()
@@ -114,10 +159,14 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		return err
 	}
 	transport := tunneltransport.NewStreamTransport("quic", stream, closeFn)
-	writer := tunneltransport.NewStreamWritePump(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() {
-		_ = closeFn()
-	})
-	opts.transportName = "quic"
+	writer := tunneltransport.NewStreamWritePump(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	if opts.h3StreamV2 {
+		transport = tunneltransport.NewStreamTransportV2("quic", stream, closeFn)
+		writer = tunneltransport.NewStreamWritePumpV2(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	}
+	if !opts.h3StreamV2 {
+		opts.transportName = "quic"
+	}
 	s.activateSession(tunnelID, nil, transport, writer, opts)
 }
 
@@ -167,8 +216,6 @@ func (s *Server) activateSession(
 	writer *tunneltransport.WritePump,
 	opts sessionActivateOptions,
 ) {
-	s.routes.deleteByTunnelID(tunnelID)
-
 	transportName := tunneltransport.NameOf(transport)
 	if strings.TrimSpace(opts.transportName) != "" {
 		transportName = strings.TrimSpace(opts.transportName)
@@ -179,9 +226,10 @@ func (s *Server) activateSession(
 		transport:     transport,
 		writer:        writer,
 		transportName: transportName,
+		h3StreamV2:    opts.h3StreamV2,
 		h3StreamPool:  opts.h3Pool,
 		h3AuthToken:   strings.TrimSpace(opts.h3AuthToken),
-		pending:       make(map[string]chan tunnelproto.Message),
+		pending:       make(map[string]*pendingRequest),
 		wsPending:     make(map[string]chan tunnelproto.Message),
 	}
 	if sess.h3AuthToken != "" {
@@ -190,6 +238,7 @@ func (s *Server) activateSession(
 	wsReadLimit := max(s.cfg.MaxBodyBytes*2, minWSReadLimit)
 	sess.transport.SetReadLimit(wsReadLimit)
 	sess.touch(time.Now())
+	s.liveRoutes.attachSession(tunnelID, sess)
 	prev := s.replaceSession(tunnelID, sess)
 	if prev != nil && prev != sess {
 		s.log.Warn("replacing existing tunnel session", "tunnel_id", tunnelID, "transport", prev.transportName)
@@ -227,7 +276,8 @@ func (s *Server) readLoop(sess *session) {
 		sess.closePending()
 		sess.closeWSPending()
 		if s.removeSessionIfCurrent(sess) {
-			s.routes.deleteByTunnelID(sess.tunnelID)
+			s.liveRoutes.clearSession(sess.tunnelID, sess)
+			s.activeTunnels.markDisconnected(sess.tunnelID)
 			s.queueTunnelDisconnect(sess.tunnelID)
 			s.log.Info("tunnel disconnected", "tunnel_id", sess.tunnelID, "transport", sess.transportName)
 		} else {
@@ -255,35 +305,32 @@ func (s *Server) readLoop(sess *session) {
 				continue
 			}
 			if msg.Response.Streamed {
-				// Streamed: send header message but keep pending entry open
-				// for subsequent body chunks.
-				if ch, ok := sess.pendingLoad(msg.Response.ID); ok {
-					select {
-					case ch <- msg:
-					default:
-					}
+				if pending, ok := sess.pendingLoad(msg.Response.ID); ok {
+					pending.deliverHeader(msg.Response)
 				}
 			} else {
-				if v, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
+				if pending, ok := sess.pendingLoadAndDelete(msg.Response.ID); ok {
 					sess.releasePending()
-					select {
-					case v <- msg:
-					default:
-					}
-					close(v)
+					pending.deliverHeader(msg.Response)
+					pending.finish()
 				}
 			}
 		case tunnelproto.KindRespBody:
 			if msg.BodyChunk == nil {
 				continue
 			}
-			if ch, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
-				if !sess.streamSend(ch, msg, streamBodySendTimeout) {
+			if pending, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
+				bodyCh := pending.ensureBodyCh()
+				payload, err := msg.BodyChunk.Payload()
+				if err != nil {
+					continue
+				}
+				if !sess.streamSend(bodyCh, payload, streamBodySendTimeout) {
 					s.log.Warn("stream consumer too slow, aborting",
 						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID)
-					if sess.pendingDelete(msg.BodyChunk.ID) {
+					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {
 						sess.releasePending()
-						close(ch)
+						pending.abort()
 						_ = sess.cancelRequest(msg.BodyChunk.ID)
 					}
 				}
@@ -292,13 +339,9 @@ func (s *Server) readLoop(sess *session) {
 			if msg.BodyChunk == nil {
 				continue
 			}
-			if v, ok := sess.pendingLoadAndDelete(msg.BodyChunk.ID); ok {
+			if pending, ok := sess.pendingLoadAndDelete(msg.BodyChunk.ID); ok {
 				sess.releasePending()
-				select {
-				case v <- msg:
-				default:
-				}
-				close(v)
+				pending.finish()
 			}
 		case tunnelproto.KindWSOpenAck:
 			if msg.WSOpenAck == nil {
@@ -400,45 +443,45 @@ func (s *session) lastSeen() time.Time {
 
 func (s *session) closePending() {
 	s.pendingMu.Lock()
-	for k, ch := range s.pending {
+	for k, pending := range s.pending {
 		delete(s.pending, k)
 		s.pendingCount.Add(-1)
-		close(ch)
+		pending.abort()
 	}
 	s.pendingMu.Unlock()
 }
 
-func (s *session) pendingStore(id string, ch chan tunnelproto.Message) {
+func (s *session) pendingStore(id string, req *pendingRequest) {
 	s.pendingMu.Lock()
-	s.pending[id] = ch
+	s.pending[id] = req
 	s.pendingMu.Unlock()
 }
 
-func (s *session) pendingLoad(id string) (chan tunnelproto.Message, bool) {
+func (s *session) pendingLoad(id string) (*pendingRequest, bool) {
 	s.pendingMu.RLock()
-	ch, ok := s.pending[id]
+	req, ok := s.pending[id]
 	s.pendingMu.RUnlock()
-	return ch, ok
+	return req, ok
 }
 
-func (s *session) pendingLoadAndDelete(id string) (chan tunnelproto.Message, bool) {
+func (s *session) pendingLoadAndDelete(id string) (*pendingRequest, bool) {
 	s.pendingMu.Lock()
-	ch, ok := s.pending[id]
+	req, ok := s.pending[id]
 	if ok {
 		delete(s.pending, id)
 	}
 	s.pendingMu.Unlock()
-	return ch, ok
+	return req, ok
 }
 
-func (s *session) pendingDelete(id string) bool {
+func (s *session) pendingDelete(id string) (*pendingRequest, bool) {
 	s.pendingMu.Lock()
-	_, ok := s.pending[id]
+	req, ok := s.pending[id]
 	if ok {
 		delete(s.pending, id)
 	}
 	s.pendingMu.Unlock()
-	return ok
+	return req, ok
 }
 
 func (s *session) wsPendingStore(id string, ch chan tunnelproto.Message) {
@@ -468,6 +511,13 @@ func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Du
 
 	if wait <= 0 {
 		return false
+	}
+	if wait > 0 {
+		select {
+		case ch <- msg:
+			return true
+		default:
+		}
 	}
 
 	timer := time.NewTimer(wait)
@@ -538,20 +588,19 @@ func (s *Server) runWAFAuditWorker(ctx context.Context) {
 func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent) {
 	tunnelID := "unknown"
 	domainName := audit.event.Host
-	route, found, cached := s.routes.lookup(audit.event.Host)
-	ok := cached && found
-	if !cached && s.store != nil {
+	snap, ok := s.liveRoutes.lookupHost(audit.event.Host)
+	if !ok && s.store != nil {
 		lookupCtx, cancel := context.WithTimeout(parentCtx, wafAuditLookupTimeout)
-		r, err := s.store.FindRouteByHost(lookupCtx, audit.event.Host)
+		next, err := s.liveRoutes.upsertFromStore(lookupCtx, s.store, audit.event.Host)
 		cancel()
 		if err == nil {
-			route = r
+			snap = next
 			ok = true
 		}
 	}
 	if ok {
-		tunnelID = route.Tunnel.ID
-		domainName = route.Domain.Hostname
+		tunnelID = snap.route.Tunnel.ID
+		domainName = snap.route.Domain.Hostname
 	}
 
 	if s.log == nil {
@@ -572,14 +621,7 @@ func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent
 // wafBlocksForTunnel returns the total number of WAF-blocked requests for
 // all hostnames associated with the given tunnel.
 func (s *Server) wafBlocksForTunnel(tunnelID string) int64 {
-	s.routes.mu.RLock()
-	hosts := s.routes.hostsByTunnel[tunnelID]
-	// Copy the set while holding the lock.
-	hostnames := make([]string, 0, len(hosts))
-	for h := range hosts {
-		hostnames = append(hostnames, h)
-	}
-	s.routes.mu.RUnlock()
+	hostnames := s.liveRoutes.hostsForTunnel(tunnelID)
 
 	var total int64
 	for _, h := range hostnames {
@@ -624,4 +666,11 @@ func (s *Server) removeSessionIfCurrent(sess *session) bool {
 	delete(s.hub.sessions, sess.tunnelID)
 	s.hub.mu.Unlock()
 	return true
+}
+
+func (s *Server) ensureLiveRouteForTunnel(ctx context.Context, tunnelID string) (liveRouteSnapshot, error) {
+	if snap, ok := s.liveRoutes.lookupTunnel(tunnelID); ok {
+		return snap, nil
+	}
+	return s.liveRoutes.upsertTunnelFromStore(ctx, s.store, tunnelID)
 }

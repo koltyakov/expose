@@ -31,10 +31,19 @@ func newSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL,
 	if err != nil {
 		return nil, err
 	}
-	if conn.protocol == tunnelCapabilityH3Multistream {
+	if isH3MultiStreamProtocol(conn.protocol) {
 		return newClientH3MultiStreamRuntime(c, parentCtx, localBase, conn)
 	}
 	return newClientSessionRuntimeFromConn(c, parentCtx, localBase, conn)
+}
+
+func isH3MultiStreamProtocol(protocol string) bool {
+	switch strings.TrimSpace(protocol) {
+	case tunnelCapabilityH3Multistream, tunnelCapabilityH3MultistreamV2:
+		return true
+	default:
+		return false
+	}
 }
 
 type clientH3MultiStreamRuntime struct {
@@ -107,6 +116,7 @@ func newClientH3MultiStreamRuntime(
 	}
 	rt.startKeepaliveLoop()
 	rt.startControlReadLoop()
+	rt.h3Workers.request(rt.initialWorkerCount())
 	return rt, nil
 }
 
@@ -273,6 +283,14 @@ func (rt *clientH3MultiStreamRuntime) maxWorkers() int {
 	return workers
 }
 
+func (rt *clientH3MultiStreamRuntime) initialWorkerCount() int {
+	workers := rt.maxWorkers()
+	if workers < h3WorkerOpenCountFloor {
+		return workers
+	}
+	return h3WorkerOpenCountFloor
+}
+
 func (rt *clientH3MultiStreamRuntime) openWorker() {
 	rt.workerWG.Add(1)
 	go func() {
@@ -347,7 +365,10 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
 		msg, err := readH3RequestStreamMessage(stream, h3WorkerIdleTTL, rt.useStreamV2)
 		if err != nil {
 			if isTimeoutError(err) {
-				return nil
+				// Keep idle workers open. The server retains ready workers in its
+				// pool, so closing here would leave a stale entry that may not be
+				// discovered until the next request write fails.
+				continue
 			}
 			if errors.Is(err, io.EOF) {
 				return nil

@@ -742,6 +742,60 @@ func TestH3WorkerURL(t *testing.T) {
 	}
 }
 
+func TestClientH3MultiStreamRuntimeInitialWorkerCount(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		maxOpen int
+		want    int
+	}{
+		{name: "below floor", maxOpen: 1, want: 1},
+		{name: "at floor", maxOpen: 2, want: 2},
+		{name: "above floor", maxOpen: 8, want: 2},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rt := &clientH3MultiStreamRuntime{
+				client: &Client{cfg: config.ClientConfig{MaxConcurrentForwards: tc.maxOpen}},
+			}
+			if got := rt.initialWorkerCount(); got != tc.want {
+				t.Fatalf("initialWorkerCount() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsH3MultiStreamProtocol(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		protocol string
+		want     bool
+	}{
+		{name: "legacy multistream", protocol: tunnelCapabilityH3Multistream, want: true},
+		{name: "v2 multistream", protocol: tunnelCapabilityH3MultistreamV2, want: true},
+		{name: "compat", protocol: tunnelCapabilityH3CompatV1, want: false},
+		{name: "ws", protocol: "ws_v1", want: false},
+		{name: "blank", protocol: "", want: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isH3MultiStreamProtocol(tc.protocol); got != tc.want {
+				t.Fatalf("isH3MultiStreamProtocol(%q) = %v, want %v", tc.protocol, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsNonReleaseVersion(t *testing.T) {
 	t.Parallel()
 

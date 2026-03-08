@@ -107,14 +107,15 @@ type Display struct {
 	noticeLevel string // "warn" or "info"
 
 	// session timing
-	sessionStart        time.Time     // when the first successful connection happened
-	onlineSince         time.Time     // when the current logical online streak began
-	lastReconnect       time.Time     // when the most recent reconnection happened (zero if none)
-	statusChangedAt     time.Time     // when the current status was set
-	pendingDisconnectAt time.Time     // when the current reconnecting period started
-	sessionDowntime     time.Duration // accumulated downtime that exceeded the debounce threshold
-	sessionDisconnects  int           // counted reconnects that exceeded the debounce threshold
-	showSessionDetails  bool
+	sessionStart         time.Time     // when the first successful connection happened
+	onlineSince          time.Time     // when the current logical online streak began
+	lastReconnect        time.Time     // when the most recent reconnection happened (zero if none)
+	statusChangedAt      time.Time     // when the current status was set
+	pendingDisconnectAt  time.Time     // when the current reconnecting period started
+	sessionDowntime      time.Duration // accumulated downtime that exceeded the debounce threshold
+	sessionDisconnects   int           // counted reconnects that exceeded the debounce threshold
+	showSessionDetails   bool
+	sessionDetailsPinned bool
 
 	// latency from most recent ping/pong round-trip
 	latency time.Duration

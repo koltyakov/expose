@@ -39,6 +39,7 @@ const (
 	upMaxDisplayReqs      = 10
 	upActiveClientWindow  = 60 * time.Second
 	upWSCloseDebounce     = 500 * time.Millisecond
+	upMicroDisconnectMax  = 5 * time.Second
 	upLocalHealthCacheTTL = 2 * time.Second
 	upLocalHealthTimeout  = 200 * time.Millisecond
 	upLatencySampleMax    = 1024
@@ -74,6 +75,12 @@ type upDashboard struct {
 	wsDebounceGen   uint64
 	statusText      string
 	statusChangedAt time.Time
+	noticeText      string
+	noticeLevel     string
+
+	pendingDisconnectAt time.Time
+	sessionDowntime     time.Duration
+	sessionDisconnects  int
 
 	stopCh  chan struct{}
 	doneCh  chan struct{}
@@ -231,6 +238,7 @@ func (d *upDashboard) SetGroupStatus(subdomain, status, msg string) {
 		g.LastMessage = strings.TrimSpace(msg)
 	}
 	g.LastUpdatedAt = d.now()
+	d.syncAggregateSessionStateLocked(g.LastUpdatedAt)
 	d.redrawLocked()
 }
 
@@ -255,6 +263,7 @@ func (d *upDashboard) SetGroupStopped(subdomain string, err error) {
 		})
 	}
 	g.LastUpdatedAt = d.now()
+	d.syncAggregateSessionStateLocked(g.LastUpdatedAt)
 	d.redrawLocked()
 }
 
@@ -284,10 +293,14 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 		g.Status = "reconnecting"
 		g.LastMessage = msg
 	case "tunnel register failed", "tunnel register failed while waiting for TLS certificate provisioning":
-		g.Status = "connecting"
+		if g.Status != "reconnecting" {
+			g.Status = "connecting"
+		}
 		g.LastMessage = msg
 	case "server TLS certificate provisioning in progress; retrying":
-		g.Status = "waiting-tls"
+		if g.Status != "reconnecting" {
+			g.Status = "waiting-tls"
+		}
 		g.LastMessage = "waiting for TLS certificate"
 	case "forwarded request":
 		g.Requests++
@@ -359,13 +372,18 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 		msg != "waf stats" &&
 		msg != "forwarded websocket opened" &&
 		msg != "forwarded websocket closed" {
+		summary := summarizeDashboardEvent(msg, attrMap)
 		d.appendEventLocked(upDashboardEvent{
 			At:        now,
 			Subdomain: subdomain,
 			Level:     dashboardLevelLabel(level),
-			Message:   summarizeDashboardEvent(msg, attrMap),
+			Message:   summary,
 		})
+		if summary != "" {
+			d.setNoticeLocked(dashboardLevelLabel(level), summary)
+		}
 	}
+	d.syncAggregateSessionStateLocked(now)
 	d.redrawLocked()
 }
 
@@ -426,8 +444,53 @@ func (d *upDashboard) appendLatencySampleLocked(v time.Duration) {
 	}
 }
 
+func (d *upDashboard) syncAggregateSessionStateLocked(now time.Time) {
+	status := d.aggregateStatusLocked()
+	prevStatus := d.statusText
+	if prevStatus == "reconnecting" && status != "reconnecting" {
+		d.finalizePendingDisconnectLocked(now)
+	}
+	if prevStatus != "reconnecting" && status == "reconnecting" {
+		d.pendingDisconnectAt = now
+	}
+	if status == "" {
+		d.statusText = ""
+		d.statusChangedAt = time.Time{}
+		d.pendingDisconnectAt = time.Time{}
+		return
+	}
+	if prevStatus != status || d.statusChangedAt.IsZero() {
+		d.statusChangedAt = now
+	}
+	d.statusText = status
+	if status == "online" {
+		d.noticeText = ""
+		d.noticeLevel = ""
+	}
+}
+
+func (d *upDashboard) finalizePendingDisconnectLocked(now time.Time) {
+	if d.pendingDisconnectAt.IsZero() {
+		return
+	}
+	downtime := now.Sub(d.pendingDisconnectAt)
+	if downtime >= upMicroDisconnectMax {
+		d.sessionDowntime += downtime
+		d.sessionDisconnects++
+	}
+	d.pendingDisconnectAt = time.Time{}
+}
+
+func (d *upDashboard) setNoticeLocked(level, msg string) {
+	msg = strings.TrimSpace(msg)
+	level = strings.ToLower(strings.TrimSpace(level))
+	d.noticeText = msg
+	d.noticeLevel = level
+}
+
 func (d *upDashboard) redrawLocked() {
 	var b strings.Builder
+	renderNow := d.now()
 	if d.color {
 		b.WriteString(upANSIHome)
 		b.WriteString(upANSIClearDown)
@@ -453,13 +516,9 @@ func (d *upDashboard) redrawLocked() {
 	placeholder := d.styled(upANSIDim, "--")
 	trafficSnapshot := d.aggregateTrafficSnapshotLocked()
 	tunnelIDs := d.tunnelIDsLocked()
-	status := d.aggregateStatusLocked()
+	d.syncAggregateSessionStateLocked(renderNow)
+	status := d.statusText
 	if status != "" {
-		now := d.now()
-		if d.statusText != status || d.statusChangedAt.IsZero() {
-			d.statusText = status
-			d.statusChangedAt = now
-		}
 		statusColor := upANSIGreen
 		if status != "online" {
 			statusColor = upANSIYellow
@@ -467,20 +526,24 @@ func (d *upDashboard) redrawLocked() {
 		statusValue := d.styled(statusColor, status)
 		if !d.statusChangedAt.IsZero() {
 			statusValue += d.styled(upANSIDim, " for ")
-			statusValue += upFormatHeaderUptime(now.Sub(d.statusChangedAt))
+			statusValue += upFormatHeaderUptime(renderNow.Sub(d.statusChangedAt))
 		}
 		if tunnelIDs != "" {
 			statusValue += d.styled(upANSIDim, " (ID: "+tunnelIDs+")")
 		}
 		d.writeField(&b, "Session", statusValue)
 	} else {
-		d.statusText = ""
-		d.statusChangedAt = time.Time{}
 		statusValue := placeholder
 		if tunnelIDs != "" {
 			statusValue += d.styled(upANSIDim, " (ID: "+tunnelIDs+")")
 		}
 		d.writeField(&b, "Session", statusValue)
+	}
+	if details := d.sessionStatsDetailLocked(renderNow); details != "" {
+		d.writeFieldContinuation(&b, details)
+	}
+	if d.noticeText != "" && status == "reconnecting" {
+		d.writeField(&b, "", d.noticeDisplayTextLocked())
 	}
 
 	serverVersion := d.serverVersionDisplayLocked()
@@ -525,6 +588,9 @@ func (d *upDashboard) redrawLocked() {
 			}
 			d.writeFieldContinuation(&b, line)
 		}
+	}
+	if d.noticeText != "" && status != "reconnecting" {
+		d.writeField(&b, "", d.noticeDisplayTextLocked())
 	}
 
 	wsCount := len(d.wsConns)
@@ -1199,11 +1265,119 @@ func upFormatHeaderUptime(d time.Duration) string {
 	return strings.Join(parts, ", ")
 }
 
+func (d *upDashboard) sessionStatsDetailLocked(now time.Time) string {
+	if d.startedAt.IsZero() || d.statusText != "reconnecting" {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if downtime := d.sessionDisplayedDowntimeLocked(now); downtime > 0 {
+		parts = append(parts, "downtime "+displayFormatDowntime(downtime))
+	}
+	parts = append(parts, fmt.Sprintf("%.1f%% uptime", d.sessionUptimePercentLocked(now)))
+	if disconnects := d.sessionDisconnectCountLocked(now); disconnects > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", disconnects, pluralizeUpUnit(disconnects, "disconnect")))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (d *upDashboard) sessionUptimePercentLocked(now time.Time) float64 {
+	if d.startedAt.IsZero() {
+		return 0
+	}
+	elapsed := now.Sub(d.startedAt)
+	if elapsed <= 0 {
+		return 100
+	}
+	downtime := d.sessionEffectiveDowntimeLocked(now)
+	if downtime < 0 {
+		downtime = 0
+	}
+	if downtime > elapsed {
+		downtime = elapsed
+	}
+	uptime := elapsed - downtime
+	pct := float64(uptime) / float64(elapsed) * 100
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+func (d *upDashboard) sessionDisconnectCountLocked(now time.Time) int {
+	count := d.sessionDisconnects
+	if d.statusText == "reconnecting" && !d.pendingDisconnectAt.IsZero() && now.Sub(d.pendingDisconnectAt) >= upMicroDisconnectMax {
+		count++
+	}
+	return count
+}
+
+func (d *upDashboard) sessionEffectiveDowntimeLocked(now time.Time) time.Duration {
+	downtime := d.sessionDowntime
+	if d.statusText == "reconnecting" && !d.pendingDisconnectAt.IsZero() && now.Sub(d.pendingDisconnectAt) >= upMicroDisconnectMax {
+		downtime += now.Sub(d.pendingDisconnectAt)
+	}
+	return downtime
+}
+
+func (d *upDashboard) sessionCurrentDowntimeLocked(now time.Time) time.Duration {
+	if d.statusText != "reconnecting" || d.pendingDisconnectAt.IsZero() {
+		return 0
+	}
+	downtime := now.Sub(d.pendingDisconnectAt)
+	if downtime < 0 {
+		return 0
+	}
+	return downtime
+}
+
+func (d *upDashboard) sessionDisplayedDowntimeLocked(now time.Time) time.Duration {
+	return d.sessionDowntime + d.sessionCurrentDowntimeLocked(now)
+}
+
+func (d *upDashboard) noticeDisplayTextLocked() string {
+	switch d.noticeLevel {
+	case "warn":
+		return d.styled(upANSIYellow, d.noticeText)
+	case "info":
+		return d.styled(upANSICyan, d.noticeText)
+	case "error":
+		return d.styled(upANSIRed, d.noticeText)
+	default:
+		return d.noticeText
+	}
+}
+
 func pluralizeUpUnit(n int, singular string) string {
 	if n == 1 {
 		return singular
 	}
 	return singular + "s"
+}
+
+func displayFormatDowntime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Truncate(time.Second)
+	seconds := int(d.Seconds())
+	if seconds < 60 {
+		return fmt.Sprintf("%d %s", seconds, pluralizeUpUnit(seconds, "second"))
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%d %s", minutes, pluralizeUpUnit(minutes, "minute"))
+	}
+	hours := minutes / 60
+	minutes = minutes % 60
+	if minutes == 0 {
+		return fmt.Sprintf("%d %s", hours, pluralizeUpUnit(hours, "hour"))
+	}
+	return fmt.Sprintf("%d %s, %d %s",
+		hours, pluralizeUpUnit(hours, "hour"),
+		minutes, pluralizeUpUnit(minutes, "minute"))
 }
 
 func dashboardFormatRequestDuration(raw string) string {

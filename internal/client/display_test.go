@@ -367,11 +367,24 @@ func TestDisplayLogRequestStatusColors(t *testing.T) {
 
 func TestDisplayReconnecting(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, time.March, 8, 13, 7, 35, 0, time.FixedZone("CDT", -5*60*60))
 	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
 	d.ShowReconnecting("connection lost")
+	now = now.Add(3 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
 	out := buf.String()
 	if !strings.Contains(out, "reconnecting") {
 		t.Fatal("expected reconnecting status")
+	}
+	if !strings.Contains(out, "downtime 3 seconds") {
+		t.Fatalf("expected reconnecting details with downtime, got: %s", out)
 	}
 }
 
@@ -394,9 +407,6 @@ func TestDisplayWarningAndInfo(t *testing.T) {
 	d, buf := newTestDisplay(false)
 	d.ShowWarning("something went wrong")
 	out := buf.String()
-	if !strings.Contains(out, "Notice") {
-		t.Fatal("expected Notice field")
-	}
 	if !strings.Contains(out, "something went wrong") {
 		t.Fatal("expected warning message")
 	}
@@ -407,9 +417,6 @@ func TestDisplayWarningAndInfo(t *testing.T) {
 	buf.Reset()
 	d.ShowInfo("just letting you know")
 	out = buf.String()
-	if !strings.Contains(out, "Notice") {
-		t.Fatal("expected Notice field")
-	}
 	if !strings.Contains(out, "just letting you know") {
 		t.Fatal("expected info notice")
 	}
@@ -426,9 +433,6 @@ func TestDisplayTunnelInfoClearsNotice(t *testing.T) {
 
 	d.ShowTunnelInfo("https://app.example.com", "http://localhost:8080", "", "tun_xyz", false, "ws")
 	out := buf.String()
-	if strings.Contains(out, "Notice") {
-		t.Fatal("expected tunnel info to clear prior notices")
-	}
 	if strings.Contains(out, "tunnel register failed") {
 		t.Fatal("expected stale warning text to be cleared")
 	}
@@ -518,6 +522,25 @@ func TestDisplayFormatDuration(t *testing.T) {
 	for _, tt := range tests {
 		if got := displayFormatDuration(tt.d); got != tt.want {
 			t.Errorf("displayFormatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
+func TestDisplayFormatDowntime(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{1500 * time.Millisecond, "1 second"},
+		{59*time.Second + 900*time.Millisecond, "59 seconds"},
+		{60 * time.Second, "1 minute"},
+		{62 * time.Second, "1 minute"},
+		{2*time.Minute + 59*time.Second, "2 minutes"},
+	}
+	for _, tt := range tests {
+		if got := displayFormatDowntime(tt.d); got != tt.want {
+			t.Fatalf("displayFormatDowntime(%v) = %q, want %q", tt.d, got, tt.want)
 		}
 	}
 }
@@ -1071,6 +1094,9 @@ func TestDisplaySessionDetailsIgnoreMicroReconnect(t *testing.T) {
 	if !strings.Contains(out, "100.0% uptime") {
 		t.Fatalf("expected micro reconnect to preserve 100%% uptime, got: %s", out)
 	}
+	if strings.Contains(out, "downtime") {
+		t.Fatalf("did not expect downtime after reconnect, got: %s", out)
+	}
 	if strings.Contains(out, "disconnect") {
 		t.Fatalf("did not expect disconnect count for micro reconnect, got: %s", out)
 	}
@@ -1094,6 +1120,9 @@ func TestDisplaySessionDetailsCountDisconnectAfterDebounce(t *testing.T) {
 	d.redraw()
 	d.mu.Unlock()
 	out := buf.String()
+	if !strings.Contains(out, "downtime 20 seconds") {
+		t.Fatalf("expected reconnecting details to show downtime, got: %s", out)
+	}
 	if !strings.Contains(out, "83.3% uptime") {
 		t.Fatalf("expected reconnecting downtime to count after debounce, got: %s", out)
 	}
@@ -1113,6 +1142,111 @@ func TestDisplaySessionDetailsCountDisconnectAfterDebounce(t *testing.T) {
 	}
 	if !strings.Contains(out, "1 disconnect") {
 		t.Fatalf("expected disconnect count to persist after reconnect, got: %s", out)
+	}
+}
+
+func TestDisplaySessionDetailsShowCumulativeDowntimeAcrossReconnects(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	d.ToggleSessionDetails()
+
+	now = now.Add(10 * time.Second)
+	d.ShowReconnecting("connection lost")
+	now = now.Add(20 * time.Second)
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	now = now.Add(10 * time.Second)
+	d.ShowReconnecting("connection lost")
+	now = now.Add(3 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+
+	if !strings.Contains(out, "downtime 23 seconds") {
+		t.Fatalf("expected reconnect details to show cumulative downtime, got: %s", out)
+	}
+}
+
+func TestDisplayAutoSessionDetailsHideAfterReconnect(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	now = now.Add(10 * time.Second)
+	d.ShowReconnecting("connection lost")
+	now = now.Add(2 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	if !strings.Contains(buf.String(), "downtime 2 seconds") {
+		t.Fatalf("expected reconnecting to auto-show details, got: %s", buf.String())
+	}
+
+	buf.Reset()
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	out := buf.String()
+	if strings.Contains(out, "% uptime") || strings.Contains(out, "downtime") {
+		t.Fatalf("expected auto-shown details to hide after reconnect, got: %s", out)
+	}
+}
+
+func TestDisplayPinnedSessionDetailsRemainAfterReconnect(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	d.ToggleSessionDetails()
+
+	now = now.Add(10 * time.Second)
+	d.ShowReconnecting("connection lost")
+
+	now = now.Add(2 * time.Second)
+	buf.Reset()
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	out := buf.String()
+	if !strings.Contains(out, "% uptime") {
+		t.Fatalf("expected explicitly enabled details to remain after reconnect, got: %s", out)
+	}
+	if strings.Contains(out, "downtime") {
+		t.Fatalf("did not expect downtime to remain after reconnect, got: %s", out)
+	}
+}
+
+func TestDisplayReconnectNoticeAppearsBelowSessionBlock(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 8, 13, 7, 35, 0, time.FixedZone("CDT", -5*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	d.ShowReconnecting("connection lost")
+	now = now.Add(3 * time.Second)
+	buf.Reset()
+	d.ShowWarning("tunnel register failed, connect: connection refused; retrying in 2s")
+	out := buf.String()
+
+	sessionIdx := strings.Index(out, "Session")
+	detailsIdx := strings.Index(out, "downtime 3 seconds")
+	noticeIdx := strings.Index(out, "tunnel register failed, connect: connection refused; retrying in 2s")
+	serverIdx := strings.Index(out, "Server")
+	if sessionIdx < 0 || detailsIdx < 0 || noticeIdx < 0 || serverIdx < 0 {
+		t.Fatalf("expected session/details/notice/server block, got: %s", out)
+	}
+	if sessionIdx >= detailsIdx || detailsIdx >= noticeIdx || noticeIdx >= serverIdx {
+		t.Fatalf("expected notice directly below session details during reconnect, got: %s", out)
 	}
 }
 

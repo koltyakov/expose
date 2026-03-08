@@ -64,6 +64,9 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string,
 	d.tlsMode = tlsMode
 	d.transport = transport
 	d.tunnelID = tunnelID
+	if !d.sessionDetailsPinned {
+		d.showSessionDetails = false
+	}
 	d.noticeText = ""
 	d.noticeLevel = ""
 	d.redraw()
@@ -92,7 +95,16 @@ func (d *Display) ShowUpdateStatus(latestVersion string) {
 func (d *Display) ToggleSessionDetails() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.showSessionDetails = !d.showSessionDetails
+	switch {
+	case d.showSessionDetails && !d.sessionDetailsPinned:
+		d.sessionDetailsPinned = true
+	case d.showSessionDetails && d.sessionDetailsPinned:
+		d.showSessionDetails = false
+		d.sessionDetailsPinned = false
+	default:
+		d.showSessionDetails = true
+		d.sessionDetailsPinned = true
+	}
 	d.redraw()
 }
 
@@ -117,6 +129,9 @@ func (d *Display) ShowReconnecting(reason string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ensureRefreshLoopLocked()
+	if !d.showSessionDetails && !d.sessionStart.IsZero() {
+		d.showSessionDetails = true
+	}
 	d.setStatusLocked("reconnecting", d.now())
 	d.redraw()
 }

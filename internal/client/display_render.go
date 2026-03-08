@@ -15,6 +15,7 @@ import (
 // redraw repaints the entire screen. Caller must hold d.mu.
 func (d *Display) redraw() {
 	var b strings.Builder
+	renderNow := d.now()
 
 	// Move to top-left and clear.
 	if d.color {
@@ -39,7 +40,7 @@ func (d *Display) redraw() {
 
 	// ── Connection info ─────────────────────────────────────────
 	placeholder := d.styled(ansiDim, "--")
-	trafficSnapshot := trafficSnapshotForDisplay(d)
+	trafficSnapshot := trafficSnapshotForDisplayAt(d, renderNow)
 
 	if d.status != "" {
 		statusColor := ansiGreen
@@ -55,25 +56,27 @@ func (d *Display) redraw() {
 			statusSince = d.sessionStart
 		}
 		if !statusSince.IsZero() {
-			now := d.now()
 			statusText += d.styled(ansiDim, " for ")
-			statusText += displayFormatUptime(now.Sub(statusSince))
+			statusText += displayFormatUptime(renderNow.Sub(statusSince))
 		}
-		if detail := d.sessionDetail(d.now()); detail != "" {
+		if detail := d.sessionDetail(renderNow); detail != "" {
 			statusText += d.styled(ansiDim, " ("+detail+")")
 		}
 		d.writeField(&b, "Session", statusText)
 	} else {
 		statusText := placeholder
-		if detail := d.sessionDetail(d.now()); detail != "" {
+		if detail := d.sessionDetail(renderNow); detail != "" {
 			statusText += d.styled(ansiDim, " ("+detail+")")
 		}
 		d.writeField(&b, "Session", statusText)
 	}
 	if d.showSessionDetails {
-		if details := d.sessionStatsDetail(d.now()); details != "" {
+		if details := d.sessionStatsDetail(renderNow); details != "" {
 			d.writeField(&b, "", details)
 		}
+	}
+	if d.noticeText != "" && d.status == "reconnecting" {
+		d.writeField(&b, "", d.noticeDisplayText())
 	}
 	sv := d.serverVersion
 	if sv == "" {
@@ -121,15 +124,8 @@ func (d *Display) redraw() {
 	} else {
 		d.writeField(&b, "Forwarding", placeholder)
 	}
-	if d.noticeText != "" {
-		notice := d.noticeText
-		switch d.noticeLevel {
-		case "warn":
-			notice = d.styled(ansiYellow, notice)
-		case "info":
-			notice = d.styled(ansiCyan, notice)
-		}
-		d.writeField(&b, "Notice", notice)
+	if d.noticeText != "" && d.status != "reconnecting" {
+		d.writeField(&b, "", d.noticeDisplayText())
 	}
 	// ── Connections counter ─────────────────────────────────────
 	wsCount := max(
@@ -328,11 +324,11 @@ func displayFormatDuration(d time.Duration) string {
 	}
 }
 
-func trafficSnapshotForDisplay(d *Display) traffic.Snapshot {
+func trafficSnapshotForDisplayAt(d *Display, now time.Time) traffic.Snapshot {
 	if d == nil || d.traffic == nil {
 		return traffic.Snapshot{}
 	}
-	return d.traffic.SnapshotAt(d.now())
+	return d.traffic.SnapshotAt(now)
 }
 
 func (d *Display) trafficSummaryText(total, rate int64) string {
@@ -389,12 +385,15 @@ func (d *Display) sessionStatsDetail(now time.Time) string {
 	if d.sessionStart.IsZero() {
 		return ""
 	}
-	uptime := d.sessionUptimePercent(now)
-	details := fmt.Sprintf("%.1f%% uptime", uptime)
-	if disconnects := d.sessionDisconnectCount(now); disconnects > 0 {
-		details += fmt.Sprintf(", %d %s", disconnects, pluralizeCount(disconnects, "disconnect", "disconnects"))
+	parts := make([]string, 0, 3)
+	if downtime := d.sessionDisplayedDowntime(now); downtime > 0 {
+		parts = append(parts, "downtime "+displayFormatDowntime(downtime))
 	}
-	return details
+	parts = append(parts, fmt.Sprintf("%.1f%% uptime", d.sessionUptimePercent(now)))
+	if disconnects := d.sessionDisconnectCount(now); disconnects > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", disconnects, pluralizeCount(disconnects, "disconnect", "disconnects")))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (d *Display) sessionUptimePercent(now time.Time) float64 {
@@ -439,11 +438,61 @@ func (d *Display) sessionEffectiveDowntime(now time.Time) time.Duration {
 	return downtime
 }
 
+func (d *Display) sessionCurrentDowntime(now time.Time) time.Duration {
+	if d.status != "reconnecting" || d.pendingDisconnectAt.IsZero() {
+		return 0
+	}
+	downtime := now.Sub(d.pendingDisconnectAt)
+	if downtime < 0 {
+		return 0
+	}
+	return downtime
+}
+
+func (d *Display) sessionDisplayedDowntime(now time.Time) time.Duration {
+	return d.sessionDowntime + d.sessionCurrentDowntime(now)
+}
+
+func (d *Display) noticeDisplayText() string {
+	notice := d.noticeText
+	switch d.noticeLevel {
+	case "warn":
+		return d.styled(ansiYellow, notice)
+	case "info":
+		return d.styled(ansiCyan, notice)
+	default:
+		return notice
+	}
+}
+
 func pluralizeCount(v int, singular, plural string) string {
 	if v == 1 {
 		return singular
 	}
 	return plural
+}
+
+func displayFormatDowntime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Truncate(time.Second)
+	seconds := int(d.Seconds())
+	if seconds < 60 {
+		return fmt.Sprintf("%d %s", seconds, pluralizeCount(seconds, "second", "seconds"))
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%d %s", minutes, pluralizeCount(minutes, "minute", "minutes"))
+	}
+	hours := minutes / 60
+	minutes = minutes % 60
+	if minutes == 0 {
+		return fmt.Sprintf("%d %s", hours, pluralizeCount(hours, "hour", "hours"))
+	}
+	return fmt.Sprintf("%d %s, %d %s",
+		hours, pluralizeCount(hours, "hour", "hours"),
+		minutes, pluralizeCount(minutes, "minute", "minutes"))
 }
 
 type displayLatencyPercentilesValues struct {

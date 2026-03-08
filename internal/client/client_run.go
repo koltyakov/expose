@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"math/rand/v2"
 	"net/url"
 	"time"
 
@@ -14,6 +13,10 @@ type sessionRuntime interface {
 	run() error
 	close()
 	transportKind() string
+}
+
+type reconnectSchedule struct {
+	startedAt time.Time
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -29,16 +32,17 @@ func (c *Client) Run(ctx context.Context) error {
 		go c.runAutoUpdateLoop(ctx, autoUpdateCh)
 	}
 
-	backoff := reconnectInitialDelay
+	var retry reconnectSchedule
 	tlsProvisioningRetries := 0
 	for {
 		reg, err := c.register(ctx)
 		if err != nil {
+			delay := retry.nextDelay(time.Now())
 			willRetry := !isNonRetriableRegisterError(err)
 			if hook := c.hooks.OnRegisterFailure; hook != nil {
 				hook(RegisterFailureEvent{
 					Err:       err,
-					RetryIn:   backoff,
+					RetryIn:   delay,
 					WillRetry: willRetry,
 				})
 			}
@@ -49,23 +53,23 @@ func (c *Client) Run(ctx context.Context) error {
 				tlsProvisioningRetries++
 				if tlsProvisioningRetries <= tlsProvisioningInfoRetries {
 					if c.display != nil {
-						c.display.ShowInfo(fmt.Sprintf("TLS certificate provisioning in progress; retrying in %s", backoff.Round(time.Second)))
+						c.display.ShowInfo(fmt.Sprintf("TLS certificate provisioning in progress; retrying in %s", delay.Round(time.Second)))
 					} else {
-						c.log.Info("server TLS certificate provisioning in progress; retrying", "err", err, "retry_in", backoff.Round(time.Second).String())
+						c.log.Info("server TLS certificate provisioning in progress; retrying", "err", err, "retry_in", delay.Round(time.Second).String())
 					}
 				} else {
 					if c.display != nil {
-						c.display.ShowWarning(fmt.Sprintf("tunnel register failed, %s; retrying in %s", shortenError(err), backoff.Round(time.Second)))
+						c.display.ShowWarning(fmt.Sprintf("tunnel register failed, %s; retrying in %s", shortenError(err), delay.Round(time.Second)))
 					} else {
-						c.log.Warn("tunnel register failed while waiting for TLS certificate provisioning", "err", err, "retry_in", backoff.Round(time.Second).String())
+						c.log.Warn("tunnel register failed while waiting for TLS certificate provisioning", "err", err, "retry_in", delay.Round(time.Second).String())
 					}
 				}
 			} else {
 				tlsProvisioningRetries = 0
 				if c.display != nil {
-					c.display.ShowWarning(fmt.Sprintf("tunnel register failed, %s; retrying in %s", shortenError(err), backoff.Round(time.Second)))
+					c.display.ShowWarning(fmt.Sprintf("tunnel register failed, %s; retrying in %s", shortenError(err), delay.Round(time.Second)))
 				} else {
-					c.log.Warn("tunnel register failed", "err", err, "retry_in", backoff.Round(time.Second).String())
+					c.log.Warn("tunnel register failed", "err", err, "retry_in", delay.Round(time.Second).String())
 				}
 			}
 			select {
@@ -73,12 +77,10 @@ func (c *Client) Run(ctx context.Context) error {
 				return nil
 			case <-autoUpdateCh:
 				return ErrAutoUpdated
-			case <-time.After(backoff):
+			case <-time.After(delay):
 			}
-			backoff = nextBackoff(backoff)
 			continue
 		}
-		backoff = reconnectInitialDelay
 		tlsProvisioningRetries = 0
 		c.resumeID = reg.TunnelID
 
@@ -87,20 +89,22 @@ func (c *Client) Run(ctx context.Context) error {
 			if isNonRetriableSessionError(err) {
 				return err
 			}
+			delay := retry.nextDelay(time.Now())
 			if c.display != nil {
-				c.display.ShowWarning(fmt.Sprintf("tunnel connect failed, %s; retrying in %s", shortenError(err), reconnectInitialDelay.Round(time.Second)))
+				c.display.ShowWarning(fmt.Sprintf("tunnel connect failed, %s; retrying in %s", shortenError(err), delay.Round(time.Second)))
 			} else {
-				c.log.Warn("tunnel connect failed", "err", err, "retry_in", reconnectInitialDelay.Round(time.Second).String())
+				c.log.Warn("tunnel connect failed", "err", err, "retry_in", delay.Round(time.Second).String())
 			}
 			select {
 			case <-ctx.Done():
 				return nil
 			case <-autoUpdateCh:
 				return ErrAutoUpdated
-			case <-time.After(reconnectInitialDelay):
+			case <-time.After(delay):
 			}
 			continue
 		}
+		retry.reset()
 
 		if c.display != nil {
 			c.display.ShowBanner(c.version)
@@ -164,26 +168,38 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			c.display.ShowReconnecting(reason)
 		} else {
-			c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", reconnectInitialDelay.Round(time.Second).String())
+			delay := retry.nextDelay(time.Now())
+			c.log.Warn("client disconnected; reconnecting", "err", err, "retry_in", delay.Round(time.Second).String())
 		}
+		delay := retry.nextDelay(time.Now())
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-autoUpdateCh:
 			return ErrAutoUpdated
-		case <-time.After(reconnectInitialDelay):
+		case <-time.After(delay):
 		}
 	}
 }
 
-func nextBackoff(current time.Duration) time.Duration {
-	if current <= 0 {
-		current = reconnectInitialDelay
+func (r *reconnectSchedule) nextDelay(now time.Time) time.Duration {
+	if r.startedAt.IsZero() {
+		r.startedAt = now
+		return reconnectInitialDelay
 	}
-	next := min(current*2, reconnectMaxDelay)
-	// Add ±25% jitter to avoid thundering herd on reconnect.
-	jitter := 1.0 + (rand.Float64()-0.5)*0.5 // range [0.75, 1.25]
-	return time.Duration(float64(next) * jitter)
+	elapsed := now.Sub(r.startedAt)
+	switch {
+	case elapsed < reconnectInitialWindow:
+		return reconnectInitialDelay
+	case elapsed < reconnectInitialWindow+reconnectSecondStageWindow:
+		return reconnectSecondStageDelay
+	default:
+		return reconnectThirdStageDelay
+	}
+}
+
+func (r *reconnectSchedule) reset() {
+	r.startedAt = time.Time{}
 }
 
 func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {

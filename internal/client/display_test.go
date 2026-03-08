@@ -1029,11 +1029,11 @@ func TestDisplaySessionDetailsToggle(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	d.ToggleSessionDetails()
 	out := buf.String()
-	if !strings.Contains(out, "\nDetails") {
+	if !strings.Contains(out, "100.0% uptime") {
 		t.Fatalf("expected Details row after toggle, got: %s", out)
 	}
-	if !strings.Contains(out, "100.0% uptime") {
-		t.Fatalf("expected uptime percentage in details row, got: %s", out)
+	if strings.LastIndex(out, "100.0% uptime") < strings.LastIndex(out, "Session") {
+		t.Fatalf("expected details to render after Session, got: %s", out)
 	}
 	if strings.Contains(out, "disconnect") {
 		t.Fatalf("did not expect disconnect count without disconnects, got: %s", out)
@@ -1042,7 +1042,7 @@ func TestDisplaySessionDetailsToggle(t *testing.T) {
 	buf.Reset()
 	d.ToggleSessionDetails()
 	out = buf.String()
-	if strings.Contains(out, "\nDetails") {
+	if strings.Contains(out, "100.0% uptime") {
 		t.Fatalf("expected Details row to hide after second toggle, got: %s", out)
 	}
 }

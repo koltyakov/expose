@@ -36,31 +36,35 @@ func (r *testTrafficRecorder) RecordTraffic(direction traffic.Direction, bytes i
 	}
 }
 
-func TestNextBackoff(t *testing.T) {
+func TestReconnectScheduleNextDelay(t *testing.T) {
 	t.Parallel()
 
-	// With jitter (±25%), results are in range [0.75*base, 1.25*base].
-	got := nextBackoff(0)
-	base := reconnectInitialDelay * 2
-	lo := time.Duration(float64(base) * 0.75)
-	hi := time.Duration(float64(base) * 1.25)
-	if got < lo || got > hi {
-		t.Fatalf("expected initial backoff in [%s, %s], got %s", lo, hi, got)
+	start := time.Date(2026, time.March, 8, 12, 0, 0, 0, time.UTC)
+	var schedule reconnectSchedule
+
+	if got := schedule.nextDelay(start); got != reconnectInitialDelay {
+		t.Fatalf("expected initial delay %s, got %s", reconnectInitialDelay, got)
 	}
 
-	got = nextBackoff(reconnectInitialDelay)
-	base = reconnectInitialDelay * 2
-	lo = time.Duration(float64(base) * 0.75)
-	hi = time.Duration(float64(base) * 1.25)
-	if got < lo || got > hi {
-		t.Fatalf("expected doubled delay in [%s, %s], got %s", lo, hi, got)
+	if got := schedule.nextDelay(start.Add(29 * time.Second)); got != reconnectInitialDelay {
+		t.Fatalf("expected first-stage delay %s, got %s", reconnectInitialDelay, got)
 	}
 
-	got = nextBackoff(reconnectMaxDelay)
-	lo = time.Duration(float64(reconnectMaxDelay) * 0.75)
-	hi = time.Duration(float64(reconnectMaxDelay) * 1.25)
-	if got < lo || got > hi {
-		t.Fatalf("expected clamped delay in [%s, %s], got %s", lo, hi, got)
+	if got := schedule.nextDelay(start.Add(reconnectInitialWindow)); got != reconnectSecondStageDelay {
+		t.Fatalf("expected second-stage delay %s, got %s", reconnectSecondStageDelay, got)
+	}
+
+	if got := schedule.nextDelay(start.Add(reconnectInitialWindow + reconnectSecondStageWindow - time.Second)); got != reconnectSecondStageDelay {
+		t.Fatalf("expected second-stage delay before final window %s, got %s", reconnectSecondStageDelay, got)
+	}
+
+	if got := schedule.nextDelay(start.Add(reconnectInitialWindow + reconnectSecondStageWindow)); got != reconnectThirdStageDelay {
+		t.Fatalf("expected third-stage delay %s, got %s", reconnectThirdStageDelay, got)
+	}
+
+	schedule.reset()
+	if got := schedule.nextDelay(start.Add(10 * time.Minute)); got != reconnectInitialDelay {
+		t.Fatalf("expected reset to restore initial delay %s, got %s", reconnectInitialDelay, got)
 	}
 }
 

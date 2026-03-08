@@ -117,7 +117,10 @@ func (c *Client) SetTrafficSink(sink TrafficRecorder) {
 
 const (
 	reconnectInitialDelay        = 2 * time.Second
-	reconnectMaxDelay            = 30 * time.Second
+	reconnectSecondStageDelay    = 5 * time.Second
+	reconnectThirdStageDelay     = 15 * time.Second
+	reconnectInitialWindow       = 30 * time.Second
+	reconnectSecondStageWindow   = 5 * time.Minute
 	defaultMaxConcurrentForwards = 32
 	wsMessageBufferSize          = 64
 	clientWSWriteTimeout         = 15 * time.Second

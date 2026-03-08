@@ -9,11 +9,14 @@ import (
 	"sync"
 )
 
-const clientHotkeyUpdateByte = 0x15 // Ctrl+U
+const (
+	clientHotkeyToggleSessionDetailsByte = 0x09 // Ctrl+I
+	clientHotkeyUpdateByte               = 0x15 // Ctrl+U
+)
 
-// startClientUpdateHotkeyListener enables a minimal raw terminal mode and
-// emits on the returned channel when Ctrl+U is pressed.
-func startClientUpdateHotkeyListener() (<-chan struct{}, func(), error) {
+// startClientHotkeyListener enables a minimal raw terminal mode and emits on
+// the returned channel when a supported dashboard hotkey is pressed.
+func startClientHotkeyListener() (<-chan byte, func(), error) {
 	state, err := sttyOutput("-g")
 	if err != nil {
 		return nil, func() {}, err
@@ -26,7 +29,7 @@ func startClientUpdateHotkeyListener() (<-chan struct{}, func(), error) {
 		return nil, func() {}, err
 	}
 
-	updateCh := make(chan struct{}, 1)
+	hotkeyCh := make(chan byte, 1)
 	go func() {
 		var b [1]byte
 		for {
@@ -34,11 +37,13 @@ func startClientUpdateHotkeyListener() (<-chan struct{}, func(), error) {
 			if err != nil || n == 0 {
 				return
 			}
-			if b[0] != clientHotkeyUpdateByte {
+			switch b[0] {
+			case clientHotkeyToggleSessionDetailsByte, clientHotkeyUpdateByte:
+			default:
 				continue
 			}
 			select {
-			case updateCh <- struct{}{}:
+			case hotkeyCh <- b[0]:
 			default:
 			}
 		}
@@ -50,7 +55,7 @@ func startClientUpdateHotkeyListener() (<-chan struct{}, func(), error) {
 			_ = runStty(state)
 		})
 	}
-	return updateCh, cleanup, nil
+	return hotkeyCh, cleanup, nil
 }
 
 func sttyOutput(args ...string) (string, error) {

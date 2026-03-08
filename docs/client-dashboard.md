@@ -10,6 +10,7 @@ When you run `expose http` or `expose static`, the client renders a live dashboa
 expose v1.0.0                                        (Ctrl+C to quit)
 
 Session     online for 2h 15m (ID: abc123)
+            99.8% uptime, 1 disconnect
 Server      v1.0.0 (WAF: On, TLS: Auto)
 Update      v1.1.0 available - run expose update or press Ctrl+U
 Latency     12ms
@@ -33,6 +34,7 @@ Latency         P50 8ms | P90 15ms | P95 22ms | P99 45ms
 | Field          | Description                                                                   |
 | -------------- | ----------------------------------------------------------------------------- |
 | **Session**    | Connection status (`online`/`connecting`), uptime, and tunnel ID              |
+| **Details**    | Optional session uptime percentage and disconnect count, toggled with `Ctrl+I` |
 | **Server**     | Server version with WAF and TLS mode indicators                               |
 | **Update**     | Shown when a newer version is available                                       |
 | **Latency**    | Current round-trip latency to the server (from keepalive pings)               |
@@ -87,10 +89,11 @@ The Forwarding line shows the health status of your local target:
 
 ## Keyboard Shortcuts
 
-| Key      | Action                         |
-| -------- | ------------------------------ |
-| `Ctrl+C` | Quit the client gracefully     |
-| `Ctrl+U` | Trigger immediate update check |
+| Key      | Action                                      |
+| -------- | ------------------------------------------- |
+| `Ctrl+C` | Quit the client gracefully                  |
+| `Ctrl+I` | Toggle extra session details                |
+| `Ctrl+U` | Trigger immediate update check              |
 
 ## Color Output
 

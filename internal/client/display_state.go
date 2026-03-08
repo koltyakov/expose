@@ -88,6 +88,14 @@ func (d *Display) ShowUpdateStatus(latestVersion string) {
 	d.redraw()
 }
 
+// ToggleSessionDetails shows or hides the extra session detail row.
+func (d *Display) ToggleSessionDetails() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.showSessionDetails = !d.showSessionDetails
+	d.redraw()
+}
+
 // ShowLatency updates the displayed round-trip latency and redraws.
 func (d *Display) ShowLatency(rtt time.Duration) {
 	d.mu.Lock()
@@ -150,15 +158,35 @@ func (d *Display) ensureRefreshLoopLocked() {
 
 func (d *Display) setStatusLocked(status string, now time.Time) {
 	status = strings.TrimSpace(status)
+	prevStatus := d.status
+	if prevStatus == "reconnecting" && status != "reconnecting" {
+		d.finalizePendingDisconnectLocked(now)
+	}
+	if prevStatus != "reconnecting" && status == "reconnecting" && !d.sessionStart.IsZero() {
+		d.pendingDisconnectAt = now
+	}
 	if status == "" {
 		d.status = ""
 		d.statusChangedAt = time.Time{}
+		d.pendingDisconnectAt = time.Time{}
 		return
 	}
 	if d.status != status || d.statusChangedAt.IsZero() {
 		d.statusChangedAt = now
 	}
 	d.status = status
+}
+
+func (d *Display) finalizePendingDisconnectLocked(now time.Time) {
+	if d.pendingDisconnectAt.IsZero() {
+		return
+	}
+	downtime := now.Sub(d.pendingDisconnectAt)
+	if downtime >= displayMicroDisconnectMax {
+		d.sessionDowntime += downtime
+		d.sessionDisconnects++
+	}
+	d.pendingDisconnectAt = time.Time{}
 }
 
 // LogRequest records an HTTP request and redraws.

@@ -70,6 +70,11 @@ func (d *Display) redraw() {
 		}
 		d.writeField(&b, "Session", statusText)
 	}
+	if d.showSessionDetails {
+		if details := d.sessionStatsDetail(d.now()); details != "" {
+			d.writeField(&b, "", details)
+		}
+	}
 	sv := d.serverVersion
 	if sv == "" {
 		sv = "--"
@@ -378,6 +383,67 @@ func (d *Display) sessionDetail(now time.Time) string {
 		return "ID: " + d.tunnelID
 	}
 	return "Started: " + displayFormatStartedAt(d.sessionStart)
+}
+
+func (d *Display) sessionStatsDetail(now time.Time) string {
+	if d.sessionStart.IsZero() {
+		return ""
+	}
+	uptime := d.sessionUptimePercent(now)
+	details := fmt.Sprintf("%.1f%% uptime", uptime)
+	if disconnects := d.sessionDisconnectCount(now); disconnects > 0 {
+		details += fmt.Sprintf(", %d %s", disconnects, pluralizeCount(disconnects, "disconnect", "disconnects"))
+	}
+	return details
+}
+
+func (d *Display) sessionUptimePercent(now time.Time) float64 {
+	if d.sessionStart.IsZero() {
+		return 0
+	}
+	elapsed := now.Sub(d.sessionStart)
+	if elapsed <= 0 {
+		return 100
+	}
+	downtime := d.sessionEffectiveDowntime(now)
+	if downtime < 0 {
+		downtime = 0
+	}
+	if downtime > elapsed {
+		downtime = elapsed
+	}
+	uptime := elapsed - downtime
+	pct := float64(uptime) / float64(elapsed) * 100
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+func (d *Display) sessionDisconnectCount(now time.Time) int {
+	count := d.sessionDisconnects
+	if d.status == "reconnecting" && !d.pendingDisconnectAt.IsZero() && now.Sub(d.pendingDisconnectAt) >= displayMicroDisconnectMax {
+		count++
+	}
+	return count
+}
+
+func (d *Display) sessionEffectiveDowntime(now time.Time) time.Duration {
+	downtime := d.sessionDowntime
+	if d.status == "reconnecting" && !d.pendingDisconnectAt.IsZero() && now.Sub(d.pendingDisconnectAt) >= displayMicroDisconnectMax {
+		downtime += now.Sub(d.pendingDisconnectAt)
+	}
+	return downtime
+}
+
+func pluralizeCount(v int, singular, plural string) string {
+	if v == 1 {
+		return singular
+	}
+	return plural
 }
 
 type displayLatencyPercentilesValues struct {

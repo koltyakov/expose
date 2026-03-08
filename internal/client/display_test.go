@@ -934,6 +934,9 @@ func TestDisplaySessionUptime(t *testing.T) {
 	if strings.Contains(out, "uptime:") || strings.Contains(out, "since change:") {
 		t.Fatal("expected simplified status duration format")
 	}
+	if strings.Contains(out, "\nDetails") {
+		t.Fatal("expected session details to be hidden by default")
+	}
 }
 
 func TestDisplaySessionUptimeWithReconnect(t *testing.T) {
@@ -1012,6 +1015,104 @@ func TestDisplaySessionUptimePreservedAcrossMicroReconnect(t *testing.T) {
 	}
 	if strings.Contains(out, "for 1 minute") {
 		t.Fatalf("did not expect micro reconnect to reset online duration, got: %s", out)
+	}
+}
+
+func TestDisplaySessionDetailsToggle(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	now = now.Add(5 * time.Minute)
+	d.ToggleSessionDetails()
+	out := buf.String()
+	if !strings.Contains(out, "\nDetails") {
+		t.Fatalf("expected Details row after toggle, got: %s", out)
+	}
+	if !strings.Contains(out, "100.0% uptime") {
+		t.Fatalf("expected uptime percentage in details row, got: %s", out)
+	}
+	if strings.Contains(out, "disconnect") {
+		t.Fatalf("did not expect disconnect count without disconnects, got: %s", out)
+	}
+
+	buf.Reset()
+	d.ToggleSessionDetails()
+	out = buf.String()
+	if strings.Contains(out, "\nDetails") {
+		t.Fatalf("expected Details row to hide after second toggle, got: %s", out)
+	}
+}
+
+func TestDisplaySessionDetailsIgnoreMicroReconnect(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	d.ToggleSessionDetails()
+
+	now = now.Add(100 * time.Second)
+	d.ShowReconnecting("connection lost")
+
+	now = now.Add(4 * time.Second)
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+
+	now = now.Add(20 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "100.0% uptime") {
+		t.Fatalf("expected micro reconnect to preserve 100%% uptime, got: %s", out)
+	}
+	if strings.Contains(out, "disconnect") {
+		t.Fatalf("did not expect disconnect count for micro reconnect, got: %s", out)
+	}
+}
+
+func TestDisplaySessionDetailsCountDisconnectAfterDebounce(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.March, 5, 16, 0, 0, 0, time.FixedZone("CST", -6*60*60))
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	d.ToggleSessionDetails()
+
+	now = now.Add(100 * time.Second)
+	d.ShowReconnecting("connection lost")
+
+	now = now.Add(20 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "83.3% uptime") {
+		t.Fatalf("expected reconnecting downtime to count after debounce, got: %s", out)
+	}
+	if !strings.Contains(out, "1 disconnect") {
+		t.Fatalf("expected disconnect count after debounce, got: %s", out)
+	}
+
+	d.ShowTunnelInfo("https://app.example.com", "http://localhost:3000", "", "tun_1", false, "ws")
+	now = now.Add(30 * time.Second)
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "86.7% uptime") {
+		t.Fatalf("expected counted downtime to persist after reconnect, got: %s", out)
+	}
+	if !strings.Contains(out, "1 disconnect") {
+		t.Fatalf("expected disconnect count to persist after reconnect, got: %s", out)
 	}
 }
 

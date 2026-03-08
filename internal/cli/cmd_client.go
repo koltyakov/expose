@@ -343,9 +343,9 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 	defer cancelRun()
 
 	hotkeyCleanup := func() {}
-	hotkeyCh := (<-chan struct{})(nil)
+	hotkeyCh := (<-chan byte)(nil)
 	if display != nil && isInteractiveInput() {
-		ch, cleanup, err := startClientUpdateHotkeyListener()
+		ch, cleanup, err := startClientHotkeyListener()
 		if err != nil {
 			logger.Debug("client hotkeys disabled", "err", err)
 		} else {
@@ -386,7 +386,11 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 				return 1
 			}
 			return 0
-		case <-hotkeyCh:
+		case key := <-hotkeyCh:
+			if key == clientHotkeyToggleSessionDetailsByte {
+				display.ToggleSessionDetails()
+				continue
+			}
 			if updateBusy {
 				if display != nil {
 					display.ShowInfo("Update already in progress...")

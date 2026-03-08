@@ -9,28 +9,27 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
+	"github.com/koltyakov/expose/internal/termui"
 	"github.com/koltyakov/expose/internal/traffic"
 )
 
 const (
-	upANSIReset     = "\033[0m"
-	upANSIBold      = "\033[1m"
-	upANSIDim       = "\033[2m"
-	upANSIRed       = "\033[31m"
-	upANSIGreen     = "\033[32m"
-	upANSIYellow    = "\033[33m"
-	upANSICyan      = "\033[36m"
-	upANSIHome      = "\033[H"
-	upANSIClearDown = "\033[J"
-	upANSIHideCur   = "\033[?25l"
-	upANSIShowCur   = "\033[?25h"
+	upANSIReset     = termui.Reset
+	upANSIBold      = termui.Bold
+	upANSIDim       = termui.Dim
+	upANSIRed       = termui.Red
+	upANSIGreen     = termui.Green
+	upANSIYellow    = termui.Yellow
+	upANSICyan      = termui.Cyan
+	upANSIHome      = termui.Home
+	upANSIClearDown = termui.ClearDown
+	upANSIHideCur   = termui.HideCur
+	upANSIShowCur   = termui.ShowCur
 )
 
 const (
@@ -693,33 +692,11 @@ func (d *upDashboard) writeFieldContinuation(b *strings.Builder, value string) {
 }
 
 func (d *upDashboard) writeFieldLines(b *strings.Builder, label string, values []string) {
-	if len(values) == 0 {
-		values = []string{""}
-	}
-	for i, value := range values {
-		currentLabel := ""
-		if i == 0 {
-			currentLabel = label
-		}
-		pad := upDisplayFieldWidth - len(currentLabel)
-		if pad < 1 {
-			pad = 1
-		}
-		_, _ = fmt.Fprintf(b, "%s%s%s\n", currentLabel, strings.Repeat(" ", pad), value)
-	}
+	termui.WriteFieldLines(b, upDisplayFieldWidth, label, values)
 }
 
 func upCapitalizeCSV(s string) string {
-	parts := strings.Split(s, ",")
-	for i, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			parts[i] = part
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	return strings.Join(parts, ", ")
+	return termui.CapitalizeCSV(s)
 }
 
 func (d *upDashboard) aggregateStatusLocked() string {
@@ -1042,10 +1019,7 @@ func (d *upDashboard) formatRequestStatusText(code int) string {
 }
 
 func (d *upDashboard) styled(code, text string) string {
-	if !d.color {
-		return text
-	}
-	return code + text + upANSIReset
+	return termui.Styler{Color: d.color}.Style(code, text)
 }
 
 func (d *upDashboard) now() time.Time {
@@ -1353,33 +1327,11 @@ func (d *upDashboard) noticeDisplayTextLocked() string {
 }
 
 func pluralizeUpUnit(n int, singular string) string {
-	if n == 1 {
-		return singular
-	}
-	return singular + "s"
+	return termui.Pluralize(n, singular)
 }
 
 func displayFormatDowntime(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	d = d.Truncate(time.Second)
-	seconds := int(d.Seconds())
-	if seconds < 60 {
-		return fmt.Sprintf("%d %s", seconds, pluralizeUpUnit(seconds, "second"))
-	}
-	minutes := seconds / 60
-	if minutes < 60 {
-		return fmt.Sprintf("%d %s", minutes, pluralizeUpUnit(minutes, "minute"))
-	}
-	hours := minutes / 60
-	minutes = minutes % 60
-	if minutes == 0 {
-		return fmt.Sprintf("%d %s", hours, pluralizeUpUnit(hours, "hour"))
-	}
-	return fmt.Sprintf("%d %s, %d %s",
-		hours, pluralizeUpUnit(hours, "hour"),
-		minutes, pluralizeUpUnit(minutes, "minute"))
+	return termui.FormatDowntime(d)
 }
 
 func dashboardFormatRequestDuration(raw string) string {
@@ -1410,14 +1362,7 @@ func dashboardParseRequestDuration(raw string) (time.Duration, bool) {
 
 // Match the single-tunnel dashboard rounding style.
 func dashboardFormatDurationRounded(d time.Duration) string {
-	switch {
-	case d < time.Millisecond:
-		return fmt.Sprintf("%dμs", d.Microseconds())
-	case d < time.Second:
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	default:
-		return fmt.Sprintf("%.2fs", d.Seconds())
-	}
+	return termui.FormatDurationRounded(d)
 }
 
 type upLatencyPercentilesValues struct {
@@ -1428,62 +1373,23 @@ type upLatencyPercentilesValues struct {
 }
 
 func upLatencyPercentiles(samples []time.Duration) (upLatencyPercentilesValues, bool) {
-	if len(samples) == 0 {
+	values, ok := termui.FormatLatencyPercentiles(samples, dashboardFormatDurationRounded)
+	if !ok {
 		return upLatencyPercentilesValues{}, false
 	}
-	sorted := append([]time.Duration(nil), samples...)
-	slices.Sort(sorted)
 	return upLatencyPercentilesValues{
-		p50: dashboardFormatDurationRounded(durationPercentile(sorted, 50)),
-		p90: dashboardFormatDurationRounded(durationPercentile(sorted, 90)),
-		p95: dashboardFormatDurationRounded(durationPercentile(sorted, 95)),
-		p99: dashboardFormatDurationRounded(durationPercentile(sorted, 99)),
+		p50: values.P50,
+		p90: values.P90,
+		p95: values.P95,
+		p99: values.P99,
 	}, true
 }
 
-func durationPercentile(sorted []time.Duration, p int) time.Duration {
-	if len(sorted) == 0 {
-		return 0
-	}
-	if p <= 0 {
-		return sorted[0]
-	}
-	if p >= 100 {
-		return sorted[len(sorted)-1]
-	}
-	n := len(sorted)
-	idx := (p*n + 99) / 100 // ceil(p*n/100)
-	if idx <= 0 {
-		idx = 1
-	}
-	if idx > n {
-		idx = n
-	}
-	return sorted[idx-1]
-}
-
 func truncateRight(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if stringWidth(s) <= n {
-		return s
-	}
-	if n <= 3 {
-		return string([]rune(s)[:n])
-	}
-	rs := []rune(s)
-	if len(rs) <= n {
-		return s
-	}
-	return string(rs[:n-3]) + "..."
+	return termui.TruncateRight(s, n)
 }
 
 func shortenDashboardText(s string, max int) string {
 	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 	return truncateRight(s, max)
-}
-
-func stringWidth(s string) int {
-	return utf8.RuneCountInString(s)
 }

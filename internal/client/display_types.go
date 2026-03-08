@@ -6,22 +6,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/expose/internal/termui"
 	"github.com/koltyakov/expose/internal/traffic"
 )
 
-// ANSI escape codes for terminal styling.
 const (
-	ansiReset     = "\033[0m"
-	ansiBold      = "\033[1m"
-	ansiDim       = "\033[2m"
-	ansiRed       = "\033[31m"
-	ansiGreen     = "\033[32m"
-	ansiYellow    = "\033[33m"
-	ansiCyan      = "\033[36m"
-	ansiClearDown = "\033[J" // clear from cursor to end of screen
-	ansiHome      = "\033[H" // move cursor to top-left
-	ansiHideCur   = "\033[?25l"
-	ansiShowCur   = "\033[?25h"
+	ansiReset     = termui.Reset
+	ansiBold      = termui.Bold
+	ansiDim       = termui.Dim
+	ansiRed       = termui.Red
+	ansiGreen     = termui.Green
+	ansiYellow    = termui.Yellow
+	ansiCyan      = termui.Cyan
+	ansiClearDown = termui.ClearDown
+	ansiHome      = termui.Home
+	ansiHideCur   = termui.HideCur
+	ansiShowCur   = termui.ShowCur
 )
 
 // displayFieldWidth is the column width for header field labels.

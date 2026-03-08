@@ -1,13 +1,9 @@
 package client
 
 import (
-	"io"
-	"os"
-	"strconv"
 	"strings"
-	"unicode/utf8"
 
-	"golang.org/x/term"
+	"github.com/koltyakov/expose/internal/termui"
 )
 
 const displayMinValueWidth = 16
@@ -27,113 +23,7 @@ func (d *Display) terminalColumns() int {
 	if d != nil && d.terminalColumnsFn != nil {
 		return d.terminalColumnsFn()
 	}
-	return terminalColumnsForWriter(d.out)
-}
-
-func terminalColumnsForWriter(w io.Writer) int {
-	if f, ok := w.(*os.File); ok {
-		if cols, _, err := term.GetSize(int(f.Fd())); err == nil && cols > 0 {
-			return cols
-		}
-	}
-	if raw := strings.TrimSpace(os.Getenv("COLUMNS")); raw != "" {
-		if cols, err := strconv.Atoi(raw); err == nil && cols > 0 {
-			return cols
-		}
-	}
-	return 0
-}
-
-func visibleRuneCount(s string) int {
-	return utf8.RuneCountInString(s)
-}
-
-func wrapPlainText(s string, width int) []string {
-	if width < 1 {
-		width = 1
-	}
-	runes := []rune(s)
-	if len(runes) == 0 {
-		return []string{""}
-	}
-	lines := make([]string, 0, (len(runes)+width-1)/width)
-	for len(runes) > 0 {
-		n := width
-		if n > len(runes) {
-			n = len(runes)
-		}
-		lines = append(lines, string(runes[:n]))
-		runes = runes[n:]
-	}
-	return lines
-}
-
-func wrapTextWithLeadingPrefix(text, prefix string, width int) []string {
-	if width < 1 {
-		width = 1
-	}
-	if visibleRuneCount(prefix)+visibleRuneCount(text) <= width {
-		return []string{prefix + text}
-	}
-	runes := []rune(text)
-	firstWidth := width - visibleRuneCount(prefix)
-	if firstWidth < 1 {
-		firstWidth = 1
-	}
-	firstLen := firstWidth
-	if firstLen > len(runes) {
-		firstLen = len(runes)
-	}
-	lines := []string{prefix + string(runes[:firstLen])}
-	runes = runes[firstLen:]
-	for len(runes) > 0 {
-		n := width
-		if n > len(runes) {
-			n = len(runes)
-		}
-		lines = append(lines, string(runes[:n]))
-		runes = runes[n:]
-	}
-	return lines
-}
-
-func wrapTextWithPrefixAndSuffix(text, prefix, suffix string, width int) []string {
-	if width < 1 {
-		width = 1
-	}
-	if visibleRuneCount(prefix)+visibleRuneCount(text)+visibleRuneCount(suffix) <= width {
-		return []string{prefix + text + suffix}
-	}
-
-	runes := []rune(text)
-	firstWidth := width - visibleRuneCount(prefix)
-	if firstWidth < 1 {
-		firstWidth = 1
-	}
-	firstLen := firstWidth
-	if firstLen > len(runes) {
-		firstLen = len(runes)
-	}
-	lines := []string{prefix + string(runes[:firstLen])}
-	runes = runes[firstLen:]
-
-	lastWidth := width - visibleRuneCount(suffix)
-	if lastWidth < 1 {
-		lastWidth = 1
-	}
-	for len(runes) > lastWidth {
-		n := len(runes) - lastWidth
-		if n > width {
-			n = width
-		}
-		if n < 1 {
-			n = 1
-		}
-		lines = append(lines, string(runes[:n]))
-		runes = runes[n:]
-	}
-	lines = append(lines, string(runes)+suffix)
-	return lines
+	return termui.TerminalColumnsForWriter(d.out)
 }
 
 func (d *Display) forwardingDisplayLines() []string {
@@ -145,15 +35,15 @@ func (d *Display) forwardingDisplayLines() []string {
 	width := d.fieldValueWidth()
 	localAddr := strings.TrimSpace(d.localAddr)
 	localHealthy := localAddr != "" && d.localTargetHealthy(localAddr)
-	localTailWidth := visibleRuneCount("→ ") + visibleRuneCount(localAddr)
+	localTailWidth := termui.VisibleRuneCount("→ ") + termui.VisibleRuneCount(localAddr)
 	if localAddr != "" {
-		localTailWidth += visibleRuneCount(" ●")
+		localTailWidth += termui.VisibleRuneCount(" ●")
 	} else {
-		localTailWidth += visibleRuneCount("--")
+		localTailWidth += termui.VisibleRuneCount("--")
 	}
-	externalWidth := visibleRuneCount(publicURL)
+	externalWidth := termui.VisibleRuneCount(publicURL)
 	if d.protected {
-		externalWidth += visibleRuneCount(displayLockIcon + " ")
+		externalWidth += termui.VisibleRuneCount(displayLockIcon + " ")
 	}
 	if externalWidth+1+localTailWidth <= width {
 		return []string{d.renderForwardingExternalLine(publicURL, d.protected) + " " + d.renderForwardingLocalLine(localAddr, localHealthy, true)}
@@ -165,7 +55,7 @@ func (d *Display) forwardingDisplayLines() []string {
 
 func (d *Display) forwardingExternalLines(publicURL string, width int, protected bool) []string {
 	if !protected {
-		chunks := wrapPlainText(publicURL, width)
+		chunks := termui.WrapPlainText(publicURL, width)
 		lines := make([]string, 0, len(chunks))
 		for _, chunk := range chunks {
 			lines = append(lines, d.styled(ansiCyan, chunk))
@@ -173,7 +63,7 @@ func (d *Display) forwardingExternalLines(publicURL string, width int, protected
 		return lines
 	}
 
-	rawLines := wrapTextWithLeadingPrefix(publicURL, displayLockIcon+" ", width)
+	rawLines := termui.WrapTextWithLeadingPrefix(publicURL, displayLockIcon+" ", width)
 	lines := make([]string, 0, len(rawLines))
 	for i, line := range rawLines {
 		if i == 0 && strings.HasPrefix(line, displayLockIcon+" ") {
@@ -189,7 +79,7 @@ func (d *Display) forwardingLocalLines(localAddr string, healthy bool, width int
 	if strings.TrimSpace(localAddr) == "" {
 		return []string{d.styled(ansiDim, "→") + " " + d.styled(ansiDim, "--")}
 	}
-	rawLines := wrapTextWithPrefixAndSuffix(localAddr, "→ ", " ●", width)
+	rawLines := termui.WrapTextWithPrefixAndSuffix(localAddr, "→ ", " ●", width)
 	lines := make([]string, 0, len(rawLines))
 	for _, line := range rawLines {
 		lines = append(lines, d.renderForwardingLocalWrappedLine(line, healthy))

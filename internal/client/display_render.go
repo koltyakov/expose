@@ -5,10 +5,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/termui"
 	"github.com/koltyakov/expose/internal/traffic"
 )
 
@@ -199,17 +199,7 @@ func (d *Display) writeField(b *strings.Builder, label, value string) {
 }
 
 func (d *Display) writeFieldLines(b *strings.Builder, label string, values []string) {
-	if len(values) == 0 {
-		values = []string{""}
-	}
-	for i, value := range values {
-		currentLabel := ""
-		if i == 0 {
-			currentLabel = label
-		}
-		pad := max(displayFieldWidth-len(currentLabel), 1)
-		fmt.Fprintf(b, "%s%s%s\n", currentLabel, strings.Repeat(" ", pad), value)
-	}
+	termui.WriteFieldLines(b, displayFieldWidth, label, values)
 }
 
 // formatStatus returns a colored status code and text string.
@@ -233,23 +223,11 @@ func (d *Display) formatStatus(code int) string {
 
 // styled wraps text with ANSI codes when color is enabled.
 func (d *Display) styled(code, text string) string {
-	if !d.color {
-		return text
-	}
-	return code + text + ansiReset
+	return termui.Styler{Color: d.color}.Style(code, text)
 }
 
 func displayCapitalizeCSV(s string) string {
-	parts := strings.Split(s, ",")
-	for i, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			parts[i] = part
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	return strings.Join(parts, ", ")
+	return termui.CapitalizeCSV(s)
 }
 
 func (d *Display) localTargetHealthy(raw string) bool {
@@ -310,14 +288,7 @@ func displayTruncatePath(path string, max int) string {
 
 // displayFormatDuration formats a duration for display in the request log.
 func displayFormatDuration(d time.Duration) string {
-	switch {
-	case d < time.Millisecond:
-		return fmt.Sprintf("%dμs", d.Microseconds())
-	case d < time.Second:
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	default:
-		return fmt.Sprintf("%.2fs", d.Seconds())
-	}
+	return termui.FormatDurationRounded(d)
 }
 
 func trafficSnapshotForDisplayAt(d *Display, now time.Time) traffic.Snapshot {
@@ -469,26 +440,7 @@ func pluralizeCount(v int, singular, plural string) string {
 }
 
 func displayFormatDowntime(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	d = d.Truncate(time.Second)
-	seconds := int(d.Seconds())
-	if seconds < 60 {
-		return fmt.Sprintf("%d %s", seconds, pluralizeCount(seconds, "second", "seconds"))
-	}
-	minutes := seconds / 60
-	if minutes < 60 {
-		return fmt.Sprintf("%d %s", minutes, pluralizeCount(minutes, "minute", "minutes"))
-	}
-	hours := minutes / 60
-	minutes = minutes % 60
-	if minutes == 0 {
-		return fmt.Sprintf("%d %s", hours, pluralizeCount(hours, "hour", "hours"))
-	}
-	return fmt.Sprintf("%d %s, %d %s",
-		hours, pluralizeCount(hours, "hour", "hours"),
-		minutes, pluralizeCount(minutes, "minute", "minutes"))
+	return termui.FormatDowntime(d)
 }
 
 type displayLatencyPercentilesValues struct {
@@ -499,38 +451,16 @@ type displayLatencyPercentilesValues struct {
 }
 
 func displayLatencyPercentiles(samples []time.Duration) (displayLatencyPercentilesValues, bool) {
-	if len(samples) == 0 {
+	values, ok := termui.FormatLatencyPercentiles(samples, displayFormatDuration)
+	if !ok {
 		return displayLatencyPercentilesValues{}, false
 	}
-	sorted := append([]time.Duration(nil), samples...)
-	slices.Sort(sorted)
 	return displayLatencyPercentilesValues{
-		p50: displayFormatDuration(durationPercentile(sorted, 50)),
-		p90: displayFormatDuration(durationPercentile(sorted, 90)),
-		p95: displayFormatDuration(durationPercentile(sorted, 95)),
-		p99: displayFormatDuration(durationPercentile(sorted, 99)),
+		p50: values.P50,
+		p90: values.P90,
+		p95: values.P95,
+		p99: values.P99,
 	}, true
-}
-
-func durationPercentile(sorted []time.Duration, p int) time.Duration {
-	if len(sorted) == 0 {
-		return 0
-	}
-	if p <= 0 {
-		return sorted[0]
-	}
-	if p >= 100 {
-		return sorted[len(sorted)-1]
-	}
-	n := len(sorted)
-	idx := (p*n + 99) / 100 // ceil(p*n/100)
-	if idx <= 0 {
-		idx = 1
-	}
-	if idx > n {
-		idx = n
-	}
-	return sorted[idx-1]
 }
 
 // displayFormatUptime formats a duration as a human-readable uptime string.

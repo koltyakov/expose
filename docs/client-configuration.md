@@ -165,6 +165,7 @@ The client shows a real-time terminal UI with:
 - Request log with method, path, status, and duration
 - Latency percentiles (P50/P90/P95/P99)
 - Active clients and WebSocket connection count
+- Combined inbound and outbound traffic totals with live 1-second rates
 - WAF blocked count (when WAF is enabled on server)
 - Update availability notifications
 

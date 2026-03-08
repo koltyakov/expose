@@ -11,14 +11,30 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
+
+type testTrafficRecorder struct {
+	inbound  atomic.Int64
+	outbound atomic.Int64
+}
+
+func (r *testTrafficRecorder) RecordTraffic(direction traffic.Direction, bytes int64) {
+	switch direction {
+	case traffic.DirectionInbound:
+		r.inbound.Add(bytes)
+	case traffic.DirectionOutbound:
+		r.outbound.Add(bytes)
+	}
+}
 
 func TestNextBackoff(t *testing.T) {
 	t.Parallel()
@@ -134,6 +150,57 @@ func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 	}
 	if got := firstHeaderValue(resp.Headers, "X-Upstream"); got != "ok" {
 		t.Fatalf("expected X-Upstream header to be preserved, got %q", got)
+	}
+}
+
+func TestForwardLocalRecordsTraffic(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	recorder := &testTrafficRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		_, _ = io.WriteString(w, "response-data")
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient:   &http.Client{Timeout: 5 * time.Second},
+		trafficSink: recorder,
+	}
+	resp := c.forwardLocal(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID:      "req_traffic",
+		Method:  http.MethodPost,
+		Path:    "/upload",
+		Body:    []byte("request-data"),
+		Headers: map[string][]string{"Content-Type": {"text/plain"}},
+	})
+
+	if got := string(gotBody); got != "request-data" {
+		t.Fatalf("expected upstream request body, got %q", got)
+	}
+	body, err := resp.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "response-data" {
+		t.Fatalf("expected response body to round-trip, got %q", string(body))
+	}
+	if got := recorder.inbound.Load(); got != int64(len("request-data")) {
+		t.Fatalf("expected inbound bytes %d, got %d", len("request-data"), got)
+	}
+	if got := recorder.outbound.Load(); got != int64(len("response-data")) {
+		t.Fatalf("expected outbound bytes %d, got %d", len("response-data"), got)
 	}
 }
 
@@ -872,6 +939,50 @@ func TestForwardAndSendSmallResponseInline(t *testing.T) {
 	}
 }
 
+func TestForwardAndSendInlineBodyRecordsTraffic(t *testing.T) {
+	t.Parallel()
+
+	recorder := &testTrafficRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(append([]byte("reply:"), body...))
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		},
+		trafficSink: recorder,
+	}
+
+	req := &tunnelproto.HTTPRequest{
+		ID:     "req_inline_traffic",
+		Method: http.MethodPost,
+		Path:   "/echo",
+		Body:   []byte("payload"),
+	}
+	c.forwardAndSend(context.Background(), base, req, nil, func(tunnelproto.Message) error { return nil }, nil)
+
+	if got := recorder.inbound.Load(); got != int64(len("payload")) {
+		t.Fatalf("expected inbound bytes %d, got %d", len("payload"), got)
+	}
+	if got := recorder.outbound.Load(); got != int64(len("reply:payload")) {
+		t.Fatalf("expected outbound bytes %d, got %d", len("reply:payload"), got)
+	}
+}
+
 func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 	t.Parallel()
 
@@ -961,6 +1072,7 @@ func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 	t.Parallel()
 
 	var gotBody []byte
+	recorder := &testTrafficRecorder{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var err error
 		gotBody, err = io.ReadAll(r.Body)
@@ -984,6 +1096,7 @@ func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 				ResponseHeaderTimeout: 5 * time.Second,
 			},
 		},
+		trafficSink: recorder,
 	}
 
 	var msgs []tunnelproto.Message
@@ -1019,6 +1132,12 @@ func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 	}
 	if msgs[0].Response.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", msgs[0].Response.Status)
+	}
+	if got := recorder.inbound.Load(); got != int64(len(expected)) {
+		t.Fatalf("expected inbound bytes %d, got %d", len(expected), got)
+	}
+	if got := recorder.outbound.Load(); got != int64(len("received")) {
+		t.Fatalf("expected outbound bytes %d, got %d", len("received"), got)
 	}
 }
 

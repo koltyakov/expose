@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 // redraw repaints the entire screen. Caller must hold d.mu.
@@ -37,6 +39,7 @@ func (d *Display) redraw() {
 
 	// ── Connection info ─────────────────────────────────────────
 	placeholder := d.styled(ansiDim, "--")
+	trafficSnapshot := trafficSnapshotForDisplay(d)
 
 	if d.status != "" {
 		statusColor := ansiGreen
@@ -130,6 +133,7 @@ func (d *Display) redraw() {
 		d.wsDisplayMin, len(d.wsConns))
 	activeCount := d.activeClientCount()
 	clientCount := len(d.visitors)
+	d.writeField(&b, "Traffic", d.trafficCombinedSummaryText(trafficSnapshot))
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
 	httpSummary := fmt.Sprintf("%d total", d.totalHTTP)
 	if d.wafEnabled {
@@ -317,6 +321,27 @@ func displayFormatDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%.2fs", d.Seconds())
 	}
+}
+
+func trafficSnapshotForDisplay(d *Display) traffic.Snapshot {
+	if d == nil || d.traffic == nil {
+		return traffic.Snapshot{}
+	}
+	return d.traffic.SnapshotAt(d.now())
+}
+
+func (d *Display) trafficSummaryText(total, rate int64) string {
+	return traffic.FormatBytes(total) + " total " + d.styled(ansiDim, "("+traffic.FormatRate(rate)+")")
+}
+
+func (d *Display) trafficCombinedSummaryText(snapshot traffic.Snapshot) string {
+	return d.trafficStyledSegment("In", d.trafficSummaryText(snapshot.InboundTotal, snapshot.InboundRate)) +
+		" " + d.styled(ansiDim, "|") + " " +
+		d.trafficStyledSegment("Out", d.trafficSummaryText(snapshot.OutboundTotal, snapshot.OutboundRate))
+}
+
+func (d *Display) trafficStyledSegment(label, value string) string {
+	return label + " " + value
 }
 
 func displayFormatStartedAt(t time.Time) string {

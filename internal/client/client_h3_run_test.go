@@ -203,6 +203,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 }
 
 func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
+	localMessageCh := make(chan string, 1)
 	localUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ws" {
 			http.NotFound(w, r)
@@ -216,7 +217,15 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			msgType, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			select {
+			case localMessageCh <- string(payload):
+			default:
+			}
+			if err := conn.WriteMessage(msgType, []byte("pong")); err != nil {
 				return
 			}
 		}
@@ -294,6 +303,18 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 			}
 			ackCh <- ack
 
+			if err := tunnelproto.WriteStreamBinaryFrameV2(stream, tunnelproto.BinaryFrameWSData, "ws_h3_display", websocket.TextMessage, []byte("ping")); err != nil {
+				t.Errorf("write websocket data to worker stream: %v", err)
+				return
+			}
+
+			var reply tunnelproto.Message
+			if err := tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &reply); err != nil {
+				t.Errorf("read websocket reply from worker stream: %v", err)
+				return
+			}
+			ackCh <- reply
+
 			<-closeWS
 			if err := tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{
 				Kind: tunnelproto.KindWSClose,
@@ -345,6 +366,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	c.h3TLSConfig = &tls.Config{InsecureSkipVerify: true}
 	c.SetDisplay(display)
+	c.SetTrafficSink(display)
 	c.SetLifecycleHooks(LifecycleHooks{
 		OnTunnelReady: func(ev TunnelReadyEvent) {
 			readyCh <- ev
@@ -369,6 +391,29 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	if ack.WSOpenAck == nil || !ack.WSOpenAck.OK {
 		t.Fatalf("expected successful websocket open ack, got: %+v", ack.WSOpenAck)
 	}
+	waitForCondition(t, 5*time.Second, "local websocket message delivery", func() (string, bool) {
+		select {
+		case msg := <-localMessageCh:
+			return msg, msg == "ping"
+		default:
+			return "", false
+		}
+	})
+	reply := waitForCondition(t, 5*time.Second, "websocket reply on h3 worker", func() (tunnelproto.Message, bool) {
+		select {
+		case msg := <-ackCh:
+			return msg, msg.Kind == tunnelproto.KindWSData
+		default:
+			return tunnelproto.Message{}, false
+		}
+	})
+	replyPayload, err := reply.WSData.Payload()
+	if err != nil {
+		t.Fatalf("decode websocket reply payload: %v", err)
+	}
+	if string(replyPayload) != "pong" {
+		t.Fatalf("expected websocket reply payload %q, got %q", "pong", string(replyPayload))
+	}
 
 	buf.Reset()
 	display.mu.Lock()
@@ -377,6 +422,9 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "1 open") {
 		t.Fatalf("expected websocket counter in QUIC display, got: %s", out)
+	}
+	if !strings.Contains(out, "Traffic") || !strings.Contains(out, "In 4 B total (4 B/s) | Out 4 B total (4 B/s)") {
+		t.Fatalf("expected websocket traffic in QUIC display, got: %s", out)
 	}
 
 	close(closeWS)

@@ -15,6 +15,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/koltyakov/expose/internal/timerpool"
+	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 )
@@ -529,6 +530,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			if err := writeStreamWSData(msgType, payload); err != nil {
 				return
 			}
+			rt.client.recordTraffic(traffic.DirectionOutbound, int64(len(payload)))
 		}
 	}()
 
@@ -557,6 +559,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			if err := upstreamConn.WriteMessage(msg.WSData.MessageType, payload); err != nil {
 				return nil
 			}
+			rt.client.recordTraffic(traffic.DirectionInbound, int64(len(payload)))
 		case tunnelproto.KindWSClose:
 			if msg.WSClose == nil {
 				return nil

@@ -19,6 +19,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/debughttp"
 	ilog "github.com/koltyakov/expose/internal/log"
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 func runUp(ctx context.Context, args []string) int {
@@ -175,6 +176,11 @@ func runUpFromFile(ctx context.Context, path string) int {
 		c := client.New(clientCfg, nil)
 		c.SetVersion(Version)
 		c.SetLogger(baseLog)
+		if ui != nil {
+			c.SetTrafficSink(client.TrafficSinkFunc(func(direction traffic.Direction, bytes int64) {
+				ui.RecordTraffic(sub, direction, bytes)
+			}))
+		}
 		clients = append(clients, hostClient{
 			subdomain:  sub,
 			routes:     hostRoutes[sub],

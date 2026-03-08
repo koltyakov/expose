@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 // ShowBanner sets the version string and draws the initial screen.
@@ -251,6 +253,17 @@ func (d *Display) setNoticeLocked(level, msg string) {
 	level = strings.ToLower(strings.TrimSpace(level))
 	d.noticeText = msg
 	d.noticeLevel = level
+}
+
+func (d *Display) RecordTraffic(direction traffic.Direction, bytes int64) {
+	if d == nil || bytes <= 0 {
+		return
+	}
+	now := d.now()
+	if d.traffic == nil {
+		d.traffic = traffic.NewMeter(traffic.DefaultWindow)
+	}
+	d.traffic.AddAt(now, direction, bytes)
 }
 
 // appendEntry adds a request entry to the rolling log, evicting the oldest

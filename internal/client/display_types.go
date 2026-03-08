@@ -5,6 +5,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 // ANSI escape codes for terminal styling.
@@ -46,7 +48,7 @@ const (
 	displayLocalHealthCacheTTL   = 2 * time.Second
 	displayLocalHealthTimeout    = 200 * time.Millisecond
 	displayLatencySampleMax      = 1024
-	displayAutoRefreshInterval   = 5 * time.Second
+	displayAutoRefreshInterval   = 1 * time.Second
 	displaySessionDetailIDFor    = 15 * time.Second
 	displaySessionDetailStartFor = 30 * time.Second
 	displayMicroDisconnectMax    = 5 * time.Second
@@ -136,6 +138,7 @@ type Display struct {
 	wsDebounceGen   uint64
 
 	localHealth map[string]localHealthEntry
+	traffic     *traffic.Meter
 
 	refreshInterval time.Duration
 	refreshStop     chan struct{}
@@ -154,6 +157,7 @@ func NewDisplay(color bool) *Display {
 		latencySamples:  make([]time.Duration, 0, displayLatencySampleMax),
 		nowFunc:         time.Now,
 		localHealth:     make(map[string]localHealthEntry),
+		traffic:         traffic.NewMeter(traffic.DefaultWindow),
 		refreshInterval: displayAutoRefreshInterval,
 	}
 }

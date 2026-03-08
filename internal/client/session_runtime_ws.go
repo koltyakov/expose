@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -63,6 +64,7 @@ func (rt *clientSessionRuntime) startLocalWSReader(streamID string, streamConn *
 			if err := rt.writeBinary(tunnelproto.BinaryFrameWSData, streamID, msgType, payload); err != nil {
 				return
 			}
+			rt.client.recordTraffic(traffic.DirectionOutbound, int64(len(payload)))
 		}
 	}()
 }
@@ -123,7 +125,9 @@ func (rt *clientSessionRuntime) handleWSData(data *tunnelproto.WSData) {
 	}
 	if err := streamConn.WriteMessage(data.MessageType, payload); err != nil {
 		rt.deleteWSConn(data.ID)
+		return
 	}
+	rt.client.recordTraffic(traffic.DirectionInbound, int64(len(payload)))
 }
 
 func (rt *clientSessionRuntime) handleWSClose(closeMsg *tunnelproto.WSClose) {

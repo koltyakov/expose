@@ -167,3 +167,4 @@ tunnels:
 - `expose up init` requires an interactive terminal.
 - `expose up` is project-oriented; `expose http` is still the fastest path for one-off tunnels.
 - Tunnel protection here is per-config (shared across all routes), not per-route.
+- In interactive terminals, the `expose up` dashboard also shows aggregate proxied traffic on one line, with inbound and outbound totals plus current 1-second rates across all managed routes.

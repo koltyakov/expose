@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -43,7 +44,9 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	if err != nil {
 		return &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway}
 	}
-	localReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), bytes.NewReader(body))
+	localReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), newTrafficCountingReader(bytes.NewReader(body), func(n int) {
+		c.recordTraffic(traffic.DirectionInbound, int64(n))
+	}))
 	if err != nil {
 		return &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway}
 	}
@@ -79,7 +82,9 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	}
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	_, err = buf.ReadFrom(io.LimitReader(resp.Body, localForwardResponseMaxB64+1))
+	_, err = buf.ReadFrom(io.LimitReader(newTrafficCountingReader(resp.Body, func(n int) {
+		c.recordTraffic(traffic.DirectionOutbound, int64(n))
+	}), localForwardResponseMaxB64+1))
 	if err != nil {
 		bufferPool.Put(buf)
 		return &tunnelproto.HTTPResponse{
@@ -143,8 +148,15 @@ func (c *Client) forwardAndSend(
 					if !ok {
 						return
 					}
-					if _, err := pw.Write(chunk); err != nil {
-						return
+					for len(chunk) > 0 {
+						written, err := pw.Write(chunk)
+						if written > 0 {
+							c.recordTraffic(traffic.DirectionInbound, int64(written))
+							chunk = chunk[written:]
+						}
+						if err != nil {
+							return
+						}
 					}
 				case <-ctx.Done():
 					pw.CloseWithError(ctx.Err())
@@ -163,7 +175,9 @@ func (c *Client) forwardAndSend(
 			c.logForwardResult(req, http.StatusBadGateway, started)
 			return
 		}
-		body = bytes.NewReader(data)
+		body = newTrafficCountingReader(bytes.NewReader(data), func(n int) {
+			c.recordTraffic(traffic.DirectionInbound, int64(n))
+		})
 	}
 	if pipeReader != nil {
 		// Ensure the body pump goroutine unblocks if forwarding fails before the
@@ -234,6 +248,9 @@ func (c *Client) forwardAndSend(
 	*firstBufRef = firstBuf
 	defer responseFirstChunkPool.Put(firstBufRef)
 	n, readErr := io.ReadFull(resp.Body, firstBuf)
+	if n > 0 {
+		c.recordTraffic(traffic.DirectionOutbound, int64(n))
+	}
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		// Small response - send inline.
@@ -306,6 +323,7 @@ func (c *Client) forwardAndSend(
 	for {
 		cn, err := resp.Body.Read(chunkBuf)
 		if cn > 0 {
+			c.recordTraffic(traffic.DirectionOutbound, int64(cn))
 			if writeRespBodyChunk != nil {
 				if wErr := writeRespBodyChunk(req.ID, chunkBuf[:cn]); wErr != nil {
 					c.logForwardResult(req, resp.StatusCode, started)
@@ -330,6 +348,29 @@ func (c *Client) forwardAndSend(
 		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID},
 	})
 	c.logForwardResult(req, resp.StatusCode, started)
+}
+
+type trafficCountingReader struct {
+	reader io.Reader
+	onRead func(int)
+}
+
+func newTrafficCountingReader(reader io.Reader, onRead func(int)) io.Reader {
+	if reader == nil || onRead == nil {
+		return reader
+	}
+	return &trafficCountingReader{reader: reader, onRead: onRead}
+}
+
+func (r *trafficCountingReader) Read(p []byte) (int, error) {
+	if r == nil || r.reader == nil {
+		return 0, io.EOF
+	}
+	n, err := r.reader.Read(p)
+	if n > 0 && r.onRead != nil {
+		r.onRead(n)
+	}
+	return n, err
 }
 
 // logForwardResult logs the forwarded request result via display or logger.

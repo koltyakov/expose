@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 type syncBuffer struct {
@@ -35,7 +37,9 @@ func (b *syncBuffer) Reset() {
 
 func newTestDisplay(color bool) (*Display, *syncBuffer) {
 	buf := &syncBuffer{}
-	d := &Display{out: buf, color: color, wsConns: make(map[string]wsEntry), visitors: make(map[string]time.Time), nowFunc: time.Now}
+	d := NewDisplay(color)
+	d.out = buf
+	d.nowFunc = time.Now
 	return d, buf
 }
 
@@ -207,6 +211,84 @@ func TestDisplayLogRequest(t *testing.T) {
 	}
 	if !strings.Contains(out, "12ms") {
 		t.Fatal("expected duration")
+	}
+}
+
+func TestDisplayShowsTrafficTotalsAndRates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.March, 8, 12, 0, 0, 0, time.UTC)
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.RecordTraffic(traffic.DirectionInbound, 1536)
+	d.RecordTraffic(traffic.DirectionOutbound, 2048)
+
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+
+	if !strings.Contains(out, "Traffic") || !strings.Contains(out, "In 1.5 KB total (1.5 KB/s) | Out 2 KB total (2 KB/s)") {
+		t.Fatalf("expected combined traffic summary, got: %s", out)
+	}
+}
+
+func TestDisplayShowsTrafficWithColorStyling(t *testing.T) {
+	t.Parallel()
+
+	d, buf := newTestDisplay(true)
+	d.ShowBanner("dev")
+	d.RecordTraffic(traffic.DirectionInbound, 1024)
+	d.RecordTraffic(traffic.DirectionOutbound, 2048)
+
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+	var trafficLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Traffic") {
+			trafficLine = line
+			break
+		}
+	}
+	if trafficLine == "" {
+		t.Fatalf("expected traffic line in output, got: %q", out)
+	}
+
+	if strings.Contains(trafficLine, ansiCyan) || strings.Contains(trafficLine, ansiGreen) {
+		t.Fatalf("expected traffic text to use default color, got: %q", trafficLine)
+	}
+	if !strings.Contains(trafficLine, ansiDim+"(1 KB/s)"+ansiReset) {
+		t.Fatalf("expected inbound speed to be dimmed, got: %q", trafficLine)
+	}
+	if !strings.Contains(trafficLine, ansiDim+"(2 KB/s)"+ansiReset) {
+		t.Fatalf("expected outbound speed to be dimmed, got: %q", trafficLine)
+	}
+}
+
+func TestDisplayTrafficRateDecaysAfterWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.March, 8, 12, 0, 0, 0, time.UTC)
+	d, buf := newTestDisplay(false)
+	d.nowFunc = func() time.Time { return now }
+	d.ShowBanner("dev")
+	d.RecordTraffic(traffic.DirectionInbound, 1024)
+
+	now = now.Add(1100 * time.Millisecond)
+
+	buf.Reset()
+	d.mu.Lock()
+	d.redraw()
+	d.mu.Unlock()
+	out := buf.String()
+
+	if !strings.Contains(out, "Traffic") || !strings.Contains(out, "In 1 KB total (0 B/s) | Out 0 B total (0 B/s)") {
+		t.Fatalf("expected traffic rate to decay, got: %s", out)
 	}
 }
 

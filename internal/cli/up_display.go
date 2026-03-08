@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 const (
@@ -65,6 +67,7 @@ type upDashboard struct {
 	visitors        map[string]time.Time
 	wsConns         map[string]upDashboardWS
 	localHealth     map[string]upDashboardLocalHealth
+	trafficMeters   map[string]*traffic.Meter
 	totalHTTP       int
 	wsDisplayMin    int
 	wsDebounceTimer *time.Timer
@@ -72,8 +75,9 @@ type upDashboard struct {
 	statusText      string
 	statusChangedAt time.Time
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	nowFunc func() time.Time
 }
 
 type upDashboardGroup struct {
@@ -134,8 +138,10 @@ func newUpDashboard(configPath, version string) *upDashboard {
 		visitors:       make(map[string]time.Time),
 		wsConns:        make(map[string]upDashboardWS),
 		localHealth:    make(map[string]upDashboardLocalHealth),
+		trafficMeters:  make(map[string]*traffic.Meter),
 		stopCh:         make(chan struct{}),
 		doneCh:         make(chan struct{}),
+		nowFunc:        time.Now,
 	}
 }
 
@@ -363,6 +369,15 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 	d.redrawLocked()
 }
 
+func (d *upDashboard) RecordTraffic(subdomain string, direction traffic.Direction, bytes int64) {
+	if d == nil || bytes <= 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.trafficMeterLocked(subdomain).AddAt(d.now(), direction, bytes)
+}
+
 func (d *upDashboard) ensureGroupLocked(subdomain string) *upDashboardGroup {
 	if d.groups == nil {
 		d.groups = make(map[string]*upDashboardGroup)
@@ -436,6 +451,7 @@ func (d *upDashboard) redrawLocked() {
 	fmt.Fprintf(&b, "%s%s%s\n\n", name, strings.Repeat(" ", gap), hint)
 
 	placeholder := d.styled(upANSIDim, "--")
+	trafficSnapshot := d.aggregateTrafficSnapshotLocked()
 	tunnelIDs := d.tunnelIDsLocked()
 	status := d.aggregateStatusLocked()
 	if status != "" {
@@ -517,6 +533,7 @@ func (d *upDashboard) redrawLocked() {
 	}
 	activeCount := d.activeClientCountLocked()
 	clientCount := len(d.visitors)
+	d.writeField(&b, "Traffic", d.trafficSummaryText(trafficSnapshot))
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
 	if wsCount > 0 {
 		d.writeField(&b, "WebSockets", fmt.Sprintf("%d open", wsCount))
@@ -964,7 +981,44 @@ func (d *upDashboard) styled(code, text string) string {
 }
 
 func (d *upDashboard) now() time.Time {
+	if d != nil && d.nowFunc != nil {
+		return d.nowFunc()
+	}
 	return time.Now()
+}
+
+func (d *upDashboard) trafficMeterLocked(subdomain string) *traffic.Meter {
+	subdomain = strings.TrimSpace(subdomain)
+	if d.trafficMeters == nil {
+		d.trafficMeters = make(map[string]*traffic.Meter)
+	}
+	meter, ok := d.trafficMeters[subdomain]
+	if ok {
+		return meter
+	}
+	meter = traffic.NewMeter(traffic.DefaultWindow)
+	d.trafficMeters[subdomain] = meter
+	return meter
+}
+
+func (d *upDashboard) aggregateTrafficSnapshotLocked() traffic.Snapshot {
+	if len(d.trafficMeters) == 0 {
+		return traffic.Snapshot{}
+	}
+	now := d.now()
+	snapshots := make([]traffic.Snapshot, 0, len(d.trafficMeters))
+	for _, meter := range d.trafficMeters {
+		snapshots = append(snapshots, meter.SnapshotAt(now))
+	}
+	return traffic.CombineSnapshots(snapshots...)
+}
+
+func (d *upDashboard) trafficSummaryText(snapshot traffic.Snapshot) string {
+	return "In " + traffic.FormatBytes(snapshot.InboundTotal) + " total " +
+		d.styled(upANSIDim, "("+traffic.FormatRate(snapshot.InboundRate)+")") +
+		" " + d.styled(upANSIDim, "|") + " " +
+		"Out " + traffic.FormatBytes(snapshot.OutboundTotal) + " total " +
+		d.styled(upANSIDim, "("+traffic.FormatRate(snapshot.OutboundRate)+")")
 }
 
 type upDashboardHandler struct {

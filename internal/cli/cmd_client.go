@@ -319,6 +319,7 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 		}
 		defer displayCleanup()
 		c.SetDisplay(display)
+		c.SetTrafficSink(display)
 		logger = ilog.NewStderr("warn")
 	} else {
 		logger = ilog.New("info")

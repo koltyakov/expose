@@ -15,6 +15,7 @@ Update      v1.1.0 available - run expose update or press Ctrl+U
 Latency     12ms
 Forwarding  https://myapp.example.com → http://127.0.0.1:3000 (healthy)
 Notice      tunnel register failed, connect: connection refused; retrying in 2s
+Traffic     In 1.5 MB total (180 KB/s) | Out 980 KB total (96 KB/s)
 Clients     2 active, 5 total
 WebSockets  1 open
 
@@ -38,7 +39,12 @@ Latency         P50 8ms | P90 15ms | P95 22ms | P99 45ms
 | **Forwarding** | Public URL → local target, with health status of local port                   |
 | **Notice**     | Most recent client-side warning/info message (retries, provisioning, updates) |
 | **Clients**    | Active and total unique visitor count                                         |
+| **Traffic**    | Combined inbound/downloaded and outbound/uploaded totals with live 1-second rolling rates |
 | **WebSockets** | Number of open WebSocket relay connections                                    |
+
+Traffic includes proxied HTTP request/response bodies and WebSocket frame
+payloads. It does not include headers, TLS overhead, tunnel framing, or other
+control messages.
 
 ## Request Log
 

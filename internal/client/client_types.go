@@ -11,6 +11,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/traffic"
 )
 
 // Type aliases for the shared domain request/response types.
@@ -49,6 +50,18 @@ type LifecycleHooks struct {
 	OnSessionDrop     func(SessionDisconnectEvent)
 }
 
+type TrafficRecorder interface {
+	RecordTraffic(direction traffic.Direction, bytes int64)
+}
+
+type TrafficSinkFunc func(direction traffic.Direction, bytes int64)
+
+func (f TrafficSinkFunc) RecordTraffic(direction traffic.Direction, bytes int64) {
+	if f != nil {
+		f(direction, bytes)
+	}
+}
+
 // ErrAutoUpdated is returned from [Client.Run] when the binary was replaced
 // by the auto-updater and the caller should restart the process.
 var ErrAutoUpdated = errors.New("binary updated; restart required")
@@ -65,6 +78,7 @@ type Client struct {
 	autoUpdate  bool         // when true, periodically self-update and restart
 	resumeID    string       // last tunnel ID, reused on reconnect attempts
 	hooks       LifecycleHooks
+	trafficSink TrafficRecorder
 }
 
 // SetDisplay configures the interactive terminal display.
@@ -95,6 +109,10 @@ func (c *Client) SetAutoUpdate(enabled bool) {
 // SetLifecycleHooks configures optional callbacks for tunnel lifecycle events.
 func (c *Client) SetLifecycleHooks(hooks LifecycleHooks) {
 	c.hooks = hooks
+}
+
+func (c *Client) SetTrafficSink(sink TrafficRecorder) {
+	c.trafficSink = sink
 }
 
 const (

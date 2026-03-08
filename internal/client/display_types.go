@@ -85,6 +85,8 @@ type Display struct {
 	mu    sync.Mutex
 	color bool
 
+	terminalColumnsFn func() int
+
 	// banner / header state
 	version       string
 	status        string // "online", "reconnecting", …

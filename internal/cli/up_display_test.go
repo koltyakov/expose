@@ -203,3 +203,36 @@ func TestUpDashboardReconnectDetailsShowCumulativeDowntime(t *testing.T) {
 		t.Fatalf("expected reconnect details to show cumulative downtime, got: %s", rendered)
 	}
 }
+
+func TestUpDashboardForwardingWrapsLocalTargetOnNarrowTerminal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.March, 8, 12, 0, 0, 0, time.UTC)
+	d, out := newTestUpDashboard(now)
+	d.terminalColumnsFn = func() int { return 60 }
+
+	publicURL := "https://very-long-subdomain.example.com"
+	localTarget := "http://localhost:3000"
+	cacheKey, _, ok := upLocalTargetDialAddr(localTarget)
+	if !ok {
+		t.Fatal("expected valid local target")
+	}
+	d.localHealth[cacheKey] = upDashboardLocalHealth{OK: true, CheckedAt: now}
+	d.groups["app"].PublicURL = publicURL
+
+	out.Reset()
+	d.mu.Lock()
+	d.redrawLocked()
+	d.mu.Unlock()
+	rendered := out.String()
+
+	firstLine := "Forwarding" + strings.Repeat(" ", upDisplayFieldWidth-len("Forwarding")) + publicURL
+	secondLine := strings.Repeat(" ", upDisplayFieldWidth) + "→ " + localTarget + " ●"
+
+	if !strings.Contains(rendered, firstLine) {
+		t.Fatalf("expected forwarding URL on the labeled row, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, secondLine) {
+		t.Fatalf("expected wrapped forwarding target on aligned continuation row, got: %s", rendered)
+	}
+}

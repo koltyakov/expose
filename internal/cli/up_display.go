@@ -46,13 +46,14 @@ const (
 )
 
 type upDashboard struct {
-	mu         sync.Mutex
-	out        io.Writer
-	color      bool
-	version    string
-	configPath string
-	startedAt  time.Time
-	protectAll bool
+	mu                sync.Mutex
+	out               io.Writer
+	color             bool
+	terminalColumnsFn func() int
+	version           string
+	configPath        string
+	startedAt         time.Time
+	protectAll        bool
 
 	order          []string
 	groups         map[string]*upDashboardGroup
@@ -684,15 +685,28 @@ func (d *upDashboard) redrawLocked() {
 }
 
 func (d *upDashboard) writeField(b *strings.Builder, label, value string) {
-	pad := upDisplayFieldWidth - len(label)
-	if pad < 1 {
-		pad = 1
-	}
-	_, _ = fmt.Fprintf(b, "%s%s%s\n", label, strings.Repeat(" ", pad), value)
+	d.writeFieldLines(b, label, []string{value})
 }
 
 func (d *upDashboard) writeFieldContinuation(b *strings.Builder, value string) {
 	d.writeField(b, "", value)
+}
+
+func (d *upDashboard) writeFieldLines(b *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		values = []string{""}
+	}
+	for i, value := range values {
+		currentLabel := ""
+		if i == 0 {
+			currentLabel = label
+		}
+		pad := upDisplayFieldWidth - len(currentLabel)
+		if pad < 1 {
+			pad = 1
+		}
+		_, _ = fmt.Fprintf(b, "%s%s%s\n", currentLabel, strings.Repeat(" ", pad), value)
+	}
 }
 
 func upCapitalizeCSV(s string) string {
@@ -851,20 +865,19 @@ func (d *upDashboard) anyWAFEnabledLocked() bool {
 
 func (d *upDashboard) forwardingLinesLocked() []string {
 	lines := make([]string, 0)
-	arrow := d.styled(upANSIDim, "→")
-	placeholder := d.styled(upANSIDim, "--")
 	for _, sub := range d.order {
 		g := d.groups[sub]
 		if g == nil {
 			continue
 		}
 		for _, r := range g.Routes {
-			external := placeholder
-			if strings.TrimSpace(g.PublicURL) != "" {
-				external = d.styled(upANSICyan, upRouteExternalURL(g.PublicURL, r))
+			if strings.TrimSpace(g.PublicURL) == "" {
+				lines = append(lines, d.styled(upANSIDim, "--"))
+				continue
 			}
-			local := d.localTargetWithHealthLocked(upRouteLocalTarget(r))
-			lines = append(lines, fmt.Sprintf("%s %s %s", external, arrow, local))
+			external := upRouteExternalURL(g.PublicURL, r)
+			local := upRouteLocalTarget(r)
+			lines = append(lines, d.forwardingValueLinesLocked(external, local, d.localTargetHealthyLocked(local))...)
 		}
 	}
 	return lines
@@ -892,17 +905,6 @@ func upRouteLocalTarget(r upLocalRoute) string {
 		return target
 	}
 	return target + prefix
-}
-
-func (d *upDashboard) localTargetWithHealthLocked(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return d.styled(upANSIDim, "--")
-	}
-	if d.localTargetHealthyLocked(raw) {
-		return raw + " " + d.styled(upANSIGreen, "●")
-	}
-	return raw + " " + d.styled(upANSIRed, "●")
 }
 
 func (d *upDashboard) localTargetHealthyLocked(raw string) bool {

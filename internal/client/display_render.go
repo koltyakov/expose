@@ -114,13 +114,7 @@ func (d *Display) redraw() {
 		d.writeField(&b, "Latency", placeholder)
 	}
 	if d.publicURL != "" {
-		arrow := d.styled(ansiDim, "→")
-		publicURL := d.styled(ansiCyan, d.publicURL)
-		if d.protected {
-			publicURL = d.styled(ansiYellow, displayLockIcon) + " " + publicURL
-		}
-		d.writeField(&b, "Forwarding", fmt.Sprintf("%s %s %s",
-			publicURL, arrow, d.localTargetWithHealth(d.localAddr)))
+		d.writeFieldLines(&b, "Forwarding", d.forwardingDisplayLines())
 	} else {
 		d.writeField(&b, "Forwarding", placeholder)
 	}
@@ -201,8 +195,21 @@ func (d *Display) redraw() {
 
 // writeField writes a label–value pair aligned to displayFieldWidth.
 func (d *Display) writeField(b *strings.Builder, label, value string) {
-	pad := max(displayFieldWidth-len(label), 1)
-	fmt.Fprintf(b, "%s%s%s\n", label, strings.Repeat(" ", pad), value)
+	d.writeFieldLines(b, label, []string{value})
+}
+
+func (d *Display) writeFieldLines(b *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		values = []string{""}
+	}
+	for i, value := range values {
+		currentLabel := ""
+		if i == 0 {
+			currentLabel = label
+		}
+		pad := max(displayFieldWidth-len(currentLabel), 1)
+		fmt.Fprintf(b, "%s%s%s\n", currentLabel, strings.Repeat(" ", pad), value)
+	}
 }
 
 // formatStatus returns a colored status code and text string.
@@ -230,17 +237,6 @@ func (d *Display) styled(code, text string) string {
 		return text
 	}
 	return code + text + ansiReset
-}
-
-func (d *Display) localTargetWithHealth(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return d.styled(ansiDim, "--")
-	}
-	if d.localTargetHealthy(raw) {
-		return raw + " " + d.styled(ansiGreen, "●")
-	}
-	return raw + " " + d.styled(ansiRed, "●")
 }
 
 func displayCapitalizeCSV(s string) string {

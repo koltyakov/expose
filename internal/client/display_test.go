@@ -144,6 +144,35 @@ func TestDisplayTunnelInfoNoTLSMode(t *testing.T) {
 	}
 }
 
+func TestDisplayForwardingWrapsLocalTargetOnNarrowTerminal(t *testing.T) {
+	t.Parallel()
+
+	d, buf := newTestDisplay(false)
+	now := time.Unix(20, 0)
+	d.nowFunc = func() time.Time { return now }
+	d.terminalColumnsFn = func() int { return 60 }
+
+	localTarget := "http://localhost:3000"
+	cacheKey, _, ok := localTargetDialAddr(localTarget)
+	if !ok {
+		t.Fatal("expected valid local target")
+	}
+	d.localHealth[cacheKey] = localHealthEntry{ok: true, checkedAt: now}
+
+	d.ShowTunnelInfo("https://very-long-subdomain.example.com", localTarget, "", "tun_1", false, "ws")
+	out := buf.String()
+
+	firstLine := "Forwarding" + strings.Repeat(" ", displayFieldWidth-len("Forwarding")) + "https://very-long-subdomain.example.com"
+	secondLine := strings.Repeat(" ", displayFieldWidth) + "→ " + localTarget + " ●"
+
+	if !strings.Contains(out, firstLine) {
+		t.Fatalf("expected forwarding URL on the labeled row, got: %s", out)
+	}
+	if !strings.Contains(out, secondLine) {
+		t.Fatalf("expected wrapped forwarding target on aligned continuation row, got: %s", out)
+	}
+}
+
 func TestDisplaySessionDetailRotatesBetweenIDAndStarted(t *testing.T) {
 	t.Parallel()
 

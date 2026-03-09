@@ -169,11 +169,11 @@ func (w *httpsServerErrorLogWriter) logTLSHandshakeLine(line string) bool {
 	if !strings.Contains(line, marker) {
 		return false
 	}
-	idx := strings.Index(line, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(line, marker)
+	if !ok {
 		return false
 	}
-	payload := line[idx+len(marker):]
+	payload := after
 	addr, reason, ok := strings.Cut(payload, ": ")
 	if !ok {
 		w.log.Debug("tls handshake dropped", "detail", payload)

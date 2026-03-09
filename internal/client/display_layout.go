@@ -116,8 +116,8 @@ func (d *Display) renderForwardingLocalWrappedLine(line string, healthy bool) st
 		b.WriteString(" ")
 		line = strings.TrimPrefix(line, "→ ")
 	}
-	if strings.HasSuffix(line, " ●") {
-		body := strings.TrimSuffix(line, " ●")
+	if before, ok := strings.CutSuffix(line, " ●"); ok {
+		body := before
 		b.WriteString(body)
 		color := ansiRed
 		if healthy {

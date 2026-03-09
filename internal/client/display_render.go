@@ -338,10 +338,7 @@ func (d *Display) sessionDetail(now time.Time) string {
 	if cycle <= 0 {
 		return "ID: " + d.tunnelID
 	}
-	elapsed := now.Sub(d.sessionStart)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(now.Sub(d.sessionStart), 0)
 	if elapsed%cycle < idFor {
 		return "ID: " + d.tunnelID
 	}
@@ -371,13 +368,7 @@ func (d *Display) sessionUptimePercent(now time.Time) float64 {
 	if elapsed <= 0 {
 		return 100
 	}
-	downtime := d.sessionEffectiveDowntime(now)
-	if downtime < 0 {
-		downtime = 0
-	}
-	if downtime > elapsed {
-		downtime = elapsed
-	}
+	downtime := min(max(d.sessionEffectiveDowntime(now), 0), elapsed)
 	uptime := elapsed - downtime
 	pct := float64(uptime) / float64(elapsed) * 100
 	if pct < 0 {

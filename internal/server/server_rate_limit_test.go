@@ -49,7 +49,7 @@ func TestRateLimiterRefillsOverTime(t *testing.T) {
 	rl := newRateLimiter()
 
 	// Exhaust burst.
-	for i := 0; i < int(regBurstLimit); i++ {
+	for range int(regBurstLimit) {
 		rl.allow("key-c")
 	}
 	if rl.allow("key-c") {
@@ -99,16 +99,13 @@ func TestRateLimiterConcurrent(t *testing.T) {
 	const keysPerGoroutine = 10
 
 	var wg sync.WaitGroup
-	wg.Add(goroutines)
 	for g := range goroutines {
-		g := g
-		go func() {
-			defer wg.Done()
-			for k := 0; k < keysPerGoroutine; k++ {
+		wg.Go(func() {
+			for k := range keysPerGoroutine {
 				key := fmt.Sprintf("key-%d-%d", g, k)
 				rl.allow(key)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -116,8 +113,7 @@ func TestRateLimiterConcurrent(t *testing.T) {
 func BenchmarkRateLimiterAllowSingleKey(b *testing.B) {
 	rl := newRateLimiter()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rl.allow("bench-key")
 	}
 }
@@ -128,10 +124,11 @@ func BenchmarkRateLimiterAllowDistinctKeys(b *testing.B) {
 	for i := range keys {
 		keys[i] = fmt.Sprintf("key-%d", i)
 	}
+	i := 0
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rl.allow(keys[i%len(keys)])
+		i++
 	}
 }
 

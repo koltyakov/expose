@@ -40,9 +40,7 @@ func (rt *clientSessionRuntime) deleteWSConn(id string) {
 }
 
 func (rt *clientSessionRuntime) startLocalWSReader(streamID string, streamConn *websocket.Conn) {
-	rt.requestWG.Add(1)
-	go func() {
-		defer rt.requestWG.Done()
+	rt.requestWG.Go(func() {
 		defer rt.deleteWSConn(streamID)
 
 		for {
@@ -50,8 +48,7 @@ func (rt *clientSessionRuntime) startLocalWSReader(streamID string, streamConn *
 			if err != nil {
 				closeCode := websocket.CloseNormalClosure
 				closeText := ""
-				var closeErr *websocket.CloseError
-				if errors.As(err, &closeErr) {
+				if closeErr, ok := errors.AsType[*websocket.CloseError](err); ok {
 					closeCode = closeErr.Code
 					closeText = closeErr.Text
 				}
@@ -66,7 +63,7 @@ func (rt *clientSessionRuntime) startLocalWSReader(streamID string, streamConn *
 			}
 			rt.client.recordTraffic(traffic.DirectionOutbound, int64(len(payload)))
 		}
-	}()
+	})
 }
 
 func (rt *clientSessionRuntime) handleWSOpen(open *tunnelproto.WSOpen) {

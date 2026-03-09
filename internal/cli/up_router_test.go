@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,8 +11,7 @@ import (
 func TestStartUpLocalRouterConfiguresDedicatedProxyResources(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	router, _, err := startUpLocalRouter(ctx, []upLocalRoute{{
 		Name:       "api",
@@ -103,8 +101,7 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 		t.Fatalf("unexpected upstream addr type %T", upstream.Listener.Addr())
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	router, port, err := startUpLocalRouter(ctx, []upLocalRoute{{
 		Name:        "api",

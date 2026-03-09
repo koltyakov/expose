@@ -275,13 +275,7 @@ func (rt *clientH3MultiStreamRuntime) writeControlJSON(msg tunnelproto.Message) 
 }
 
 func (rt *clientH3MultiStreamRuntime) maxWorkers() int {
-	workers := maxConcurrentForwardsFor(rt.client.cfg)
-	if workers > h3WorkerOpenCountCeiling {
-		workers = h3WorkerOpenCountCeiling
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(min(maxConcurrentForwardsFor(rt.client.cfg), h3WorkerOpenCountCeiling), 1)
 	return workers
 }
 
@@ -294,9 +288,7 @@ func (rt *clientH3MultiStreamRuntime) initialWorkerCount() int {
 }
 
 func (rt *clientH3MultiStreamRuntime) openWorker() {
-	rt.workerWG.Add(1)
-	go func() {
-		defer rt.workerWG.Done()
+	rt.workerWG.Go(func() {
 		backoff := 100 * time.Millisecond
 		for {
 			if rt.ctx.Err() != nil {
@@ -322,7 +314,7 @@ func (rt *clientH3MultiStreamRuntime) openWorker() {
 			timerpool.Release(timer)
 			backoff = min(backoff*2, 2*time.Second)
 		}
-	}()
+	})
 }
 
 func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
@@ -516,8 +508,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			if err != nil {
 				code := websocket.CloseNormalClosure
 				text := ""
-				var ce *websocket.CloseError
-				if errors.As(err, &ce) {
+				if ce, ok := errors.AsType[*websocket.CloseError](err); ok {
 					code = ce.Code
 					text = ce.Text
 				}

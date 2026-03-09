@@ -507,10 +507,7 @@ func (d *upDashboard) redrawLocked() {
 	if d.version != "" {
 		visName += 1 + len(d.version)
 	}
-	gap := upDisplayContentWidth - visName - visHint
-	if gap < 4 {
-		gap = 4
-	}
+	gap := max(upDisplayContentWidth-visName-visHint, 4)
 	fmt.Fprintf(&b, "%s%s%s\n\n", name, strings.Repeat(" ", gap), hint)
 
 	placeholder := d.styled(upANSIDim, "--")
@@ -593,10 +590,7 @@ func (d *upDashboard) redrawLocked() {
 		d.writeField(&b, "", d.noticeDisplayTextLocked())
 	}
 
-	wsCount := len(d.wsConns)
-	if d.wsDisplayMin > wsCount {
-		wsCount = d.wsDisplayMin
-	}
+	wsCount := max(d.wsDisplayMin, len(d.wsConns))
 	activeCount := d.activeClientCountLocked()
 	clientCount := len(d.visitors)
 	d.writeField(&b, "Traffic", d.trafficSummaryText(trafficSnapshot))
@@ -661,10 +655,7 @@ func (d *upDashboard) redrawLocked() {
 	if p, ok := upLatencyPercentiles(d.latencySamples); ok {
 		b.WriteString("\n")
 		b.WriteString("Latency")
-		pad := upDisplayFieldWidth - len("Latency")
-		if pad < 1 {
-			pad = 1
-		}
+		pad := max(upDisplayFieldWidth-len("Latency"), 1)
 		b.WriteString(strings.Repeat(" ", pad))
 		b.WriteString(d.styled(upANSIDim, "P50 "))
 		b.WriteString(p.p50)
@@ -1264,13 +1255,7 @@ func (d *upDashboard) sessionUptimePercentLocked(now time.Time) float64 {
 	if elapsed <= 0 {
 		return 100
 	}
-	downtime := d.sessionEffectiveDowntimeLocked(now)
-	if downtime < 0 {
-		downtime = 0
-	}
-	if downtime > elapsed {
-		downtime = elapsed
-	}
+	downtime := min(max(d.sessionEffectiveDowntimeLocked(now), 0), elapsed)
 	uptime := elapsed - downtime
 	pct := float64(uptime) / float64(elapsed) * 100
 	if pct < 0 {

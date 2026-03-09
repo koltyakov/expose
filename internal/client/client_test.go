@@ -445,7 +445,7 @@ func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
 		}
 
 		chunkData := tunnelproto.EncodeBody([]byte("x"))
-		for i := 0; i < streamingReqBodyBufSize+32; i++ {
+		for range streamingReqBodyBufSize + 32 {
 			if err := send(tunnelproto.Message{
 				Kind:      tunnelproto.KindReqBody,
 				BodyChunk: &tunnelproto.BodyChunk{ID: "req_1", DataB64: chunkData},
@@ -622,7 +622,6 @@ func TestIsTLSProvisioningInProgressError(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isTLSProvisioningInProgressError(tc.err); got != tc.want {
@@ -827,7 +826,6 @@ func TestClientH3MultiStreamRuntimeInitialWorkerCount(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -857,7 +855,6 @@ func TestIsH3MultiStreamProtocol(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isH3MultiStreamProtocol(tc.protocol); got != tc.want {

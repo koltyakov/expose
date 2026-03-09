@@ -207,8 +207,8 @@ func getFileCaps(path string) string {
 	}
 	// getcap output format: "/usr/local/bin/expose cap_net_bind_service=ep"
 	line := strings.TrimSpace(string(out))
-	if idx := strings.Index(line, " "); idx >= 0 {
-		return strings.TrimSpace(line[idx+1:])
+	if _, after, ok := strings.Cut(line, " "); ok {
+		return strings.TrimSpace(after)
 	}
 	return ""
 }

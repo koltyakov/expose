@@ -14,8 +14,8 @@ func BenchmarkEncodeBody(b *testing.B) {
 		payload[i] = byte(i % 256)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		s := EncodeBody(payload)
 		if len(s) == 0 {
 			b.Fatal("unexpected empty result")
@@ -30,8 +30,8 @@ func BenchmarkDecodeBody(b *testing.B) {
 	}
 	encoded := EncodeBody(payload)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		_, _ = DecodeBody(encoded)
 	}
 }
@@ -39,8 +39,8 @@ func BenchmarkDecodeBody(b *testing.B) {
 func BenchmarkEncodeBodySmall(b *testing.B) {
 	payload := []byte("hello world")
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		EncodeBody(payload)
 	}
 }
@@ -90,7 +90,6 @@ func BenchmarkCompatibilityModeWSVsH3Stream(b *testing.B) {
 
 func BenchmarkPhase1VsPhase2PacketLossMixedLoad(b *testing.B) {
 	for _, lossPercent := range []int{0, 2, 5} {
-		lossPercent := lossPercent
 		b.Run(fmt.Sprintf("loss_%dpct", lossPercent), func(b *testing.B) {
 			b.Run("phase1_single_stream", func(b *testing.B) {
 				benchmarkMixedLoadMode(b, lossPercent, true)

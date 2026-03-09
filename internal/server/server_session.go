@@ -253,11 +253,9 @@ func (s *Server) activateSession(
 	}
 	s.log.Info("tunnel connected", "tunnel_id", tunnelID, "transport", sess.transportName)
 
-	s.hub.wg.Add(1)
-	go func() {
-		defer s.hub.wg.Done()
+	s.hub.wg.Go(func() {
 		s.readLoop(sess)
-	}()
+	})
 }
 
 func (s *Server) readLoop(sess *session) {

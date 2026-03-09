@@ -779,7 +779,7 @@ func renderMarkdownDocument(src, requestPath string) (string, string, bool) {
 		line := strings.TrimRight(rawLine, " \t")
 		trimmed := strings.TrimSpace(line)
 
-		if strings.HasPrefix(trimmed, "```") {
+		if after, ok := strings.CutPrefix(trimmed, "```"); ok {
 			if inCodeFence {
 				flushCodeFence()
 			} else {
@@ -787,7 +787,7 @@ func renderMarkdownDocument(src, requestPath string) (string, string, bool) {
 				flushList()
 				flushQuote()
 				inCodeFence = true
-				codeLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				codeLang = strings.TrimSpace(after)
 				codeFence = nil
 			}
 			continue
@@ -930,8 +930,8 @@ var markdownRawHTMLVoidTags = map[string]struct{}{
 
 func parseMarkdownListItem(line string) (string, string, bool) {
 	for _, prefix := range []string{"- ", "* ", "+ "} {
-		if strings.HasPrefix(line, prefix) {
-			return "ul", strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		if after, ok := strings.CutPrefix(line, prefix); ok {
+			return "ul", strings.TrimSpace(after), true
 		}
 	}
 	if matches := orderedListPattern.FindStringSubmatch(line); len(matches) == 2 {
@@ -2072,10 +2072,7 @@ func (d *staticDir) Readdir(count int) ([]os.FileInfo, error) {
 	if d.next >= len(d.entries) {
 		return nil, io.EOF
 	}
-	end := d.next + count
-	if end > len(d.entries) {
-		end = len(d.entries)
-	}
+	end := min(d.next+count, len(d.entries))
 	out := d.entries[d.next:end]
 	d.next = end
 	return out, nil

@@ -38,10 +38,7 @@ func WrapPlainText(s string, width int) []string {
 	}
 	lines := make([]string, 0, (len(runes)+width-1)/width)
 	for len(runes) > 0 {
-		n := width
-		if n > len(runes) {
-			n = len(runes)
-		}
+		n := min(width, len(runes))
 		lines = append(lines, string(runes[:n]))
 		runes = runes[n:]
 	}
@@ -56,21 +53,12 @@ func WrapTextWithLeadingPrefix(text, prefix string, width int) []string {
 		return []string{prefix + text}
 	}
 	runes := []rune(text)
-	firstWidth := width - VisibleRuneCount(prefix)
-	if firstWidth < 1 {
-		firstWidth = 1
-	}
-	firstLen := firstWidth
-	if firstLen > len(runes) {
-		firstLen = len(runes)
-	}
+	firstWidth := max(width-VisibleRuneCount(prefix), 1)
+	firstLen := min(firstWidth, len(runes))
 	lines := []string{prefix + string(runes[:firstLen])}
 	runes = runes[firstLen:]
 	for len(runes) > 0 {
-		n := width
-		if n > len(runes) {
-			n = len(runes)
-		}
+		n := min(width, len(runes))
 		lines = append(lines, string(runes[:n]))
 		runes = runes[n:]
 	}
@@ -86,29 +74,14 @@ func WrapTextWithPrefixAndSuffix(text, prefix, suffix string, width int) []strin
 	}
 
 	runes := []rune(text)
-	firstWidth := width - VisibleRuneCount(prefix)
-	if firstWidth < 1 {
-		firstWidth = 1
-	}
-	firstLen := firstWidth
-	if firstLen > len(runes) {
-		firstLen = len(runes)
-	}
+	firstWidth := max(width-VisibleRuneCount(prefix), 1)
+	firstLen := min(firstWidth, len(runes))
 	lines := []string{prefix + string(runes[:firstLen])}
 	runes = runes[firstLen:]
 
-	lastWidth := width - VisibleRuneCount(suffix)
-	if lastWidth < 1 {
-		lastWidth = 1
-	}
+	lastWidth := max(width-VisibleRuneCount(suffix), 1)
 	for len(runes) > lastWidth {
-		n := len(runes) - lastWidth
-		if n > width {
-			n = width
-		}
-		if n < 1 {
-			n = 1
-		}
+		n := max(min(len(runes)-lastWidth, width), 1)
 		lines = append(lines, string(runes[:n]))
 		runes = runes[n:]
 	}
@@ -142,10 +115,7 @@ func WriteFieldLines(b *strings.Builder, fieldWidth int, label string, values []
 		if i == 0 {
 			currentLabel = label
 		}
-		pad := fieldWidth - len(currentLabel)
-		if pad < 1 {
-			pad = 1
-		}
+		pad := max(fieldWidth-len(currentLabel), 1)
 		b.WriteString(currentLabel)
 		b.WriteString(strings.Repeat(" ", pad))
 		b.WriteString(value)

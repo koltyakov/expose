@@ -50,7 +50,6 @@ func TestSentinelErrors(t *testing.T) {
 		{"tunnel_offline", ErrTunnelOffline, "tunnel offline"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tc.err.Error(); got != tc.want {

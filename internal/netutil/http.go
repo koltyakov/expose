@@ -59,7 +59,7 @@ func ShouldPreserveUpgradeHeaders(h http.Header) bool {
 		return false
 	}
 	for _, connectionValue := range h.Values("Connection") {
-		for _, token := range strings.Split(connectionValue, ",") {
+		for token := range strings.SplitSeq(connectionValue, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
 				return true
 			}
@@ -74,7 +74,7 @@ func removeHopByHopHeaders(h http.Header, preserveUpgrade bool) {
 	}
 
 	for _, connectionValue := range h.Values("Connection") {
-		for _, token := range strings.Split(connectionValue, ",") {
+		for token := range strings.SplitSeq(connectionValue, ",") {
 			key := textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(token))
 			if key != "" {
 				if preserveUpgrade && strings.EqualFold(key, "Upgrade") {

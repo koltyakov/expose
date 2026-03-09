@@ -122,10 +122,9 @@ func TestRouteCacheConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 	for g := range goroutines {
-		g := g
 		go func() {
 			defer wg.Done()
-			for i := 0; i < opsPerGoroutine; i++ {
+			for i := range opsPerGoroutine {
 				host := fmt.Sprintf("host-%d-%d.example.com", g, i%10)
 				tunnelID := fmt.Sprintf("t-%d-%d", g, i%5)
 				route := domain.TunnelRoute{
@@ -156,8 +155,8 @@ func BenchmarkRouteCacheSetAndGet(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		host := fmt.Sprintf("h-%d.example.com", i%100)
 		c.set(host, route)
 		c.get(host)

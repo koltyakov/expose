@@ -612,7 +612,6 @@ func TestIsLikelyTLSProvisioningReason(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isLikelyTLSProvisioningReason(tc.reason); got != tc.want {
@@ -639,7 +638,6 @@ func TestIsLikelyScannerTLSReason(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isLikelyScannerTLSReason(tc.reason); got != tc.want {
@@ -1123,7 +1121,7 @@ func TestRecordWAFBlockQueueOverflowNonBlocking(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 5000; i++ {
+		for range 5000 {
 			srv.recordWAFBlock(evt)
 		}
 		close(done)

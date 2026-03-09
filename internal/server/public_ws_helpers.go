@@ -39,16 +39,13 @@ func (s *Server) startPublicWSReadRelay(
 	publicConn *websocket.Conn,
 	readDone chan<- struct{},
 ) {
-	s.hub.wg.Add(1)
-	go func() {
-		defer s.hub.wg.Done()
+	s.hub.wg.Go(func() {
 		defer close(readDone)
 		for {
 			msgType, payload, err := publicConn.ReadMessage()
 			if err != nil {
 				code, text := websocket.CloseNormalClosure, ""
-				var ce *websocket.CloseError
-				if errors.As(err, &ce) {
+				if ce, ok := errors.AsType[*websocket.CloseError](err); ok {
 					code, text = ce.Code, ce.Text
 				}
 				_ = sess.writeJSON(tunnelproto.Message{
@@ -61,7 +58,7 @@ func (s *Server) startPublicWSReadRelay(
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (s *Server) startPublicWSWriteRelay(
@@ -71,9 +68,7 @@ func (s *Server) startPublicWSWriteRelay(
 	relayStop <-chan struct{},
 	writeDone chan<- struct{},
 ) {
-	s.hub.wg.Add(1)
-	go func() {
-		defer s.hub.wg.Done()
+	s.hub.wg.Go(func() {
 		defer close(writeDone)
 		for {
 			select {
@@ -110,7 +105,7 @@ func (s *Server) startPublicWSWriteRelay(
 				}
 			}
 		}
-	}()
+	})
 }
 
 func publicWSOpenFailure(ack *tunnelproto.WSOpenAck) (status int, message string) {

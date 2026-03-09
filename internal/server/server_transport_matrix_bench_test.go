@@ -60,11 +60,9 @@ var transportMatrixBenchScenarioSeparators = func(r rune) bool {
 
 func BenchmarkPublicHTTPRoundTripTransportMatrix(b *testing.B) {
 	for _, tc := range transportMatrixBenchCases(b) {
-		tc := tc
 		totalRequests := benchTotalRequests(tc.tunnels, tc.requestsPerTunnel)
 		requesters := benchConcurrentRequesters(tc.tunnels, totalRequests)
 		for _, transportName := range []string{"ws", "quic"} {
-			transportName := transportName
 			name := fmt.Sprintf(
 				"%s_tunnels_%d_requests_per_tunnel_%d",
 				transportName,
@@ -205,7 +203,7 @@ func (h *transportMatrixBenchHarness) close() {
 func (h *transportMatrixBenchHarness) warmup(b *testing.B) {
 	b.Helper()
 	warmups := min(4, len(h.hosts))
-	for i := 0; i < warmups; i++ {
+	for i := range warmups {
 		if err := h.doRequest(h.hosts[i]); err != nil {
 			b.Fatal(err)
 		}
@@ -215,8 +213,7 @@ func (h *transportMatrixBenchHarness) warmup(b *testing.B) {
 func (h *transportMatrixBenchHarness) runSweeps(b *testing.B, totalRequests, requesters int) {
 	b.Helper()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := h.runSweep(totalRequests, requesters); err != nil {
 			b.StopTimer()
 			b.Fatal(err)
@@ -251,10 +248,8 @@ func (h *transportMatrixBenchHarness) runSweep(totalRequests, requesters int) er
 		firstMu.Unlock()
 	}
 
-	for i := 0; i < requesters; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range requesters {
+		wg.Go(func() {
 			<-start
 			for {
 				if failed.Load() {
@@ -270,7 +265,7 @@ func (h *transportMatrixBenchHarness) runSweep(totalRequests, requesters int) er
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	close(start)
@@ -286,7 +281,7 @@ func (h *transportMatrixBenchHarness) runSweep(totalRequests, requesters int) er
 
 func (h *transportMatrixBenchHarness) doRequest(host string) error {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		req, err := http.NewRequest(http.MethodGet, h.publicURL+"/bench", nil)
 		if err != nil {
 			return fmt.Errorf("create benchmark request: %w", err)
@@ -465,7 +460,7 @@ func setupBenchmarkQUICSessions(
 		srv.routes.set(host, route)
 		srv.liveRoutes.upsert(route)
 
-		for w := 0; w < workersPerTunnel; w++ {
+		for range workersPerTunnel {
 			stream := openBenchmarkH3WorkerStream(b, clientConn, "https://"+addr+"/worker", tunnelID)
 
 			var reg workerRegistration

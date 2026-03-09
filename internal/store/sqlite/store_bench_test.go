@@ -27,8 +27,8 @@ func BenchmarkFindRouteByHost(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if _, err := store.FindRouteByHost(ctx, domainRec.Hostname); err != nil {
 			b.Fatal(err)
 		}
@@ -49,8 +49,8 @@ func BenchmarkAllocateDomainAndTunnelTemporary(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if _, _, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "temporary", "", "example.com", "machine-bench"); err != nil {
 			b.Fatal(err)
 		}
@@ -75,8 +75,8 @@ func BenchmarkConsumeConnectToken(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		token, err := store.CreateConnectToken(ctx, tunnelRec.ID, time.Minute)
 		if err != nil {
 			b.Fatal(err)

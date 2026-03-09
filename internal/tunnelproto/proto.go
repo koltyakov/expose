@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -757,8 +758,6 @@ func ShallowCloneHeaders(h map[string][]string) map[string][]string {
 		return map[string][]string{}
 	}
 	out := make(map[string][]string, len(h))
-	for k, v := range h {
-		out[k] = v
-	}
+	maps.Copy(out, h)
 	return out
 }

@@ -179,8 +179,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 			msgType, payload, err := publicConn.ReadMessage()
 			if err != nil {
 				code, text := websocket.CloseNormalClosure, ""
-				var ce *websocket.CloseError
-				if errors.As(err, &ce) {
+				if ce, ok := errors.AsType[*websocket.CloseError](err); ok {
 					code, text = ce.Code, ce.Text
 				}
 				_ = writeStreamJSON(tunnelproto.Message{

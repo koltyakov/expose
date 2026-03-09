@@ -33,8 +33,7 @@ func BenchmarkRouteCacheGetHit(b *testing.B) {
 	cache.hostsByTunnel["t-bench"] = map[string]struct{}{host: {}}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, ok := cache.get(host); !ok {
 			b.Fatal("expected cache hit")
 		}
@@ -45,7 +44,7 @@ func BenchmarkRouteCacheDeleteByTunnelID(b *testing.B) {
 	const hostsPerTunnel = 2048
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		b.StopTimer()
 		cache := routeCache{
 			entries:       make(map[string]routeCacheEntry, hostsPerTunnel),
@@ -53,7 +52,7 @@ func BenchmarkRouteCacheDeleteByTunnelID(b *testing.B) {
 		}
 		cache.hostsByTunnel["t-bench"] = make(map[string]struct{}, hostsPerTunnel)
 		expiresAt := time.Now().Add(24 * time.Hour).UnixNano()
-		for n := 0; n < hostsPerTunnel; n++ {
+		for n := range hostsPerTunnel {
 			host := fmt.Sprintf("h-%d.example.com", n)
 			cache.entries[host] = routeCacheEntry{
 				route:             domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "t-bench"}},
@@ -81,8 +80,7 @@ func BenchmarkSessionWSPendingSendBuffered(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if ok := sess.wsPendingSend("stream-1", msg, 0); !ok {
 			b.Fatal("expected ws pending send to succeed")
 		}
@@ -97,8 +95,7 @@ func BenchmarkQueueDomainTouchDeduplicate(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		srv.queueDomainTouch("d-bench")
 		srv.queueDomainTouch("d-bench")
 		domainID := <-srv.domainTouches
@@ -112,8 +109,7 @@ func BenchmarkPublicHTTPRoundTripSingleTunnel(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(32 * 1024)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		h.doRequest(b)
 	}
 }
@@ -139,8 +135,7 @@ func BenchmarkPublicHTTPRoundTripStreamedResponse(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(payloadSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		h.doRequest(b)
 	}
 }

@@ -13,8 +13,8 @@ func loadEnvFileValues(path string) map[string]string {
 		return out
 	}
 	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	lines := strings.Split(normalized, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(normalized, "\n")
+	for line := range lines {
 		key, value, ok := parseEnvAssignment(line)
 		if !ok {
 			continue
@@ -186,8 +186,8 @@ func parseEnvAssignment(line string) (string, string, bool) {
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return "", "", false
 	}
-	if strings.HasPrefix(trimmed, "export ") {
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "export "))
+	if after, ok := strings.CutPrefix(trimmed, "export "); ok {
+		trimmed = strings.TrimSpace(after)
 	}
 	key, value, ok := strings.Cut(trimmed, "=")
 	if !ok {

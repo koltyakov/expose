@@ -23,8 +23,7 @@ func isNonRetriableRegisterError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var re *registerError
-	if errors.As(err, &re) {
+	if re, ok := errors.AsType[*registerError](err); ok {
 		if re.Code == "hostname_in_use" {
 			return true
 		}
@@ -52,8 +51,7 @@ func isNonRetriableRegisterError(err error) bool {
 // errors (e.g. *url.Error → *net.OpError → syscall) so that display messages
 // stay concise (e.g. "connection refused" instead of the full dial trace).
 func shortenError(err error) string {
-	var ue *url.Error
-	if errors.As(err, &ue) {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
 		err = ue.Err
 	}
 	var oe *net.OpError

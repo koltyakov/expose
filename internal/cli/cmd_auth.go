@@ -124,8 +124,8 @@ func runAuthCurl(ctx context.Context, args []string) int {
 	case "header":
 		fmt.Println(authHeader)
 	case "cookie":
-		if strings.HasPrefix(authHeader, "Cookie: ") {
-			fmt.Println(strings.TrimPrefix(authHeader, "Cookie: "))
+		if after, ok := strings.CutPrefix(authHeader, "Cookie: "); ok {
+			fmt.Println(after)
 			return 0
 		}
 		fmt.Fprintln(os.Stderr, "auth curl error: cookie output is only available for form-based protection")

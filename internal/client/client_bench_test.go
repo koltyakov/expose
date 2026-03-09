@@ -30,8 +30,8 @@ func BenchmarkForwardLocalInlineResponse(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(responseSize)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		resp = c.forwardLocal(context.Background(), base, req)
 		if resp.Status != http.StatusOK {
 			b.Fatalf("expected 200 response, got %d", resp.Status)
@@ -65,8 +65,8 @@ func BenchmarkForwardAndSendInlineResponse(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(responseSize)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		c.forwardAndSend(context.Background(), base, req, nil, func(msg tunnelproto.Message) error {
 			if msg.Kind != tunnelproto.KindResponse || msg.Response == nil || msg.Response.Status != http.StatusOK {
 				b.Fatalf("unexpected inline response message: %+v", msg)
@@ -109,8 +109,8 @@ func BenchmarkForwardAndSendStreamedResponse(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(responseSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		var (
 			gotStream bool
 			gotBytes  int

@@ -363,7 +363,7 @@ func TestURITooLong(t *testing.T) {
 func TestTooManyHeaders(t *testing.T) {
 	handler := newTestMiddleware(t)
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	for i := 0; i < maxHeaderCount+10; i++ {
+	for i := range maxHeaderCount + 10 {
 		r.Header.Add(fmt.Sprintf("X-Custom-%d", i), "value")
 	}
 	assertBlocked(t, handler, r)
@@ -595,9 +595,8 @@ func BenchmarkWAFCleanRequest(b *testing.B) {
 	r.Header.Set("X-Request-ID", "abc-123")
 	rr := httptest.NewRecorder()
 
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		handler.ServeHTTP(rr, r)
 	}
 }
@@ -608,9 +607,8 @@ func BenchmarkWAFMaliciousRequest(b *testing.B) {
 	r.Header.Set("User-Agent", "sqlmap/1.5")
 	rr := httptest.NewRecorder()
 
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		handler.ServeHTTP(rr, r)
 	}
 }
@@ -622,9 +620,8 @@ func BenchmarkWAFCleanRequestDiscardLogger(b *testing.B) {
 	r.Header.Set("X-Request-ID", "abc-123")
 	rr := httptest.NewRecorder()
 
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		handler.ServeHTTP(rr, r)
 	}
 }
@@ -635,9 +632,8 @@ func BenchmarkWAFMaliciousRequestDiscardLogger(b *testing.B) {
 	r.Header.Set("User-Agent", "sqlmap/1.5")
 	rr := httptest.NewRecorder()
 
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		handler.ServeHTTP(rr, r)
 	}
 }

@@ -194,9 +194,7 @@ func runUpFromFile(ctx context.Context, path string) int {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(clients))
 	for _, hc := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			err := hc.client.Run(runCtx)
 			if ui != nil {
 				if runCtx.Err() != nil && err == nil {
@@ -208,7 +206,7 @@ func runUpFromFile(ctx context.Context, path string) int {
 			if err != nil {
 				errCh <- fmt.Errorf("%s: %w", hc.subdomain, err)
 			}
-		}()
+		})
 	}
 	go func() {
 		wg.Wait()

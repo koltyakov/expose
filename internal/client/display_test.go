@@ -278,7 +278,7 @@ func TestDisplayShowsTrafficWithColorStyling(t *testing.T) {
 	d.mu.Unlock()
 	out := buf.String()
 	var trafficLine string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "Traffic") {
 			trafficLine = line
 			break
@@ -346,7 +346,7 @@ func TestDisplayLogRequestMaxEntries(t *testing.T) {
 	d.ShowBanner("dev")
 
 	// Log 15 requests, only last 10 should survive.
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		d.LogRequest("GET", fmt.Sprintf("/req/%d", i), 200, time.Millisecond, nil)
 	}
 

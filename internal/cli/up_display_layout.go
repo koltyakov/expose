@@ -62,8 +62,8 @@ func (d *upDashboard) renderForwardingLocalWrappedLine(line string, healthy bool
 		b.WriteString(" ")
 		line = strings.TrimPrefix(line, "→ ")
 	}
-	if strings.HasSuffix(line, " ●") {
-		body := strings.TrimSuffix(line, " ●")
+	if before, ok := strings.CutSuffix(line, " ●"); ok {
+		body := before
 		b.WriteString(body)
 		color := upANSIRed
 		if healthy {

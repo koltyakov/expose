@@ -16,31 +16,31 @@ endif
 
 help:
 	@echo "Targets:"
-	@echo "  make tidy           - Run go mod tidy"
-	@echo "  make deps           - Download + tidy dependencies"
-	@echo "  make deps-update    - Update all Go module dependencies to latest minor/patch"
-	@echo "  make fmt            - Format Go code"
-	@echo "  make lint           - Run golangci-lint"
-	@echo "  make lint-hint      - Run gopls hint-level diagnostics"
-	@echo "  make vet            - Run go vet"
-	@echo "  make test           - Run tests"
-	@echo "  make test-race      - Run tests with race detector"
-	@echo "  make test-coverage  - Run tests with coverage output"
-	@echo "  make bench          - Run focused performance benchmarks"
-	@echo "  make bench-transport-matrix - Refresh docs/benchmark.md with the heavy WS vs QUIC matrix"
-	@echo "  make build          - Build binary to ./$(BIN_DIR)/$(APP)"
-	@echo "  make build-all      - Cross-build common release binaries"
-	@echo "  make release-check  - Validate GoReleaser config"
-	@echo "  make release-local  - Build snapshot artifacts via GoReleaser"
-	@echo "  make ci             - Run local CI checks"
-	@echo "  make run-server     - Run server (env-driven)"
+	@echo "  make tidy           	- Run go mod tidy"
+	@echo "  make deps           	- Download + tidy dependencies"
+	@echo "  make deps-update    	- Update all Go module dependencies to latest minor/patch"
+	@echo "  make fmt            	- Format Go code"
+	@echo "  make lint           	- Run golangci-lint"
+	@echo "  make lint-hint      	- Run gopls hint-level diagnostics"
+	@echo "  make vet            	- Run go vet"
+	@echo "  make test           	- Run tests"
+	@echo "  make test-race      	- Run tests with race detector"
+	@echo "  make test-coverage  	- Run tests with coverage output"
+	@echo "  make bench          	- Run focused performance benchmarks"
+	@echo "  make bench-transport - Refresh docs/benchmark.md with the heavy WS vs QUIC matrix"
+	@echo "  make build          	- Build binary to ./$(BIN_DIR)/$(APP)"
+	@echo "  make build-all      	- Cross-build common release binaries"
+	@echo "  make release-check  	- Validate GoReleaser config"
+	@echo "  make release-local  	- Build snapshot artifacts via GoReleaser"
+	@echo "  make ci             	- Run local CI checks"
+	@echo "  make run-server     	- Run server (env-driven)"
 	@echo "  make run-server-init - Guided server setup (.env + optional API key)"
-	@echo "  make run-client     - Run tunnel client (env-driven)"
-	@echo "  make client-login   - Save client server URL + API key"
-	@echo "  make apikey-create  - Create API key"
-	@echo "  make apikey-list    - List API keys"
-	@echo "  make apikey-revoke  - Revoke API key (requires KEY_ID=...)"
-	@echo "  make clean          - Remove ./$(BIN_DIR)"
+	@echo "  make run-client     	- Run tunnel client (env-driven)"
+	@echo "  make client-login   	- Save client server URL + API key"
+	@echo "  make apikey-create  	- Create API key"
+	@echo "  make apikey-list    	- List API keys"
+	@echo "  make apikey-revoke  	- Revoke API key (requires KEY_ID=...)"
+	@echo "  make clean          	- Remove ./$(BIN_DIR)"
 
 tidy:
 	go mod tidy
@@ -88,7 +88,7 @@ test-coverage:
 bench:
 	go test ./internal/client ./internal/server ./internal/store/sqlite ./internal/tunnelproto -bench . -run ^$
 
-bench-transport-matrix:
+bench-transport:
 	go run ./cmd/benchmark
 
 build:

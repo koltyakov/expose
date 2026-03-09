@@ -105,11 +105,18 @@ func TestNewUsesClonedForwardTransportWithSafeDefaults(t *testing.T) {
 func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 	t.Parallel()
 
-	var gotConnection string
-	var gotHop string
+	headerCh := make(chan struct {
+		connection string
+		hop        string
+	}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotConnection = r.Header.Get("Connection")
-		gotHop = r.Header.Get("X-Hop")
+		headerCh <- struct {
+			connection string
+			hop        string
+		}{
+			connection: r.Header.Get("Connection"),
+			hop:        r.Header.Get("X-Hop"),
+		}
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Proxy-Connection", "keep-alive")
 		w.Header().Set("X-Upstream", "ok")
@@ -140,11 +147,12 @@ func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 	if resp.Status != http.StatusCreated {
 		t.Fatalf("expected %d, got %d", http.StatusCreated, resp.Status)
 	}
-	if gotConnection != "" {
-		t.Fatalf("expected Connection header stripped before local forward, got %q", gotConnection)
+	gotHeaders := <-headerCh
+	if gotHeaders.connection != "" {
+		t.Fatalf("expected Connection header stripped before local forward, got %q", gotHeaders.connection)
 	}
-	if gotHop != "" {
-		t.Fatalf("expected Connection-declared hop header stripped, got %q", gotHop)
+	if gotHeaders.hop != "" {
+		t.Fatalf("expected Connection-declared hop header stripped, got %q", gotHeaders.hop)
 	}
 	if resp.Headers["Connection"] != nil {
 		t.Fatalf("expected Connection header removed from response")
@@ -160,15 +168,15 @@ func TestForwardLocalStripsHopByHopHeaders(t *testing.T) {
 func TestForwardLocalRecordsTraffic(t *testing.T) {
 	t.Parallel()
 
-	var gotBody []byte
+	bodyCh := make(chan []byte, 1)
 	recorder := &testTrafficRecorder{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		gotBody, err = io.ReadAll(r.Body)
+		gotBody, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "read error", http.StatusInternalServerError)
 			return
 		}
+		bodyCh <- gotBody
 		_, _ = io.WriteString(w, "response-data")
 	}))
 	defer srv.Close()
@@ -190,7 +198,7 @@ func TestForwardLocalRecordsTraffic(t *testing.T) {
 		Headers: map[string][]string{"Content-Type": {"text/plain"}},
 	})
 
-	if got := string(gotBody); got != "request-data" {
+	if got := string(<-bodyCh); got != "request-data" {
 		t.Fatalf("expected upstream request body, got %q", got)
 	}
 	body, err := resp.Payload()
@@ -211,16 +219,17 @@ func TestForwardLocalRecordsTraffic(t *testing.T) {
 func TestForwardLocalPreservesWebSocketUpgradeHeaders(t *testing.T) {
 	t.Parallel()
 
-	var gotConnection string
-	var gotUpgrade string
+	headerCh := make(chan struct {
+		connection string
+		upgrade    string
+	}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotConnection = r.Header.Get("Connection")
-		gotUpgrade = r.Header.Get("Upgrade")
-		if !strings.EqualFold(gotUpgrade, "websocket") {
-			t.Fatalf("expected Upgrade websocket, got %q", gotUpgrade)
-		}
-		if !strings.EqualFold(gotConnection, "upgrade") {
-			t.Fatalf("expected Connection upgrade, got %q", gotConnection)
+		headerCh <- struct {
+			connection string
+			upgrade    string
+		}{
+			connection: r.Header.Get("Connection"),
+			upgrade:    r.Header.Get("Upgrade"),
 		}
 		w.Header().Set("Connection", "Upgrade")
 		w.Header().Set("Upgrade", "websocket")
@@ -251,11 +260,12 @@ func TestForwardLocalPreservesWebSocketUpgradeHeaders(t *testing.T) {
 	if resp.Status != http.StatusSwitchingProtocols {
 		t.Fatalf("expected %d, got %d", http.StatusSwitchingProtocols, resp.Status)
 	}
-	if !strings.EqualFold(gotConnection, "upgrade") {
-		t.Fatalf("expected Connection header preserved for local forward, got %q", gotConnection)
+	gotHeaders := <-headerCh
+	if !strings.EqualFold(gotHeaders.connection, "upgrade") {
+		t.Fatalf("expected Connection header preserved for local forward, got %q", gotHeaders.connection)
 	}
-	if !strings.EqualFold(gotUpgrade, "websocket") {
-		t.Fatalf("expected Upgrade header preserved for local forward, got %q", gotUpgrade)
+	if !strings.EqualFold(gotHeaders.upgrade, "websocket") {
+		t.Fatalf("expected Upgrade header preserved for local forward, got %q", gotHeaders.upgrade)
 	}
 	if got := firstHeaderValue(resp.Headers, "Connection"); !strings.EqualFold(got, "upgrade") {
 		t.Fatalf("expected Connection response header preserved, got %q", got)
@@ -268,9 +278,9 @@ func TestForwardLocalPreservesWebSocketUpgradeHeaders(t *testing.T) {
 func TestForwardLocalUsesForwardedHostWhenProvided(t *testing.T) {
 	t.Parallel()
 
-	var gotHost string
+	hostCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHost = r.Host
+		hostCh <- r.Host
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -296,7 +306,7 @@ func TestForwardLocalUsesForwardedHostWhenProvided(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected %d, got %d", http.StatusOK, resp.Status)
 	}
-	if gotHost != "myapp.example.com" {
+	if gotHost := <-hostCh; gotHost != "myapp.example.com" {
 		t.Fatalf("expected forwarded Host myapp.example.com, got %q", gotHost)
 	}
 }
@@ -641,26 +651,37 @@ func firstHeaderValue(h map[string][]string, key string) string {
 func TestRegisterSendsOptionalPassword(t *testing.T) {
 	t.Parallel()
 
-	var gotAuth string
-	var gotUser string
-	var gotMode string
-	var gotPassword string
-	var gotResumeID string
+	resultCh := make(chan struct {
+		auth     string
+		user     string
+		mode     string
+		password string
+		resumeID string
+	}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/tunnels/register" {
 			http.NotFound(w, r)
 			return
 		}
-		gotAuth = r.Header.Get("Authorization")
-		gotResumeID = r.Header.Get(domain.RegisterResumeTunnelHeader)
+		result := struct {
+			auth     string
+			user     string
+			mode     string
+			password string
+			resumeID string
+		}{
+			auth:     r.Header.Get("Authorization"),
+			resumeID: r.Header.Get(domain.RegisterResumeTunnelHeader),
+		}
 		var req registerRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		gotPassword = req.Password
-		gotUser = req.User
-		gotMode = req.AccessMode
+		result.password = req.Password
+		result.user = req.User
+		result.mode = req.AccessMode
+		resultCh <- result
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc"}`)
 	}))
@@ -680,20 +701,21 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotPassword != "session-pass" {
-		t.Fatalf("expected password in register payload, got %q", gotPassword)
+	got := <-resultCh
+	if got.password != "session-pass" {
+		t.Fatalf("expected password in register payload, got %q", got.password)
 	}
-	if gotUser != "admin" {
-		t.Fatalf("expected user in register payload, got %q", gotUser)
+	if got.user != "admin" {
+		t.Fatalf("expected user in register payload, got %q", got.user)
 	}
-	if gotMode != "form" {
-		t.Fatalf("expected access mode in register payload, got %q", gotMode)
+	if got.mode != "form" {
+		t.Fatalf("expected access mode in register payload, got %q", got.mode)
 	}
-	if !strings.HasPrefix(gotAuth, "Bearer ") {
-		t.Fatalf("expected bearer auth header, got %q", gotAuth)
+	if !strings.HasPrefix(got.auth, "Bearer ") {
+		t.Fatalf("expected bearer auth header, got %q", got.auth)
 	}
-	if gotResumeID != "t_prev" {
-		t.Fatalf("expected resume tunnel header t_prev, got %q", gotResumeID)
+	if got.resumeID != "t_prev" {
+		t.Fatalf("expected resume tunnel header t_prev, got %q", got.resumeID)
 	}
 }
 
@@ -1072,15 +1094,15 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 	t.Parallel()
 
-	var gotBody []byte
+	bodyResultCh := make(chan []byte, 1)
 	recorder := &testTrafficRecorder{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		gotBody, err = io.ReadAll(r.Body)
+		gotBody, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "read error", http.StatusInternalServerError)
 			return
 		}
+		bodyResultCh <- gotBody
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "received")
 	}))
@@ -1121,8 +1143,8 @@ func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 	c.forwardAndSend(context.Background(), base, req, bodyCh, writeMsg, nil)
 
 	expected := "chunk1-chunk2-chunk3"
-	if string(gotBody) != expected {
-		t.Fatalf("expected local upstream to receive %q, got %q", expected, string(gotBody))
+	if gotBody := string(<-bodyResultCh); gotBody != expected {
+		t.Fatalf("expected local upstream to receive %q, got %q", expected, gotBody)
 	}
 
 	if len(msgs) < 1 {

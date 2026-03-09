@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -203,6 +204,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 }
 
 func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
+	asyncErrCh := make(chan error, 8)
 	localMessageCh := make(chan string, 1)
 	localUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ws" {
@@ -212,7 +214,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Errorf("upgrade local websocket: %v", err)
+			recordAsyncTestError(asyncErrCh, "upgrade local websocket: %v", err)
 			return
 		}
 		defer func() { _ = conn.Close() }()
@@ -292,25 +294,25 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 				},
 			})
 			if err != nil {
-				t.Errorf("write websocket open to worker stream: %v", err)
+				recordAsyncTestError(asyncErrCh, "write websocket open to worker stream: %v", err)
 				return
 			}
 
 			var ack tunnelproto.Message
 			if err := tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &ack); err != nil {
-				t.Errorf("read websocket open ack from worker stream: %v", err)
+				recordAsyncTestError(asyncErrCh, "read websocket open ack from worker stream: %v", err)
 				return
 			}
 			ackCh <- ack
 
 			if err := tunnelproto.WriteStreamBinaryFrameV2(stream, tunnelproto.BinaryFrameWSData, "ws_h3_display", websocket.TextMessage, []byte("ping")); err != nil {
-				t.Errorf("write websocket data to worker stream: %v", err)
+				recordAsyncTestError(asyncErrCh, "write websocket data to worker stream: %v", err)
 				return
 			}
 
 			var reply tunnelproto.Message
 			if err := tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &reply); err != nil {
-				t.Errorf("read websocket reply from worker stream: %v", err)
+				recordAsyncTestError(asyncErrCh, "read websocket reply from worker stream: %v", err)
 				return
 			}
 			ackCh <- reply
@@ -323,7 +325,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 					Code: websocket.CloseNormalClosure,
 				},
 			}); err != nil {
-				t.Errorf("write websocket close to worker stream: %v", err)
+				recordAsyncTestError(asyncErrCh, "write websocket close to worker stream: %v", err)
 				return
 			}
 
@@ -380,6 +382,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	}()
 
 	waitTunnelReadyEvent(t, readyCh, 8*time.Second, "h3 tunnel ready event")
+	requireNoAsyncTestError(t, asyncErrCh)
 	ack := waitForCondition(t, 5*time.Second, "websocket open ack on h3 worker", func() (tunnelproto.Message, bool) {
 		select {
 		case msg := <-ackCh:
@@ -391,6 +394,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	if ack.WSOpenAck == nil || !ack.WSOpenAck.OK {
 		t.Fatalf("expected successful websocket open ack, got: %+v", ack.WSOpenAck)
 	}
+	requireNoAsyncTestError(t, asyncErrCh)
 	waitForCondition(t, 5*time.Second, "local websocket message delivery", func() (string, bool) {
 		select {
 		case msg := <-localMessageCh:
@@ -414,6 +418,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	if string(replyPayload) != "pong" {
 		t.Fatalf("expected websocket reply payload %q, got %q", "pong", string(replyPayload))
 	}
+	requireNoAsyncTestError(t, asyncErrCh)
 
 	buf.Reset()
 	display.mu.Lock()
@@ -447,6 +452,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	if !strings.Contains(out, "WebSockets") || !strings.Contains(out, "--") {
 		t.Fatalf("expected websocket placeholder after close, got: %s", out)
 	}
+	requireNoAsyncTestError(t, asyncErrCh)
 
 	cancel()
 	select {
@@ -457,6 +463,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("client run did not stop after cancellation")
 	}
+	requireNoAsyncTestError(t, asyncErrCh)
 }
 
 func waitTunnelReadyEvent(t testing.TB, ch <-chan TunnelReadyEvent, timeout time.Duration, label string) TunnelReadyEvent {
@@ -493,6 +500,22 @@ func waitForCondition[T any](t testing.TB, timeout time.Duration, label string, 
 	var zero T
 	t.Fatalf("timed out waiting for %s", label)
 	return zero
+}
+
+func recordAsyncTestError(ch chan<- error, format string, args ...any) {
+	select {
+	case ch <- fmt.Errorf(format, args...):
+	default:
+	}
+}
+
+func requireNoAsyncTestError(t testing.TB, ch <-chan error) {
+	t.Helper()
+	select {
+	case err := <-ch:
+		t.Fatal(err)
+	default:
+	}
 }
 
 func startHTTP3TestServerAtAddr(t testing.TB, addr string, handler http.Handler) func() {

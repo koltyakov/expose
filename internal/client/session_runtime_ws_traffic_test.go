@@ -77,10 +77,11 @@ func dialTestWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn, func
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	connCh := make(chan *websocket.Conn, 1)
+	errCh := make(chan error, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Errorf("upgrade test websocket: %v", err)
+			recordAsyncTestError(errCh, "upgrade test websocket: %v", err)
 			return
 		}
 		connCh <- conn
@@ -96,6 +97,10 @@ func dialTestWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn, func
 	var serverConn *websocket.Conn
 	select {
 	case serverConn = <-connCh:
+	case err := <-errCh:
+		_ = clientConn.Close()
+		srv.Close()
+		t.Fatal(err)
 	case <-time.After(2 * time.Second):
 		_ = clientConn.Close()
 		srv.Close()

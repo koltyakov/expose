@@ -295,7 +295,7 @@ func staticShouldRenderMarkdown(method, name string) bool {
 	return ext == ".md" || ext == ".markdown"
 }
 
-func (h *staticHandler) serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo, directoryDefault bool) bool {
+func (h *staticHandler) serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, _ string, file http.File, info os.FileInfo, directoryDefault bool) bool {
 	body, err := io.ReadAll(file)
 	if err != nil {
 		return false

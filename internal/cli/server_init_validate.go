@@ -4,17 +4,12 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/netutil"
 )
 
 func validateWizardDomain(v string) error {
-	if strings.TrimSpace(v) == "" {
-		return errors.New("domain is required")
-	}
-	if strings.Contains(v, "/") {
-		return errors.New("domain must be a host, not a URL path")
-	}
-	return nil
+	return config.ValidateDomainHost(v)
 }
 
 func validateWizardNonEmpty(v string) error {

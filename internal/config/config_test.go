@@ -79,6 +79,12 @@ func TestParseClientFlagsProtectFlag(t *testing.T) {
 	}
 }
 
+func TestParseClientFlagsRejectsInvalidDomain(t *testing.T) {
+	if _, err := ParseClientFlags([]string{"--port", "8080", "--domain", "incorrect one"}); err == nil {
+		t.Fatal("expected invalid domain error")
+	}
+}
+
 func TestParseClientFlagsProtectBasicMode(t *testing.T) {
 	cfg, err := ParseClientFlags([]string{"--port", "8080", "--protect=basic"})
 	if err != nil {
@@ -146,6 +152,12 @@ func TestParseServerFlagsListenNormalization(t *testing.T) {
 	}
 	if cfg.ListenHTTP != ":10080" {
 		t.Fatalf("expected :10080, got %q", cfg.ListenHTTP)
+	}
+}
+
+func TestParseServerFlagsRejectsInvalidDomain(t *testing.T) {
+	if _, err := ParseServerFlags([]string{"--domain", "bad domain"}); err == nil {
+		t.Fatal("expected invalid server domain error")
 	}
 }
 

@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"flag"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -115,6 +116,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 
 	cfg.Name = strings.TrimSpace(cfg.Name)
+	cfg.Name = NormalizeTunnelSubdomain(cfg.Name)
 	cfg.Transport = normalizeClientTransport(cfg.Transport)
 	cfg.User = trimOrDefault(cfg.User, "admin")
 	cfg.Password = strings.TrimSpace(cfg.Password)
@@ -135,6 +137,9 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 	if cfg.MaxConcurrentForwards <= 0 {
 		return cfg, errors.New("max concurrent forwards must be > 0")
+	}
+	if err := ValidateTunnelSubdomain(cfg.Name); err != nil {
+		return cfg, err
 	}
 	switch cfg.Transport {
 	case "ws", "quic":
@@ -224,10 +229,13 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	cfg.ListenHTTP = normalizeListenAddr(cfg.ListenHTTP)
 	cfg.PprofListen = normalizeListenAddr(cfg.PprofListen)
 
-	cfg.BaseDomain = normalizeDomainHost(cfg.BaseDomain)
-	if cfg.BaseDomain == "" {
+	if strings.TrimSpace(cfg.BaseDomain) == "" {
 		return cfg, errors.New("missing --domain or EXPOSE_DOMAIN")
 	}
+	if err := ValidateDomainHost(cfg.BaseDomain); err != nil {
+		return cfg, err
+	}
+	cfg.BaseDomain = normalizeDomainHost(cfg.BaseDomain)
 	cfg.TLSMode = normalizeLowerOrDefault(cfg.TLSMode, "auto")
 	switch cfg.TLSMode {
 	case "auto", "dynamic", "wildcard":
@@ -407,4 +415,87 @@ func normalizeDomainHost(v string) string {
 		return netutil.NormalizeHost(u.Path)
 	}
 	return netutil.NormalizeHost(u.Host)
+}
+
+func NormalizeTunnelSubdomain(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func ValidateTunnelSubdomain(v string) error {
+	v = NormalizeTunnelSubdomain(v)
+	if v == "" {
+		return nil
+	}
+	if strings.Contains(v, "://") {
+		return errors.New("domain must be a hostname, not a URL")
+	}
+	if err := validateHostnameSyntax(v); err != nil {
+		return fmtSubdomainError(err)
+	}
+	return nil
+}
+
+func ValidateDomainHost(v string) error {
+	raw := strings.TrimSpace(v)
+	if raw == "" {
+		return errors.New("domain is required")
+	}
+	for _, r := range raw {
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			return errors.New("domain must not contain whitespace")
+		}
+	}
+	v = normalizeDomainHost(raw)
+	if ip := net.ParseIP(v); ip != nil {
+		return nil
+	}
+	if v == "localhost" {
+		return nil
+	}
+	if err := validateHostnameSyntax(v); err != nil {
+		return fmtDomainError(err)
+	}
+	return nil
+}
+
+func validateHostnameSyntax(v string) error {
+	if len(v) > 253 {
+		return errors.New("must be at most 253 characters")
+	}
+	labels := strings.SplitSeq(v, ".")
+	for label := range labels {
+		if label == "" {
+			return errors.New("must not contain empty labels")
+		}
+		if len(label) > 63 {
+			return errors.New("labels must be at most 63 characters")
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return errors.New("labels must not start or end with '-'")
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z':
+			case r >= '0' && r <= '9':
+			case r == '-':
+			default:
+				return errors.New("must contain only letters, digits, dots, and '-'")
+			}
+		}
+	}
+	return nil
+}
+
+func fmtSubdomainError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New("domain " + err.Error())
+}
+
+func fmtDomainError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New("domain " + err.Error())
 }

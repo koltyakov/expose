@@ -123,6 +123,18 @@ func TestUpConfigRejectsPortAndDirTogether(t *testing.T) {
 	}
 }
 
+func TestUpConfigRejectsInvalidSubdomain(t *testing.T) {
+	cfg := upConfig{
+		Version: 1,
+		Tunnels: []upTunnelConfig{
+			{Name: "app", Subdomain: "bad domain", Port: 3000},
+		},
+	}
+	if err := cfg.normalizeAndValidate(); err == nil {
+		t.Fatal("expected invalid subdomain validation error")
+	}
+}
+
 func TestUpConfigRejectsStaticFlagsWithoutDir(t *testing.T) {
 	cfg := upConfig{
 		Version: 1,

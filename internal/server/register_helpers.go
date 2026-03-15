@@ -10,6 +10,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/auth"
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 )
 
@@ -122,6 +123,11 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 			req.Subdomain = stable
 			autoStableSubdomain = true
 		}
+	}
+	req.Subdomain = config.NormalizeTunnelSubdomain(req.Subdomain)
+	if err := config.ValidateTunnelSubdomain(req.Subdomain); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return preparedRegisterRequest{}, false
 	}
 
 	return preparedRegisterRequest{

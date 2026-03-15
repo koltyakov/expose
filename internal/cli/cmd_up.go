@@ -589,10 +589,7 @@ func validateUpSubdomainWizard(v string) error {
 	if v == "" {
 		return errors.New("subdomain is required")
 	}
-	if strings.Contains(v, "/") || strings.Contains(v, "://") {
-		return errors.New("enter a subdomain label, not a URL")
-	}
-	return nil
+	return config.ValidateTunnelSubdomain(v)
 }
 
 func validateUpServerURLWizard(v string) error {

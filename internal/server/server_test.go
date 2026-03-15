@@ -115,6 +115,21 @@ func TestParseAndValidateRegisterRequestBasicMode(t *testing.T) {
 	}
 }
 
+func TestParseAndValidateRegisterRequestRejectsInvalidSubdomain(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"permanent","subdomain":"incorrect one"}`))
+	rr := httptest.NewRecorder()
+
+	if _, ok := srv.parseAndValidateRegisterRequest(rr, req); ok {
+		t.Fatal("expected invalid subdomain to be rejected")
+	}
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid subdomain, got %d", rr.Code)
+	}
+}
+
 func TestRegisterURLsNonDefaultPort(t *testing.T) {
 	t.Parallel()
 

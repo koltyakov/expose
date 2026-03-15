@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/koltyakov/expose/internal/config"
 )
 
 type upConfig struct {
@@ -111,8 +113,8 @@ func (c *upConfig) normalizeAndValidate() error {
 		if t.Subdomain == "" {
 			return fmt.Errorf("tunnels[%d].subdomain is required", i)
 		}
-		if strings.Contains(t.Subdomain, "/") || strings.Contains(t.Subdomain, "://") {
-			return fmt.Errorf("tunnels[%d].subdomain must be a hostname label, not a URL", i)
+		if err := config.ValidateTunnelSubdomain(t.Subdomain); err != nil {
+			return fmt.Errorf("tunnels[%d].subdomain: %w", i, err)
 		}
 		switch {
 		case t.Port != 0 && t.Dir != "":
@@ -151,7 +153,7 @@ func (c *upConfig) normalizeAndValidate() error {
 }
 
 func normalizeUpSubdomain(raw string) string {
-	raw = strings.TrimSpace(strings.ToLower(raw))
+	raw = config.NormalizeTunnelSubdomain(raw)
 	raw = strings.TrimPrefix(raw, "https://")
 	raw = strings.TrimPrefix(raw, "http://")
 	raw = strings.TrimSuffix(raw, "/")

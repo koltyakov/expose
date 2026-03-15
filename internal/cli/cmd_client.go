@@ -118,7 +118,7 @@ func runStatic(ctx context.Context, args []string) int {
 	}
 
 	cfg := newStaticClientConfig(serverURL, apiKey, transport, name, protectMode)
-	cfg.Name = strings.TrimSpace(cfg.Name)
+	cfg.Name = config.NormalizeTunnelSubdomain(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
 	if cfg.User == "" {
 		cfg.User = "admin"
@@ -136,6 +136,10 @@ func runStatic(ctx context.Context, args []string) int {
 	if cfg.Name == "" {
 		hostname, _ := os.Hostname()
 		cfg.Name = defaultStaticSubdomain(client.ResolveMachineID(hostname), absRoot)
+	}
+	if err := config.ValidateTunnelSubdomain(cfg.Name); err != nil {
+		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return 2
 	}
 	cfg.Password = strings.TrimSpace(cfg.Password)
 	mode, err := access.NormalizeMode(cfg.ProtectMode)

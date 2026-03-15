@@ -60,6 +60,8 @@ type ServerConfig struct {
 	WAFEnabled             bool
 	WAFAuditOnly           bool
 	WAFBodyInspectLimit    int64
+	WAFMaxURILength        int
+	WAFMaxHeaderCount      int
 	MaxPendingPerTunnel    int
 	PublicRateLimitRPS     int
 	PublicRateLimitBurst   int
@@ -200,6 +202,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		WAFEnabled:             envBoolOrDefault("EXPOSE_WAF_ENABLE", true),
 		WAFAuditOnly:           envBoolOrDefault("EXPOSE_WAF_AUDIT_ONLY", false),
 		WAFBodyInspectLimit:    envInt64OrDefault("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024),
+		WAFMaxURILength:        envIntOrDefault("EXPOSE_WAF_MAX_URI_LENGTH", 0),
+		WAFMaxHeaderCount:      envIntOrDefault("EXPOSE_WAF_MAX_HEADER_COUNT", 0),
 		MaxPendingPerTunnel:    envIntOrDefault("EXPOSE_MAX_PENDING_PER_TUNNEL", 32),
 		PublicRateLimitRPS:     envIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0),
 		PublicRateLimitBurst:   envIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0),

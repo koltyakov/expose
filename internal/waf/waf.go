@@ -27,6 +27,12 @@ type Config struct {
 	// BodyInspectLimit controls how many bytes of a request body are inspected.
 	// Set to 0 to disable body inspection.
 	BodyInspectLimit int64
+	// MaxURILength overrides the default maximum URI length (8192 bytes).
+	// URIs exceeding this length are blocked as suspicious.
+	MaxURILength int
+	// MaxHeaderCount overrides the default maximum number of non-exempt
+	// headers (64). Requests exceeding this count are blocked.
+	MaxHeaderCount int
 	// ShouldInspectBody allows callers to opt specific requests out of body
 	// inspection while still evaluating path, query, header, and UA rules.
 	ShouldInspectBody func(*http.Request) bool
@@ -37,15 +43,24 @@ type Config struct {
 
 // firewall holds pre-compiled rules and the logger.
 type firewall struct {
-	rules     []rule
-	log       *slog.Logger
-	auditOnly bool
-	bodyLimit int64
-	bodyGuard func(*http.Request) bool
-	onBlock   func(BlockEvent)
+	rules      []rule
+	log        *slog.Logger
+	auditOnly  bool
+	bodyLimit  int64
+	maxURI     int
+	maxHeaders int
+	bodyGuard  func(*http.Request) bool
+	onBlock    func(BlockEvent)
 }
 
 var forbiddenJSONBody = []byte(`{"error":"Forbidden"}` + "\n")
+
+func intOr(v, fallback int) int {
+	if v > 0 {
+		return v
+	}
+	return fallback
+}
 
 // NewMiddleware returns an http.Handler middleware that inspects every
 // incoming request against the built-in WAF ruleset. Requests that match
@@ -60,12 +75,14 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 		}
 
 		fw := &firewall{
-			rules:     defaultRules(),
-			log:       logger,
-			auditOnly: cfg.AuditOnly,
-			bodyLimit: cfg.BodyInspectLimit,
-			bodyGuard: cfg.ShouldInspectBody,
-			onBlock:   cfg.OnBlock,
+			rules:      defaultRules(),
+			log:        logger,
+			auditOnly:  cfg.AuditOnly,
+			bodyLimit:  cfg.BodyInspectLimit,
+			maxURI:     intOr(cfg.MaxURILength, maxURILength),
+			maxHeaders: intOr(cfg.MaxHeaderCount, maxHeaderCount),
+			bodyGuard:  cfg.ShouldInspectBody,
+			onBlock:    cfg.OnBlock,
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/healthz" {

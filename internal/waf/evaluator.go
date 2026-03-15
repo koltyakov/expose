@@ -66,7 +66,7 @@ const maxURILength = 8192
 // considers a request suspicious.
 const maxHeaderCount = 64
 
-func newRequestView(r *http.Request) requestView {
+func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 	rawQuery := r.URL.RawQuery
 	decodedQuery := rawQuery
 	if strings.Contains(rawQuery, "%") {
@@ -107,14 +107,14 @@ func newRequestView(r *http.Request) requestView {
 		doubleDecoded: doubleDecoded,
 		userAgent:     r.UserAgent(),
 		headerValues:  headerValues,
-		uriTooLong:    len(r.RequestURI) > maxURILength,
-		tooManyHdrs:   len(headerValues) > maxHeaderCount,
+		uriTooLong:    len(r.RequestURI) > maxURI,
+		tooManyHdrs:   len(headerValues) > maxHeaders,
 	}
 }
 
 // check tests the request against every rule and returns on the first match.
 func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
-	view := newRequestView(r)
+	view := newRequestView(r, fw.maxURI, fw.maxHeaders)
 
 	// Structural limits — block before regex evaluation.
 	if view.uriTooLong {

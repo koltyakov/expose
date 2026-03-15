@@ -79,6 +79,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
 			s.cleanupStaleWAFCounters()
+			s.cleanupStaleH3Sessions()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
 			if s.publicLimiter != nil {
@@ -244,6 +245,24 @@ func (s *Server) cleanupStaleWAFCounters() {
 		}
 		if counter.lastSeenUnixNano.Load() < cutoffUnix {
 			s.wafBlocks.Delete(key)
+		}
+		return true
+	})
+}
+
+// cleanupStaleH3Sessions removes h3Sessions entries whose underlying session
+// has not been seen within the client ping timeout window. This prevents
+// unbounded growth when QUIC clients disconnect uncleanly.
+func (s *Server) cleanupStaleH3Sessions() {
+	cutoff := time.Now().Add(-s.cfg.ClientPingTimeout).UnixNano()
+	s.h3Sessions.Range(func(key, value any) bool {
+		sess, ok := value.(*session)
+		if !ok {
+			s.h3Sessions.Delete(key)
+			return true
+		}
+		if sess.lastSeenUnixNano.Load() < cutoff {
+			s.h3Sessions.Delete(key)
 		}
 		return true
 	})

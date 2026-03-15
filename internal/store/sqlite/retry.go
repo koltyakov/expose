@@ -185,6 +185,9 @@ func (s *Store) stopWriterLoop() {
 	<-s.writerDone
 }
 
+// flushTouchBatchTimeout bounds how long a single domain-touch flush may take.
+const flushTouchBatchTimeout = 5 * time.Second
+
 func (s *Store) flushTouchBatch(pending map[string][]*storeWriteCompletion) error {
 	if len(pending) == 0 {
 		return nil
@@ -199,7 +202,9 @@ func (s *Store) flushTouchBatch(pending map[string][]*storeWriteCompletion) erro
 	if len(domainIDs) == 0 {
 		return nil
 	}
-	return withSQLiteBusyRetry(context.Background(), func() error {
+	ctx, cancel := context.WithTimeout(context.Background(), flushTouchBatchTimeout)
+	defer cancel()
+	return withSQLiteBusyRetry(ctx, func() error {
 		placeholders := strings.Repeat("?,", len(domainIDs))
 		placeholders = placeholders[:len(placeholders)-1]
 		args := make([]any, 0, len(domainIDs)+1)
@@ -207,7 +212,7 @@ func (s *Store) flushTouchBatch(pending map[string][]*storeWriteCompletion) erro
 		for _, domainID := range domainIDs {
 			args = append(args, domainID)
 		}
-		_, err := s.db.ExecContext(context.Background(),
+		_, err := s.db.ExecContext(ctx,
 			fmt.Sprintf(`UPDATE domains SET last_seen_at = ? WHERE id IN (%s)`, placeholders),
 			args...,
 		)

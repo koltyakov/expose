@@ -194,16 +194,13 @@ func renderUpYAML(cfg upConfig) string {
 	if cfg.APIKey != "" {
 		fmt.Fprintf(&b, "api_key: %s\n", yamlQuoteString(cfg.APIKey))
 	}
-	if cfg.Access.Protect || cfg.Access.User != "" || cfg.Access.Password != "" || cfg.Access.PasswordEnv != "" {
+	if cfg.Access.Protect || cfg.Access.User != "" || cfg.Access.Password != "" {
 		b.WriteString("protect:\n")
 		if cfg.Access.User != "" {
 			fmt.Fprintf(&b, "  user: %s\n", yamlQuoteString(cfg.Access.User))
 		}
 		if cfg.Access.Password != "" {
 			fmt.Fprintf(&b, "  password: %s\n", yamlQuoteString(cfg.Access.Password))
-		} else if cfg.Access.PasswordEnv != "" {
-			// Canonicalize legacy alias when writing.
-			fmt.Fprintf(&b, "  password: %s\n", yamlQuoteString(cfg.Access.PasswordEnv))
 		}
 	}
 	b.WriteString("tunnels:\n")

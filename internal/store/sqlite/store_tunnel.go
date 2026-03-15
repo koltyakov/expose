@@ -4,12 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/domain"
 )
+
+// defaultTxTimeout is the fallback timeout applied to database transactions
+// when the caller's context carries no deadline. This prevents transactions
+// from blocking indefinitely under pathological conditions.
+const defaultTxTimeout = 30 * time.Second
+
+// txContext returns ctx unchanged when it already has a deadline, otherwise
+// wraps it with defaultTxTimeout. The caller must call the returned cancel.
+func txContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultTxTimeout)
+}
 
 func (s *Store) ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error) {
 	var count int
@@ -44,9 +59,11 @@ func (s *Store) IsHostnameActive(ctx context.Context, host string) (bool, error)
 func (s *Store) ResetConnectedTunnels(ctx context.Context) (int64, error) {
 	var affected int64
 	err := s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (reset connected tunnels): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 
@@ -96,9 +113,11 @@ func (s *Store) AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID
 		t domain.Tunnel
 	)
 	err = s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (allocate domain/tunnel): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 
@@ -127,9 +146,11 @@ func (s *Store) ResumeTunnelSession(ctx context.Context, tunnelID, keyID, client
 		t domain.Tunnel
 	)
 	err := s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (resume tunnel session): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 
@@ -221,9 +242,11 @@ WHERE id = ?`,
 
 func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) error {
 	return s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (try set tunnel connected): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 
@@ -277,9 +300,11 @@ func (s *Store) SetTunnelAccessPasswordHash(ctx context.Context, tunnelID, hash 
 
 func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) error {
 	return s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (set tunnel disconnected): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 
@@ -313,9 +338,11 @@ func (s *Store) SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) 
 	}
 
 	return s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (set tunnels disconnected): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 
@@ -406,9 +433,11 @@ func (s *Store) CloseTemporaryTunnel(ctx context.Context, tunnelID string) (stri
 		closed   bool
 	)
 	err := s.withSerializedWrite(ctx, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		txCtx, txCancel := txContext(ctx)
+		defer txCancel()
+		tx, err := s.db.BeginTx(txCtx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (close temporary tunnel): %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
 

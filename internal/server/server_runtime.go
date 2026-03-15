@@ -65,6 +65,8 @@ func (s *Server) Run(ctx context.Context) error {
 			Enabled:          true,
 			AuditOnly:        s.cfg.WAFAuditOnly,
 			BodyInspectLimit: s.cfg.WAFBodyInspectLimit,
+			MaxURILength:     s.cfg.WAFMaxURILength,
+			MaxHeaderCount:   s.cfg.WAFMaxHeaderCount,
 			ShouldInspectBody: func(r *http.Request) bool {
 				return shouldInspectWAFBody(r)
 			},

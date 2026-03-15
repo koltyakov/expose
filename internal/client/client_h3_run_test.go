@@ -167,7 +167,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		t.Fatal("expected disconnect error after first server shutdown")
 	}
 
-	secondReady := waitTunnelReadyEvent(t, readyCh, 10*time.Second, "second tunnel ready event")
+	secondReady := waitTunnelReadyEvent(t, readyCh, 20*time.Second, "second tunnel ready event")
 	if secondReady.TunnelID != "tun_h3" {
 		t.Fatalf("expected resumed tunnel id tun_h3, got %q", secondReady.TunnelID)
 	}

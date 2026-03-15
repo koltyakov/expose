@@ -88,17 +88,18 @@ type Display struct {
 	terminalColumnsFn func() int
 
 	// banner / header state
-	version       string
-	status        string // "online", "reconnecting", …
-	tunnelID      string
-	publicURL     string
-	protected     bool
-	localAddr     string
-	tlsMode       string
-	transport     string
-	serverVersion string
-	wafEnabled    bool   // true when WAF is enabled on the server
-	updateVersion string // non-empty when an update is available
+	version         string
+	status          string // "online", "reconnecting", …
+	tunnelID        string
+	publicURL       string
+	protected       bool
+	localAddr       string
+	localHealthAddr string
+	tlsMode         string
+	transport       string
+	serverVersion   string
+	wafEnabled      bool   // true when WAF is enabled on the server
+	updateVersion   string // non-empty when an update is available
 
 	// counters
 	totalHTTP  int   // total HTTP requests forwarded

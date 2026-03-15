@@ -25,6 +25,7 @@ type ClientConfig struct {
 	Protect               bool
 	ProtectMode           string
 	LocalPort             int
+	DisplayLocalAddr      string
 	Name                  string
 	RegistrationMode      string
 	Timeout               time.Duration

@@ -34,7 +34,11 @@ func (d *Display) forwardingDisplayLines() []string {
 
 	width := d.fieldValueWidth()
 	localAddr := strings.TrimSpace(d.localAddr)
-	localHealthy := localAddr != "" && d.localTargetHealthy(localAddr)
+	healthAddr := strings.TrimSpace(d.localHealthAddr)
+	if healthAddr == "" {
+		healthAddr = localAddr
+	}
+	localHealthy := healthAddr != "" && d.localTargetHealthy(healthAddr)
 	localTailWidth := termui.VisibleRuneCount("→ ") + termui.VisibleRuneCount(localAddr)
 	if localAddr != "" {
 		localTailWidth += termui.VisibleRuneCount(" ●")

@@ -61,6 +61,9 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string,
 	d.publicURL = publicURL
 	d.protected = protected
 	d.localAddr = localAddr
+	if strings.TrimSpace(d.localHealthAddr) == "" {
+		d.localHealthAddr = localAddr
+	}
 	d.tlsMode = tlsMode
 	d.transport = transport
 	d.tunnelID = tunnelID
@@ -70,6 +73,12 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string,
 	d.noticeText = ""
 	d.noticeLevel = ""
 	d.redraw()
+}
+
+func (d *Display) SetLocalHealthTarget(localAddr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.localHealthAddr = strings.TrimSpace(localAddr)
 }
 
 // ShowVersions sets the client and server version strings and redraws.

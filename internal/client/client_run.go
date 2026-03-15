@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/expose/internal/versionutil"
@@ -109,6 +110,10 @@ func (c *Client) Run(ctx context.Context) error {
 		if c.display != nil {
 			c.display.ShowBanner(c.version)
 			localAddr := fmt.Sprintf("http://localhost:%d", c.cfg.LocalPort)
+			if strings.TrimSpace(c.cfg.DisplayLocalAddr) != "" {
+				c.display.SetLocalHealthTarget(localAddr)
+				localAddr = strings.TrimSpace(c.cfg.DisplayLocalAddr)
+			}
 			c.display.ShowTunnelInfo(reg.PublicURL, localAddr, reg.ServerTLSMode, reg.TunnelID, c.cfg.Protect, rt.transportKind())
 			c.display.ShowVersions(c.version, versionutil.EnsureVPrefix(reg.ServerVersion), reg.WAFEnabled)
 		} else {

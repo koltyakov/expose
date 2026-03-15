@@ -173,6 +173,31 @@ func TestDisplayForwardingWrapsLocalTargetOnNarrowTerminal(t *testing.T) {
 	}
 }
 
+func TestDisplayTunnelInfoCanShowStaticLabelWithSeparateHealthTarget(t *testing.T) {
+	t.Parallel()
+
+	d, buf := newTestDisplay(false)
+	now := time.Unix(20, 0)
+	d.nowFunc = func() time.Time { return now }
+
+	healthTarget := "http://localhost:3000"
+	cacheKey, _, ok := localTargetDialAddr(healthTarget)
+	if !ok {
+		t.Fatal("expected valid local health target")
+	}
+	d.localHealth[cacheKey] = localHealthEntry{ok: true, checkedAt: now}
+	d.SetLocalHealthTarget(healthTarget)
+	d.ShowTunnelInfo("https://docs.example.com", "static:/tmp/site", "", "tun_static", false, "ws")
+
+	out := buf.String()
+	if !strings.Contains(out, "static:/tmp/site") {
+		t.Fatalf("expected static local label, got: %s", out)
+	}
+	if !strings.Contains(out, "→ static:/tmp/site ●") {
+		t.Fatalf("expected static local label to retain health indicator, got: %s", out)
+	}
+}
+
 func TestDisplaySessionDetailRotatesBetweenIDAndStarted(t *testing.T) {
 	t.Parallel()
 

@@ -175,6 +175,7 @@ func runStatic(ctx context.Context, args []string) int {
 	defer func() { _ = staticSrv.Close() }()
 
 	cfg.LocalPort = port
+	cfg.DisplayLocalAddr = "static:" + absRoot
 	return runConfiguredClient(ctx, cfg)
 }
 

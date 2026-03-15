@@ -20,6 +20,8 @@ const (
 	upRouterProxyBufferSize        = 32 * 1024
 	upRouterProxyIdleConnTimeout   = 90 * time.Second
 	upRouterProxyResponseHeaderTTL = 2 * time.Minute
+	upRoutePublicPathHeader        = "X-Expose-Public-Path"
+	upRouteMountPrefixHeader       = "X-Expose-Mount-Prefix"
 )
 
 type upLocalRoute struct {
@@ -28,6 +30,7 @@ type upLocalRoute struct {
 	PathPrefix  string
 	StripPrefix bool
 	LocalPort   int
+	StaticDir   string
 	proxy       *httputil.ReverseProxy
 }
 
@@ -56,6 +59,12 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 				preq.SetURL(target)
 				preq.Out.Host = preq.In.Host
 				preq.SetXForwarded()
+				preq.Out.Header.Set(upRoutePublicPathHeader, preq.In.URL.Path)
+				if routeCopy.StripPrefix && routeCopy.PathPrefix != "" && routeCopy.PathPrefix != "/" {
+					preq.Out.Header.Set(upRouteMountPrefixHeader, routeCopy.PathPrefix)
+				} else {
+					preq.Out.Header.Del(upRouteMountPrefixHeader)
+				}
 				preq.Out.URL.Path = rewriteUpstreamPath(preq.In.URL.Path, routeCopy.PathPrefix, routeCopy.StripPrefix)
 				preq.Out.URL.RawPath = ""
 			},

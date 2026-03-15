@@ -213,9 +213,9 @@ func TestUpDashboardForwardingWrapsLocalTargetOnNarrowTerminal(t *testing.T) {
 
 	publicURL := "https://very-long-subdomain.example.com"
 	localTarget := "http://localhost:3000"
-	cacheKey, _, ok := upLocalTargetDialAddr(localTarget)
+	cacheKey, _, ok := upLocalRouteDialAddr(upLocalRoute{LocalPort: 3000})
 	if !ok {
-		t.Fatal("expected valid local target")
+		t.Fatal("expected valid local route")
 	}
 	d.localHealth[cacheKey] = upDashboardLocalHealth{OK: true, CheckedAt: now}
 	d.groups["app"].PublicURL = publicURL
@@ -234,5 +234,14 @@ func TestUpDashboardForwardingWrapsLocalTargetOnNarrowTerminal(t *testing.T) {
 	}
 	if !strings.Contains(rendered, secondLine) {
 		t.Fatalf("expected wrapped forwarding target on aligned continuation row, got: %s", rendered)
+	}
+}
+
+func TestUpRouteLocalTargetShowsStaticDirectory(t *testing.T) {
+	t.Parallel()
+
+	got := upRouteLocalTarget(upLocalRoute{StaticDir: "/tmp/site", LocalPort: 4321})
+	if got != "static:/tmp/site" {
+		t.Fatalf("unexpected static local target %q", got)
 	}
 }

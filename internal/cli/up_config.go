@@ -27,6 +27,9 @@ type upTunnelConfig struct {
 	Name        string
 	Subdomain   string
 	Port        int
+	Dir         string
+	SPA         bool
+	Folders     bool
 	PathPrefix  string
 	StripPrefix bool
 }
@@ -93,6 +96,7 @@ func (c *upConfig) normalizeAndValidate() error {
 		t := &c.Tunnels[i]
 		t.Name = strings.TrimSpace(t.Name)
 		t.Subdomain = normalizeUpSubdomain(t.Subdomain)
+		t.Dir = strings.TrimSpace(t.Dir)
 		if t.Name == "" {
 			t.Name = t.Subdomain
 			if t.Name == "" {
@@ -110,8 +114,25 @@ func (c *upConfig) normalizeAndValidate() error {
 		if strings.Contains(t.Subdomain, "/") || strings.Contains(t.Subdomain, "://") {
 			return fmt.Errorf("tunnels[%d].subdomain must be a hostname label, not a URL", i)
 		}
-		if t.Port <= 0 || t.Port > 65535 {
+		switch {
+		case t.Port != 0 && t.Dir != "":
+			return fmt.Errorf("tunnels[%d] must set either port or dir, not both", i)
+		case t.Port <= 0 && t.Dir == "":
+			return fmt.Errorf("tunnels[%d] must set either port or dir", i)
+		case t.Dir == "":
+			if t.Port > 65535 {
+				return fmt.Errorf("tunnels[%d].port must be between 1 and 65535", i)
+			}
+		case t.Port > 65535:
 			return fmt.Errorf("tunnels[%d].port must be between 1 and 65535", i)
+		}
+		if t.Dir == "" {
+			if t.SPA {
+				return fmt.Errorf("tunnels[%d].spa requires dir", i)
+			}
+			if t.Folders {
+				return fmt.Errorf("tunnels[%d].folders requires dir", i)
+			}
 		}
 		prefix, err := normalizeUpPathPrefix(t.PathPrefix)
 		if err != nil {
@@ -188,7 +209,17 @@ func renderUpYAML(cfg upConfig) string {
 		b.WriteString("  - ")
 		fmt.Fprintf(&b, "name: %s\n", yamlQuoteString(t.Name))
 		fmt.Fprintf(&b, "    subdomain: %s\n", yamlQuoteString(t.Subdomain))
-		fmt.Fprintf(&b, "    port: %d\n", t.Port)
+		if t.Dir != "" {
+			fmt.Fprintf(&b, "    dir: %s\n", yamlQuoteString(t.Dir))
+			if t.SPA {
+				fmt.Fprintf(&b, "    spa: %t\n", t.SPA)
+			}
+			if t.Folders {
+				fmt.Fprintf(&b, "    folders: %t\n", t.Folders)
+			}
+		} else {
+			fmt.Fprintf(&b, "    port: %d\n", t.Port)
+		}
 		fmt.Fprintf(&b, "    path_prefix: %s\n", yamlQuoteString(t.PathPrefix))
 		fmt.Fprintf(&b, "    strip_prefix: %t\n", t.StripPrefix)
 	}
@@ -373,6 +404,24 @@ func setUpTunnelField(t *upTunnelConfig, key, rawValue string) error {
 			return errors.New("invalid integer for port")
 		}
 		t.Port = n
+	case "dir", "static_dir":
+		v, err := parseYAMLString(rawValue)
+		if err != nil {
+			return err
+		}
+		t.Dir = v
+	case "spa":
+		v, err := parseYAMLBool(rawValue)
+		if err != nil {
+			return err
+		}
+		t.SPA = v
+	case "folders":
+		v, err := parseYAMLBool(rawValue)
+		if err != nil {
+			return err
+		}
+		t.Folders = v
 	case "path_prefix":
 		v, err := parseYAMLString(rawValue)
 		if err != nil {
@@ -389,6 +438,10 @@ func setUpTunnelField(t *upTunnelConfig, key, rawValue string) error {
 		return fmt.Errorf("unknown tunnel field %q", key)
 	}
 	return nil
+}
+
+func (t upTunnelConfig) IsStatic() bool {
+	return strings.TrimSpace(t.Dir) != ""
 }
 
 func splitYAMLKeyValue(line string) (key, value string, hasValue bool, ok bool) {

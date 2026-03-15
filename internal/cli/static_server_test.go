@@ -397,6 +397,31 @@ func TestStaticHandlerRendersMarkdownAsHTML(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerRendersMarkdownWithMountedPrefix(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "README.md"), "# Guide\n\n![logo](./assets/logo.png)\n")
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(upRoutePublicPathHeader, "/docs")
+	req.Header.Set(upRouteMountPrefixHeader, "/docs")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected markdown render success, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `<img src="/docs/assets/logo.png" alt="logo">`) {
+		t.Fatalf("expected mounted-prefix image render, got %q", body)
+	}
+	if !strings.Contains(body, `href="/docs/favicon.ico"`) {
+		t.Fatalf("expected mounted-prefix favicon href, got %q", body)
+	}
+}
+
 func TestStaticHandlerRendersAllowedCenteredImageHTMLBlock(t *testing.T) {
 	t.Parallel()
 

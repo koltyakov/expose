@@ -1,10 +1,11 @@
 # `expose up`
 
-Run multiple HTTP routes from a single project config (`expose.yml`).
+Run multiple HTTP routes and static directories from a single project config (`expose.yml`).
 
 Use `expose up` when you want to:
 - expose more than one local service at once
 - mount multiple services under one subdomain (for example `/` + `/api`)
+- publish a local static site alongside app/API routes
 - keep a reusable project config in version control
 
 ## Commands
@@ -54,6 +55,24 @@ This publishes:
 - `https://myapp.<base-domain>/` -> `http://127.0.0.1:3000/`
 - `https://myapp.<base-domain>/api/*` -> `http://127.0.0.1:8080/*` (prefix stripped)
 
+Static directories can be mixed into the same file:
+
+```yaml
+version: 1
+tunnels:
+  - name: app
+    subdomain: myapp
+    port: 3000
+
+  - name: docs
+    subdomain: myapp
+    dir: ./docs
+    path_prefix: /docs
+    strip_prefix: true
+```
+
+This publishes `https://myapp.<base-domain>/docs/*` from files in `./docs`.
+
 ## Config Reference
 
 Top-level fields:
@@ -80,19 +99,24 @@ Notes:
 
 ### `tunnels[]`
 
-Each entry defines one public host/path route to one local port.
+Each entry defines one public host/path route to either a local HTTP port or a static directory.
 
 - `name` (optional) - label used in summaries/logs
 - `subdomain` (required) - hostname label under your base domain (example: `myapp`)
-- `port` (required) - local HTTP port on `127.0.0.1`
+- `port` (required for HTTP routes) - local HTTP port on `127.0.0.1`
+- `dir` (required for static routes) - local directory to serve; relative paths are resolved from the `expose.yml` directory
+- `spa` (optional, static only, default `false`) - fall back to `index.html` for missing routes
+- `folders` (optional, static only, default `false`) - allow directory listings when no default file exists
 - `path_prefix` (optional, default `/`) - public path mount
 - `strip_prefix` (optional, default `false`) - remove `path_prefix` before forwarding
 
 Validation / behavior:
 - `subdomain` is normalized (lowercased, scheme/path removed); prefer a hostname label like `myapp`
+- each tunnel must set exactly one of `port` or `dir`
 - `path_prefix` is normalized (`/api/` becomes `/api`)
 - `path_prefix` cannot include query strings or fragments
 - duplicate `(subdomain, path_prefix)` routes are rejected
+- static routes use the same conservative public-file policy as `expose static` when protection is off
 
 ## Routing Behavior
 
@@ -146,6 +170,22 @@ tunnels:
     subdomain: myapp
     port: 8080
     path_prefix: /api
+    strip_prefix: true
+```
+
+### App + static docs on one host
+
+```yaml
+version: 1
+tunnels:
+  - name: web
+    subdomain: myapp
+    port: 3000
+    path_prefix: /
+  - name: docs
+    subdomain: myapp
+    dir: ./docs
+    path_prefix: /docs
     strip_prefix: true
 ```
 

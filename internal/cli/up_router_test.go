@@ -80,6 +80,8 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 		xff      string
 		xfHost   string
 		xfProto  string
+		public   string
+		mount    string
 	}
 
 	reqs := make(chan receivedRequest, 1)
@@ -91,6 +93,8 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 			xff:      r.Header.Get("X-Forwarded-For"),
 			xfHost:   r.Header.Get("X-Forwarded-Host"),
 			xfProto:  r.Header.Get("X-Forwarded-Proto"),
+			public:   r.Header.Get(upRoutePublicPathHeader),
+			mount:    r.Header.Get(upRouteMountPrefixHeader),
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -152,5 +156,11 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	}
 	if got.xfProto != "http" {
 		t.Fatalf("unexpected X-Forwarded-Proto %q", got.xfProto)
+	}
+	if got.public != "/api/users" {
+		t.Fatalf("unexpected public path header %q", got.public)
+	}
+	if got.mount != "/api" {
+		t.Fatalf("unexpected mount prefix header %q", got.mount)
 	}
 }

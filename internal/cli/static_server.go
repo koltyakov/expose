@@ -181,7 +181,7 @@ func (h *staticHandler) serveResolvedPath(w http.ResponseWriter, r *http.Request
 			return true
 		}
 		defer func() { _ = defaultFile.Close() }()
-		h.serveStaticOpenedFileWithName(w, r, defaultPath, defaultFile, defaultInfo)
+		h.serveStaticOpenedFileWithName(w, r, defaultPath, defaultFile, defaultInfo, true)
 		return true
 	}
 
@@ -275,12 +275,12 @@ func staticDirectoryPath(cleanPath string) string {
 }
 
 func (h *staticHandler) serveStaticOpenedFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) {
-	h.serveStaticOpenedFileWithName(w, r, info.Name(), file, info)
+	h.serveStaticOpenedFileWithName(w, r, info.Name(), file, info, false)
 }
 
-func (h *staticHandler) serveStaticOpenedFileWithName(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo) {
+func (h *staticHandler) serveStaticOpenedFileWithName(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo, directoryDefault bool) {
 	if staticShouldRenderMarkdown(r.Method, info.Name()) {
-		if h.serveRenderedMarkdownFile(w, r, file, info) {
+		if h.serveRenderedMarkdownFile(w, r, name, file, info, directoryDefault) {
 			return
 		}
 	}
@@ -295,16 +295,18 @@ func staticShouldRenderMarkdown(method, name string) bool {
 	return ext == ".md" || ext == ".markdown"
 }
 
-func (h *staticHandler) serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, file http.File, info os.FileInfo) bool {
+func (h *staticHandler) serveRenderedMarkdownFile(w http.ResponseWriter, r *http.Request, name string, file http.File, info os.FileInfo, directoryDefault bool) bool {
 	body, err := io.ReadAll(file)
 	if err != nil {
 		return false
 	}
-	rendered, title, hasMermaid := renderMarkdownDocument(string(body), r.URL.Path)
+	internalPath := staticCleanPath(r.URL.Path)
+	publicPath := staticPublicRequestPath(r, directoryDefault)
+	rendered, title, hasMermaid := renderMarkdownDocument(string(body), publicPath)
 	if strings.TrimSpace(title) == "" {
 		title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 	}
-	faviconHref := h.resolveMarkdownFaviconHref(r.URL.Path)
+	faviconHref := h.resolveMarkdownFaviconHref(internalPath, staticMountPrefix(r))
 	page, err := buildMarkdownHTMLPage(markdownPageData{
 		Title:           title,
 		BodyHTML:        template.HTML(rendered),
@@ -580,18 +582,18 @@ func buildMarkdownHTMLPage(data markdownPageData) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func (h *staticHandler) resolveMarkdownFaviconHref(requestPath string) string {
-	for _, candidate := range staticMarkdownFaviconCandidates(requestPath) {
+func (h *staticHandler) resolveMarkdownFaviconHref(internalRequestPath, mountPrefix string) string {
+	for _, candidate := range staticMarkdownFaviconCandidates(internalRequestPath) {
 		file, info, ok := h.open(candidate)
 		if !ok {
 			continue
 		}
 		_ = file.Close()
 		if info != nil && !info.IsDir() {
-			return candidate
+			return staticMountPath(candidate, mountPrefix)
 		}
 	}
-	return "/favicon.ico"
+	return staticMountPath("/favicon.ico", mountPrefix)
 }
 
 func staticFaviconContentType(href string) string {
@@ -613,6 +615,34 @@ func staticFaviconContentType(href string) string {
 
 func staticShouldUseShortcutIcon(href string) bool {
 	return strings.EqualFold(strings.TrimSpace(filepath.Ext(href)), ".ico")
+}
+
+func staticPublicRequestPath(r *http.Request, directoryDefault bool) string {
+	publicPath := staticCleanPath(strings.TrimSpace(r.Header.Get(upRoutePublicPathHeader)))
+	if publicPath == "/" && strings.TrimSpace(r.Header.Get(upRoutePublicPathHeader)) == "" {
+		publicPath = staticCleanPath(r.URL.Path)
+	}
+	if directoryDefault {
+		return staticDirectoryPath(publicPath)
+	}
+	return publicPath
+}
+
+func staticMountPrefix(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get(upRouteMountPrefixHeader))
+}
+
+func staticMountPath(p, mountPrefix string) string {
+	p = staticCleanPath(p)
+	mountPrefix = strings.TrimSpace(mountPrefix)
+	if mountPrefix == "" || mountPrefix == "/" {
+		return p
+	}
+	mountPrefix = staticCleanPath(mountPrefix)
+	if p == "/" {
+		return staticDirectoryPath(mountPrefix)
+	}
+	return strings.TrimSuffix(mountPrefix, "/") + p
 }
 
 func staticMarkdownFaviconCandidates(requestPath string) []string {

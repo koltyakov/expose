@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -845,7 +845,7 @@ func (d *upDashboard) forwardingLinesLocked() []string {
 			}
 			external := upRouteExternalURL(g.PublicURL, r)
 			local := upRouteLocalTarget(r)
-			lines = append(lines, d.forwardingValueLinesLocked(external, local, d.localTargetHealthyLocked(local))...)
+			lines = append(lines, d.forwardingValueLinesLocked(external, local, d.localRouteHealthyLocked(r))...)
 		}
 	}
 	return lines
@@ -864,6 +864,9 @@ func upRouteExternalURL(base string, r upLocalRoute) string {
 }
 
 func upRouteLocalTarget(r upLocalRoute) string {
+	if strings.TrimSpace(r.StaticDir) != "" {
+		return "static:" + filepath.Clean(r.StaticDir)
+	}
 	target := fmt.Sprintf("http://localhost:%d", r.LocalPort)
 	prefix := strings.TrimSpace(r.PathPrefix)
 	if prefix == "" || prefix == "/" {
@@ -875,8 +878,8 @@ func upRouteLocalTarget(r upLocalRoute) string {
 	return target + prefix
 }
 
-func (d *upDashboard) localTargetHealthyLocked(raw string) bool {
-	cacheKey, dialAddr, ok := upLocalTargetDialAddr(raw)
+func (d *upDashboard) localRouteHealthyLocked(route upLocalRoute) bool {
+	cacheKey, dialAddr, ok := upLocalRouteDialAddr(route)
 	if !ok {
 		return false
 	}
@@ -899,27 +902,11 @@ func (d *upDashboard) localTargetHealthyLocked(raw string) bool {
 	return healthy
 }
 
-func upLocalTargetDialAddr(raw string) (cacheKey string, dialAddr string, ok bool) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
+func upLocalRouteDialAddr(route upLocalRoute) (cacheKey string, dialAddr string, ok bool) {
+	if route.LocalPort <= 0 {
 		return "", "", false
 	}
-	host := strings.TrimSpace(u.Hostname())
-	if host == "" {
-		return "", "", false
-	}
-	port := strings.TrimSpace(u.Port())
-	if port == "" {
-		switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
-		case "http":
-			port = "80"
-		case "https":
-			port = "443"
-		default:
-			return "", "", false
-		}
-	}
-	dialAddr = net.JoinHostPort(host, port)
+	dialAddr = net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", route.LocalPort))
 	return dialAddr, dialAddr, true
 }
 

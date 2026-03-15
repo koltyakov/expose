@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,19 +88,18 @@ func runUpFromFile(ctx context.Context, path string) int {
 	}
 	cfg.Access = resolvedAccess
 
-	hostRoutes := map[string][]upLocalRoute{}
-	for _, t := range cfg.Tunnels {
-		hostRoutes[t.Subdomain] = append(hostRoutes[t.Subdomain], upLocalRoute{
-			Name:        t.Name,
-			Subdomain:   t.Subdomain,
-			PathPrefix:  t.PathPrefix,
-			StripPrefix: t.StripPrefix,
-			LocalPort:   t.Port,
-		})
+	configDir := "."
+	if absConfigPath, err := filepath.Abs(path); err == nil {
+		configDir = filepath.Dir(absConfigPath)
 	}
 
-	subdomains := make([]string, 0, len(hostRoutes))
-	for sub := range hostRoutes {
+	hostTunnels := map[string][]upTunnelConfig{}
+	for _, t := range cfg.Tunnels {
+		hostTunnels[t.Subdomain] = append(hostTunnels[t.Subdomain], t)
+	}
+
+	subdomains := make([]string, 0, len(hostTunnels))
+	for sub := range hostTunnels {
 		subdomains = append(subdomains, sub)
 	}
 	sort.Strings(subdomains)
@@ -109,6 +109,22 @@ func runUpFromFile(ctx context.Context, path string) int {
 	if err := debughttp.StartPprofServer(runCtx, strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")), ilog.New("info"), "client"); err != nil {
 		fmt.Fprintln(os.Stderr, "up config error: pprof:", err)
 		return 2
+	}
+
+	hostRoutes := make(map[string][]upLocalRoute, len(hostTunnels))
+	for _, sub := range subdomains {
+		baseLog := ilog.New("info").With("group", sub)
+		routes := make([]upLocalRoute, 0, len(hostTunnels[sub]))
+		for _, tunnel := range hostTunnels[sub] {
+			route, _, err := prepareUpLocalRoute(runCtx, configDir, tunnel, !cfg.Access.Protect, baseLog.With("route", tunnel.Name))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "up error:", err)
+				cancel()
+				return 1
+			}
+			routes = append(routes, route)
+		}
+		hostRoutes[sub] = routes
 	}
 
 	interactiveDashboard := isInteractiveOutput()
@@ -125,7 +141,6 @@ func runUpFromFile(ctx context.Context, path string) int {
 
 	type hostClient struct {
 		subdomain  string
-		routes     []upLocalRoute
 		router     *upLocalRouter
 		routerPort int
 		client     *client.Client
@@ -183,7 +198,6 @@ func runUpFromFile(ctx context.Context, path string) int {
 		}
 		clients = append(clients, hostClient{
 			subdomain:  sub,
-			routes:     hostRoutes[sub],
 			router:     router,
 			routerPort: routerPort,
 			client:     c,
@@ -314,7 +328,7 @@ func printUpRouteSummary(out io.Writer, cfg upConfig) {
 		if cfg.Access.Protect {
 			protected = " protect"
 		}
-		_, _ = fmt.Fprintf(out, "  %-12s %s%s -> http://127.0.0.1:%d%s%s\n", r.Name, r.Subdomain, r.PathPrefix, r.Port, protected, strip)
+		_, _ = fmt.Fprintf(out, "  %-12s %s%s -> %s%s%s\n", r.Name, r.Subdomain, r.PathPrefix, upTunnelTargetLabel(r), protected, strip)
 	}
 }
 
@@ -324,6 +338,13 @@ func countDistinctSubdomains(routes []upTunnelConfig) int {
 		seen[r.Subdomain] = struct{}{}
 	}
 	return len(seen)
+}
+
+func upTunnelTargetLabel(t upTunnelConfig) string {
+	if t.IsStatic() {
+		return "static:" + strings.TrimSpace(t.Dir)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", t.Port)
 }
 
 func runUpInitInteractive(ctx context.Context, in io.Reader, out io.Writer, defaultPath string) error {

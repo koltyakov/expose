@@ -16,7 +16,7 @@ func normalizeHost(host string) string {
 }
 
 // injectForwardedFor appends the client's IP to the X-Forwarded-For header
-// chain so the tunnel client can identify unique callers.
+// chain so trusted proxy hops can extend an existing chain.
 func injectForwardedFor(h map[string][]string, remoteAddr string) {
 	ip := remoteAddr
 	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
@@ -73,6 +73,7 @@ func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
 	}
 
 	deleteHeaderCI(h, "Host")
+	deleteHeaderCI(h, "X-Forwarded-For")
 	deleteHeaderCI(h, "X-Forwarded-Proto")
 	deleteHeaderCI(h, "X-Forwarded-Host")
 	deleteHeaderCI(h, "X-Forwarded-Port")

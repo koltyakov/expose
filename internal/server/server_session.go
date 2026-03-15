@@ -113,6 +113,16 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("refused http3 tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
 		return
 	}
+
+	opts, err := prepareH3SessionOptions(strings.TrimSpace(r.Header.Get("X-Expose-H3-Mode")))
+	if err != nil {
+		http.Error(w, "failed to establish h3 session", http.StatusInternalServerError)
+		return
+	}
+	if opts.h3AuthToken != "" {
+		w.Header().Set(h3SessionHeader, opts.h3AuthToken)
+	}
+
 	if err := s.store.SetTunnelConnected(r.Context(), tunnelID); err != nil {
 		if errors.Is(err, domain.ErrTunnelLimitReached) {
 			http.Error(w, domain.ErrTunnelLimitReached.Error(), http.StatusTooManyRequests)
@@ -124,24 +134,6 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
-
-	wantMultiStream := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Expose-H3-Mode")), "multistream")
-	wantMultiStreamV2 := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Expose-H3-Mode")), "multistream-v2")
-	var opts sessionActivateOptions
-	if wantMultiStream || wantMultiStreamV2 {
-		sessionToken, err := newH3SessionToken()
-		if err != nil {
-			http.Error(w, "failed to establish h3 session", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set(h3SessionHeader, sessionToken)
-		opts.h3Pool = newH3StreamPool(h3WorkerQueueDepth)
-		opts.h3AuthToken = sessionToken
-		if wantMultiStreamV2 {
-			opts.transportName = "quic_v2"
-			opts.h3StreamV2 = true
-		}
-	}
 	w.WriteHeader(http.StatusOK)
 	stream := httpStreamer.HTTPStream()
 	var conn *quic.Conn
@@ -169,6 +161,29 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		opts.transportName = "quic"
 	}
 	s.activateSession(tunnelID, nil, transport, writer, opts)
+}
+
+func prepareH3SessionOptions(mode string) (sessionActivateOptions, error) {
+	wantMultiStream := strings.EqualFold(strings.TrimSpace(mode), "multistream")
+	wantMultiStreamV2 := strings.EqualFold(strings.TrimSpace(mode), "multistream-v2")
+	if !wantMultiStream && !wantMultiStreamV2 {
+		return sessionActivateOptions{}, nil
+	}
+
+	sessionToken, err := h3SessionTokenGenerator()
+	if err != nil {
+		return sessionActivateOptions{}, err
+	}
+
+	opts := sessionActivateOptions{
+		h3Pool:      newH3StreamPool(h3WorkerQueueDepth),
+		h3AuthToken: sessionToken,
+	}
+	if wantMultiStreamV2 {
+		opts.transportName = "quic_v2"
+		opts.h3StreamV2 = true
+	}
+	return opts, nil
 }
 
 func (s *Server) handleConnectH3Stream(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,8 @@ const (
 
 var errH3WorkerUnavailable = errors.New("http3 worker stream unavailable")
 
+var h3SessionTokenGenerator = newH3SessionToken
+
 type h3StreamPool struct {
 	ready     chan *http3.Stream
 	closed    chan struct{}

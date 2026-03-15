@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
@@ -1029,8 +1031,81 @@ func TestInjectForwardedProxyHeadersOverwritesSpoofedValues(t *testing.T) {
 	if got := headers["X-Forwarded-Port"]; len(got) != 1 || got[0] != "10443" {
 		t.Fatalf("expected X-Forwarded-Port 10443, got %v", got)
 	}
-	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4" {
-		t.Fatalf("expected X-Forwarded-For to remain unchanged, got %v", got)
+
+	if got := headers["X-Forwarded-For"]; len(got) != 0 {
+		t.Fatalf("expected spoofed X-Forwarded-For to be removed, got %v", got)
+	}
+
+	injectForwardedFor(headers, "5.6.7.8:1234")
+
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "5.6.7.8" {
+		t.Fatalf("expected trusted client IP only, got %v", got)
+	}
+}
+
+type fakeHTTP3ResponseWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (w *fakeHTTP3ResponseWriter) HTTPStream() *http3.Stream {
+	return nil
+}
+
+func TestHandleConnectH3TokenSetupFailureDoesNotMarkTunnelConnected(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "connect-h3.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	rawKey := "connect-h3-secret"
+	keyHash := auth.HashAPIKey(rawKey, "")
+	key, err := store.CreateAPIKeyWithLimit(ctx, "connect-h3", keyHash, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tunnelRec, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "temporary", "connect-h3", "example.com", "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := store.CreateConnectToken(ctx, tunnelRec.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(config.ServerConfig{
+		BaseDomain:      "example.com",
+		ConnectTokenTTL: time.Minute,
+	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+
+	originalTokenGenerator := h3SessionTokenGenerator
+	h3SessionTokenGenerator = func() (string, error) {
+		return "", errors.New("entropy unavailable")
+	}
+	defer func() {
+		h3SessionTokenGenerator = originalTokenGenerator
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/connect-h3?token="+token, nil)
+	req.Header.Set("X-Expose-H3-Mode", "multistream")
+	rr := &fakeHTTP3ResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+
+	srv.handleConnectH3(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when h3 session setup fails, got %d", rr.Code)
+	}
+
+	route, err := store.FindRouteByTunnelID(ctx, tunnelRec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.State == domain.TunnelStateConnected {
+		t.Fatal("expected tunnel to remain disconnected after h3 session setup failure")
+	}
+	if got := srv.activeTunnels.activeCount(key.ID); got != 0 {
+		t.Fatalf("expected no active tunnels after h3 session setup failure, got %d", got)
 	}
 }
 

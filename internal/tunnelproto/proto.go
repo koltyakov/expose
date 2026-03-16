@@ -90,6 +90,7 @@ type HTTPRequest struct {
 	ID        string              `json:"id"`
 	Method    string              `json:"method"`
 	Path      string              `json:"path"`
+	RawPath   string              `json:"raw_path,omitempty"`
 	Query     string              `json:"query,omitempty"`
 	Headers   map[string][]string `json:"headers,omitempty"`
 	BodyB64   string              `json:"body_b64,omitempty"`
@@ -128,6 +129,7 @@ type WSOpen struct {
 	ID      string              `json:"id"`
 	Method  string              `json:"method"`
 	Path    string              `json:"path"`
+	RawPath string              `json:"raw_path,omitempty"`
 	Query   string              `json:"query,omitempty"`
 	Headers map[string][]string `json:"headers,omitempty"`
 }
@@ -176,6 +178,7 @@ type encodedFrame struct {
 type requestMeta struct {
 	Method    string              `json:"method"`
 	Path      string              `json:"path"`
+	RawPath   string              `json:"raw_path,omitempty"`
 	Query     string              `json:"query,omitempty"`
 	Headers   map[string][]string `json:"headers,omitempty"`
 	Streamed  bool                `json:"streamed,omitempty"`
@@ -191,6 +194,7 @@ type responseMeta struct {
 type wsOpenMeta struct {
 	Method  string              `json:"method"`
 	Path    string              `json:"path"`
+	RawPath string              `json:"raw_path,omitempty"`
 	Query   string              `json:"query,omitempty"`
 	Headers map[string][]string `json:"headers,omitempty"`
 }
@@ -418,6 +422,7 @@ func encodeMessageFrame(msg Message) (encodedFrame, error) {
 		meta, err := json.Marshal(requestMeta{
 			Method:    msg.Request.Method,
 			Path:      msg.Request.Path,
+			RawPath:   msg.Request.RawPath,
 			Query:     msg.Request.Query,
 			Headers:   msg.Request.Headers,
 			Streamed:  msg.Request.Streamed,
@@ -484,6 +489,7 @@ func encodeMessageFrame(msg Message) (encodedFrame, error) {
 		meta, err := json.Marshal(wsOpenMeta{
 			Method:  msg.WSOpen.Method,
 			Path:    msg.WSOpen.Path,
+			RawPath: msg.WSOpen.RawPath,
 			Query:   msg.WSOpen.Query,
 			Headers: msg.WSOpen.Headers,
 		})
@@ -621,6 +627,7 @@ func decodeFrameParts(frameKind byte, id string, wsMsgType int, meta, payload []
 				ID:        id,
 				Method:    request.Method,
 				Path:      request.Path,
+				RawPath:   request.RawPath,
 				Query:     request.Query,
 				Headers:   request.Headers,
 				Body:      payload,
@@ -664,6 +671,7 @@ func decodeFrameParts(frameKind byte, id string, wsMsgType int, meta, payload []
 				ID:      id,
 				Method:  open.Method,
 				Path:    open.Path,
+				RawPath: open.RawPath,
 				Query:   open.Query,
 				Headers: open.Headers,
 			},

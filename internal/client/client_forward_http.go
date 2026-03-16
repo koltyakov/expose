@@ -35,10 +35,33 @@ var (
 	}
 )
 
-func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelproto.HTTPRequest) *tunnelproto.HTTPResponse {
+func joinForwardTarget(base *url.URL, path, rawPath, rawQuery string) url.URL {
 	target := *base
-	target.Path = strings.TrimSuffix(base.Path, "/") + req.Path
-	target.RawQuery = req.Query
+	basePath := strings.TrimSuffix(base.Path, "/")
+	target.Path = basePath + path
+	target.RawQuery = rawQuery
+
+	baseRawPath := strings.TrimSuffix(base.EscapedPath(), "/")
+	if rawPath == "" {
+		rawPath = escapePathPreservingSlashes(path)
+	}
+	target.RawPath = baseRawPath + rawPath
+	return target
+}
+
+func escapePathPreservingSlashes(path string) string {
+	if path == "" {
+		return ""
+	}
+	segments := strings.Split(path, "/")
+	for i := range segments {
+		segments[i] = url.PathEscape(segments[i])
+	}
+	return strings.Join(segments, "/")
+}
+
+func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelproto.HTTPRequest) *tunnelproto.HTTPResponse {
+	target := joinForwardTarget(base, req.Path, req.RawPath, req.Query)
 
 	body, err := req.Payload()
 	if err != nil {
@@ -130,9 +153,7 @@ func (c *Client) forwardAndSend(
 	writeRespBodyChunk func(id string, payload []byte) error,
 ) {
 	started := time.Now()
-	target := *base
-	target.Path = strings.TrimSuffix(base.Path, "/") + req.Path
-	target.RawQuery = req.Query
+	target := joinForwardTarget(base, req.Path, req.RawPath, req.Query)
 
 	// Build request body reader.
 	var body io.Reader

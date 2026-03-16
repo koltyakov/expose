@@ -68,6 +68,18 @@ func TestReconnectScheduleNextDelay(t *testing.T) {
 	}
 }
 
+func TestShouldResetReconnectSchedule(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.March, 8, 12, 0, 0, 0, time.UTC)
+	if shouldResetReconnectSchedule(start, start.Add(reconnectInitialWindow-time.Millisecond)) {
+		t.Fatal("expected short-lived session to keep reconnect backoff state")
+	}
+	if !shouldResetReconnectSchedule(start, start.Add(reconnectInitialWindow)) {
+		t.Fatal("expected stable session to reset reconnect backoff state")
+	}
+}
+
 func TestNewUsesClonedForwardTransportWithSafeDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -311,6 +323,64 @@ func TestForwardLocalUsesForwardedHostWhenProvided(t *testing.T) {
 	}
 }
 
+func TestForwardLocalPreservesEscapedPath(t *testing.T) {
+	t.Parallel()
+
+	requestCh := make(chan struct {
+		path        string
+		rawPath     string
+		escapedPath string
+		requestURI  string
+	}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCh <- struct {
+			path        string
+			rawPath     string
+			escapedPath string
+			requestURI  string
+		}{
+			path:        r.URL.Path,
+			rawPath:     r.URL.RawPath,
+			escapedPath: r.URL.EscapedPath(),
+			requestURI:  r.RequestURI,
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{
+		fwdClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	resp := c.forwardLocal(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID:      "req_raw_path",
+		Method:  http.MethodGet,
+		Path:    "/files/a/b",
+		RawPath: "/files/a%2Fb",
+	})
+
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, resp.Status)
+	}
+	got := <-requestCh
+	if got.path != "/files/a/b" {
+		t.Fatalf("expected decoded upstream path, got %q", got.path)
+	}
+	if got.rawPath != "/files/a%2Fb" {
+		t.Fatalf("expected raw upstream path to preserve escapes, got %q", got.rawPath)
+	}
+	if got.escapedPath != "/files/a%2Fb" {
+		t.Fatalf("expected escaped upstream path to preserve escapes, got %q", got.escapedPath)
+	}
+	if got.requestURI != "/files/a%2Fb" {
+		t.Fatalf("expected request URI to preserve escapes, got %q", got.requestURI)
+	}
+}
+
 func TestOpenLocalWebSocketOriginCheckRejectsWithoutForwardedHost(t *testing.T) {
 	t.Parallel()
 
@@ -391,6 +461,76 @@ func TestOpenLocalWebSocketOriginCheckAcceptsWithForwardedHost(t *testing.T) {
 	}
 	if status != http.StatusSwitchingProtocols {
 		t.Fatalf("expected %d, got %d", http.StatusSwitchingProtocols, status)
+	}
+}
+
+func TestOpenLocalWebSocketPreservesEscapedPath(t *testing.T) {
+	t.Parallel()
+
+	requestCh := make(chan struct {
+		path        string
+		rawPath     string
+		escapedPath string
+		requestURI  string
+	}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCh <- struct {
+			path        string
+			rawPath     string
+			escapedPath string
+			requestURI  string
+		}{
+			path:        r.URL.Path,
+			rawPath:     r.URL.RawPath,
+			escapedPath: r.URL.EscapedPath(),
+			requestURI:  r.RequestURI,
+		}
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := &Client{}
+	conn, status, _, err := c.openLocalWebSocket(ctx, base, &tunnelproto.WSOpen{
+		ID:      "stream-raw-path",
+		Method:  http.MethodGet,
+		Path:    "/ws/a/b",
+		RawPath: "/ws/a%2Fb",
+	})
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err != nil {
+		t.Fatalf("expected websocket dial to succeed, got err=%v", err)
+	}
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("expected %d, got %d", http.StatusSwitchingProtocols, status)
+	}
+
+	got := <-requestCh
+	if got.path != "/ws/a/b" {
+		t.Fatalf("expected decoded websocket path, got %q", got.path)
+	}
+	if got.rawPath != "/ws/a%2Fb" {
+		t.Fatalf("expected raw websocket path to preserve escapes, got %q", got.rawPath)
+	}
+	if got.escapedPath != "/ws/a%2Fb" {
+		t.Fatalf("expected escaped websocket path to preserve escapes, got %q", got.escapedPath)
+	}
+	if got.requestURI != "/ws/a%2Fb" {
+		t.Fatalf("expected websocket request URI to preserve escapes, got %q", got.requestURI)
 	}
 }
 

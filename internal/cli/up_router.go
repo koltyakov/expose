@@ -66,7 +66,7 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 					preq.Out.Header.Del(upRouteMountPrefixHeader)
 				}
 				preq.Out.URL.Path = rewriteUpstreamPath(preq.In.URL.Path, routeCopy.PathPrefix, routeCopy.StripPrefix)
-				preq.Out.URL.RawPath = ""
+				preq.Out.URL.RawPath = rewriteUpstreamRawPath(preq.In.URL.RawPath, routeCopy.PathPrefix, routeCopy.StripPrefix)
 			},
 			Transport:  transport,
 			BufferPool: upRouterProxyBufferPool,
@@ -170,6 +170,41 @@ func rewriteUpstreamPath(path, prefix string, strip bool) string {
 		return out
 	}
 	return path
+}
+
+func rewriteUpstreamRawPath(rawPath, prefix string, strip bool) string {
+	if rawPath == "" {
+		return ""
+	}
+	if !strip || prefix == "" || prefix == "/" {
+		return rawPath
+	}
+	escapedPrefix := escapePathPreservingSlashes(prefix)
+	if rawPath == escapedPrefix {
+		return "/"
+	}
+	if strings.HasPrefix(rawPath, escapedPrefix+"/") {
+		out := strings.TrimPrefix(rawPath, escapedPrefix)
+		if out == "" {
+			return "/"
+		}
+		if !strings.HasPrefix(out, "/") {
+			out = "/" + out
+		}
+		return out
+	}
+	return rawPath
+}
+
+func escapePathPreservingSlashes(path string) string {
+	if path == "" {
+		return ""
+	}
+	segments := strings.Split(path, "/")
+	for i := range segments {
+		segments[i] = url.PathEscape(segments[i])
+	}
+	return strings.Join(segments, "/")
 }
 
 func newUpRouterTransport(routeCount int) *http.Transport {

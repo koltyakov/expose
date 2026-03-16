@@ -21,9 +21,7 @@ import (
 )
 
 func (c *Client) openLocalWebSocket(ctx context.Context, base *url.URL, req *tunnelproto.WSOpen) (*websocket.Conn, int, string, error) {
-	target := *base
-	target.Path = strings.TrimSuffix(base.Path, "/") + req.Path
-	target.RawQuery = req.Query
+	target := joinForwardTarget(base, req.Path, req.RawPath, req.Query)
 	if strings.EqualFold(target.Scheme, "https") {
 		target.Scheme = "wss"
 	} else {

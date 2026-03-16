@@ -80,6 +80,7 @@ func TestWriteMessageRequestResponseRoundTrip(t *testing.T) {
 				ID:        "req_42",
 				Method:    "POST",
 				Path:      "/submit",
+				RawPath:   "/submit/%2Fencoded",
 				Query:     "x=1",
 				Headers:   map[string][]string{"Content-Type": {"application/json"}},
 				Body:      []byte(`{"ok":true}`),
@@ -101,6 +102,7 @@ func TestWriteMessageRequestResponseRoundTrip(t *testing.T) {
 				ID:      "ws_1",
 				Method:  "GET",
 				Path:    "/socket",
+				RawPath: "/socket/%2Fencoded",
 				Headers: map[string][]string{"Upgrade": {"websocket"}},
 			},
 		},
@@ -131,7 +133,7 @@ func TestWriteMessageRequestResponseRoundTrip(t *testing.T) {
 		switch want.Kind {
 		case KindRequest:
 			payload, _ := got.Request.Payload()
-			if got.Request.ID != want.Request.ID || string(payload) != string(want.Request.Body) {
+			if got.Request.ID != want.Request.ID || got.Request.RawPath != want.Request.RawPath || string(payload) != string(want.Request.Body) {
 				t.Fatalf("unexpected request round-trip: %+v", got.Request)
 			}
 		case KindResponse:
@@ -140,7 +142,7 @@ func TestWriteMessageRequestResponseRoundTrip(t *testing.T) {
 				t.Fatalf("unexpected response round-trip: %+v", got.Response)
 			}
 		case KindWSOpen:
-			if got.WSOpen == nil || got.WSOpen.ID != want.WSOpen.ID || got.WSOpen.Path != want.WSOpen.Path {
+			if got.WSOpen == nil || got.WSOpen.ID != want.WSOpen.ID || got.WSOpen.Path != want.WSOpen.Path || got.WSOpen.RawPath != want.WSOpen.RawPath {
 				t.Fatalf("unexpected ws open round-trip: %+v", got.WSOpen)
 			}
 		case KindWSClose:

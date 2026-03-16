@@ -12,7 +12,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint lint-hint vet test test-race test-coverage bench bench-transport-matrix build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race test-coverage bench bench-transport-matrix build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -21,7 +21,8 @@ help:
 	@echo "  make deps-update    	- Update all Go module dependencies to latest minor/patch"
 	@echo "  make fmt            	- Format Go code"
 	@echo "  make lint           	- Run golangci-lint"
-	@echo "  make lint-hint      	- Run gopls hint-level diagnostics"
+	@echo "  make lint-hint      	- Run gopls hint-level diagnostics on changed Go files"
+	@echo "  make lint-hint-all  	- Run gopls hint-level diagnostics on all Go files"
 	@echo "  make vet            	- Run go vet"
 	@echo "  make test           	- Run tests"
 	@echo "  make test-race      	- Run tests with race detector"
@@ -64,6 +65,29 @@ lint:
 	golangci-lint run
 
 lint-hint:
+	@if ! command -v gopls >/dev/null 2>&1; then \
+		echo "gopls is required: go install golang.org/x/tools/gopls@latest"; \
+		exit 1; \
+	fi
+	@files="$$(mktemp)"; \
+	{ \
+		git diff --name-only --diff-filter=ACMR -- '*.go'; \
+		git diff --cached --name-only --diff-filter=ACMR -- '*.go'; \
+		git ls-files --others --exclude-standard -- '*.go'; \
+	} 2>/dev/null | awk 'NF && $$0 !~ "^vendor/" { print }' | sort -u > "$$files"; \
+	if [ ! -s "$$files" ]; then \
+		echo "No changed Go files."; \
+		rm -f "$$files"; \
+		exit 0; \
+	fi; \
+	while IFS= read -r file; do \
+		gopls check -severity=hint "$$file"; \
+	done < "$$files" | awk -v root="$(CURDIR)/" '{ if (index($$0, root) == 1) sub(root, "", $$0); print }'; \
+	status=$$?; \
+	rm -f "$$files"; \
+	exit $$status
+
+lint-hint-all:
 	@if ! command -v gopls >/dev/null 2>&1; then \
 		echo "gopls is required: go install golang.org/x/tools/gopls@latest"; \
 		exit 1; \

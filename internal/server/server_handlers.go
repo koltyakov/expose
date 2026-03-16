@@ -168,6 +168,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 			ID:      streamID,
 			Method:  r.Method,
 			Path:    r.URL.Path,
+			RawPath: r.URL.RawPath,
 			Query:   r.URL.RawQuery,
 			Headers: headers,
 		},

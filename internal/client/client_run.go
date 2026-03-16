@@ -105,7 +105,6 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		retry.reset()
 
 		if c.display != nil {
 			c.display.ShowBanner(c.version)
@@ -158,8 +157,12 @@ func (c *Client) Run(ctx context.Context) error {
 		default:
 		}
 
+		sessionStartedAt := time.Now()
 		err = rt.run()
 		rt.close()
+		if shouldResetReconnectSchedule(sessionStartedAt, time.Now()) {
+			retry.reset()
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -205,6 +208,13 @@ func (r *reconnectSchedule) nextDelay(now time.Time) time.Duration {
 
 func (r *reconnectSchedule) reset() {
 	r.startedAt = time.Time{}
+}
+
+func shouldResetReconnectSchedule(startedAt, now time.Time) bool {
+	if startedAt.IsZero() {
+		return false
+	}
+	return now.Sub(startedAt) >= reconnectInitialWindow
 }
 
 func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {

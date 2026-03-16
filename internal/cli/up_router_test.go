@@ -72,9 +72,25 @@ func TestRewriteUpstreamPath(t *testing.T) {
 	}
 }
 
+func TestRewriteUpstreamRawPath(t *testing.T) {
+	if got := rewriteUpstreamRawPath("/api/files/a%2Fb", "/api", true); got != "/files/a%2Fb" {
+		t.Fatalf("rewrite escaped child: got %q", got)
+	}
+	if got := rewriteUpstreamRawPath("/api", "/api", true); got != "/" {
+		t.Fatalf("rewrite exact escaped path: got %q", got)
+	}
+	if got := rewriteUpstreamRawPath("/api%20space/users", "/api space", true); got != "/users" {
+		t.Fatalf("rewrite escaped prefix: got %q", got)
+	}
+	if got := rewriteUpstreamRawPath("/apiv2/files/a%2Fb", "/api", true); got != "/apiv2/files/a%2Fb" {
+		t.Fatalf("rewrite non-match should be unchanged, got %q", got)
+	}
+}
+
 func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	type receivedRequest struct {
 		path     string
+		rawPath  string
 		rawQuery string
 		host     string
 		xff      string
@@ -88,6 +104,7 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqs <- receivedRequest{
 			path:     r.URL.Path,
+			rawPath:  r.URL.RawPath,
 			rawQuery: r.URL.RawQuery,
 			host:     r.Host,
 			xff:      r.Header.Get("X-Forwarded-For"),
@@ -142,6 +159,9 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	if got.path != "/users" {
 		t.Fatalf("unexpected upstream path %q", got.path)
 	}
+	if got.rawPath != "" {
+		t.Fatalf("unexpected upstream raw path %q", got.rawPath)
+	}
 	if got.rawQuery != "id=1" {
 		t.Fatalf("unexpected upstream query %q", got.rawQuery)
 	}
@@ -162,6 +182,75 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	}
 	if got.mount != "/api" {
 		t.Fatalf("unexpected mount prefix header %q", got.mount)
+	}
+}
+
+func TestStartUpLocalRouterPreservesEscapedPath(t *testing.T) {
+	t.Parallel()
+
+	reqs := make(chan struct {
+		path        string
+		rawPath     string
+		escapedPath string
+		requestURI  string
+	}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs <- struct {
+			path        string
+			rawPath     string
+			escapedPath string
+			requestURI  string
+		}{
+			path:        r.URL.Path,
+			rawPath:     r.URL.RawPath,
+			escapedPath: r.URL.EscapedPath(),
+			requestURI:  r.RequestURI,
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	upstreamAddr, ok := upstream.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected upstream addr type %T", upstream.Listener.Addr())
+	}
+
+	router, port, err := startUpLocalRouter(t.Context(), []upLocalRoute{{
+		Name:        "files",
+		PathPrefix:  "/api",
+		StripPrefix: true,
+		LocalPort:   upstreamAddr.Port,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("start router: %v", err)
+	}
+	defer func() {
+		_ = router.server.Close()
+	}()
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/files/a%%2Fb", port))
+	if err != nil {
+		t.Fatalf("GET escaped path route: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected status code %d", resp.StatusCode)
+	}
+
+	got := <-reqs
+	if got.path != "/files/a/b" {
+		t.Fatalf("unexpected decoded upstream path %q", got.path)
+	}
+	if got.rawPath != "/files/a%2Fb" {
+		t.Fatalf("expected raw upstream path to preserve escapes, got %q", got.rawPath)
+	}
+	if got.escapedPath != "/files/a%2Fb" {
+		t.Fatalf("expected escaped upstream path to preserve escapes, got %q", got.escapedPath)
+	}
+	if got.requestURI != "/files/a%2Fb" {
+		t.Fatalf("expected upstream request URI to preserve escapes, got %q", got.requestURI)
 	}
 }
 

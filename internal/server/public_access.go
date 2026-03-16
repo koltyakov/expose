@@ -172,7 +172,7 @@ func (s *Server) handlePublicAccessLogin(w http.ResponseWriter, r *http.Request,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteNoneMode,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(publicAccessCookieTTL / time.Second),
 		Expires:  time.Now().Add(publicAccessCookieTTL),
 	})
@@ -186,7 +186,7 @@ func clearPublicAccessCookie(w http.ResponseWriter) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteNoneMode,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
 	})
@@ -468,6 +468,29 @@ func publicAccessRedirectTarget(raw, fallback string) string {
 		u.Path = "/"
 	}
 	return u.RequestURI()
+}
+
+func publicWebSocketOriginAllowed(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+	case "http", "https":
+	default:
+		return false
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return false
+	}
+	return normalizeHost(u.Host) == normalizeHost(r.Host)
 }
 
 func isPublicAccessFormSubmission(r *http.Request) bool {

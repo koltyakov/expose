@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
@@ -143,6 +145,93 @@ func TestRegisterURLsNonDefaultPort(t *testing.T) {
 	}
 	if h3URL != "https://127.0.0.1.sslip.io:10443/v1/tunnels/connect-h3?token=token-1" {
 		t.Fatalf("unexpected h3 url: %q", h3URL)
+	}
+}
+
+func TestHandleConnectRequiresToken(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/v1/tunnels/connect", nil)
+	rr := httptest.NewRecorder()
+
+	(&Server{}).handleConnect(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing connect token, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "missing token") {
+		t.Fatalf("expected missing token error, got %q", rr.Body.String())
+	}
+}
+
+func TestLoadStaticCertificateLoadsConfiguredPair(t *testing.T) {
+	t.Parallel()
+
+	certFile, keyFile := writeTLSKeyPairFiles(t, selfSignedCertForLoopback(t))
+	srv := &Server{
+		cfg: config.ServerConfig{
+			BaseDomain:   "example.com",
+			CertCacheDir: t.TempDir(),
+			TLSCertFile:  certFile,
+			TLSKeyFile:   keyFile,
+		},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	staticCert, err := srv.loadStaticCertificate("auto")
+	if err != nil {
+		t.Fatalf("loadStaticCertificate error: %v", err)
+	}
+	if staticCert == nil {
+		t.Fatal("expected static certificate to load")
+	}
+	if staticCert.certFile != certFile {
+		t.Fatalf("expected cert file %q, got %q", certFile, staticCert.certFile)
+	}
+	if staticCert.keyFile != keyFile {
+		t.Fatalf("expected key file %q, got %q", keyFile, staticCert.keyFile)
+	}
+}
+
+func TestServerRunStartsAndShutsDown(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "run.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	srv := New(config.ServerConfig{
+		BaseDomain:             "example.com",
+		ListenHTTPS:            "127.0.0.1:0",
+		ListenHTTP:             "127.0.0.1:0",
+		TLSMode:                "dynamic",
+		CertCacheDir:           t.TempDir(),
+		RequestTimeout:         time.Second,
+		ConnectTokenTTL:        time.Minute,
+		ClientPingTimeout:      time.Second,
+		HeartbeatCheckInterval: 100 * time.Millisecond,
+		CleanupInterval:        time.Minute,
+		TempRetention:          time.Hour,
+		RouteCacheTTL:          time.Minute,
+		WAFCounterRetention:    time.Hour,
+	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Run(ctx)
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Server.Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Server.Run shutdown")
 	}
 }
 
@@ -448,6 +537,8 @@ func TestAuthorizePublicRequestRendersAccessForm(t *testing.T) {
 }
 
 func TestAuthorizePublicRequestLoginSubmissionSetsCookie(t *testing.T) {
+	t.Parallel()
+
 	hash, err := auth.HashPassword("session-pass")
 	if err != nil {
 		t.Fatal(err)
@@ -494,9 +585,74 @@ func TestAuthorizePublicRequestLoginSubmissionSetsCookie(t *testing.T) {
 		if !cookie.HttpOnly || !cookie.Secure {
 			t.Fatal("expected secure httpOnly access cookie")
 		}
+		if cookie.SameSite != http.SameSiteLaxMode {
+			t.Fatalf("expected SameSite=Lax access cookie, got %v", cookie.SameSite)
+		}
 	}
 	if !found {
 		t.Fatal("expected access cookie to be set")
+	}
+}
+
+func TestPublicWebSocketOriginAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		host   string
+		origin string
+		want   bool
+	}{
+		{name: "missing origin", host: "demo.example.com", want: true},
+		{name: "same host https", host: "demo.example.com", origin: "https://demo.example.com", want: true},
+		{name: "same host with port", host: "demo.example.com:443", origin: "https://demo.example.com:443", want: true},
+		{name: "cross host", host: "demo.example.com", origin: "https://evil.example.com", want: false},
+		{name: "bad scheme", host: "demo.example.com", origin: "javascript:alert(1)", want: false},
+		{name: "malformed", host: "demo.example.com", origin: "://bad", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "https://"+tt.host+"/socket", nil)
+			req.Host = tt.host
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if got := publicWebSocketOriginAllowed(req); got != tt.want {
+				t.Fatalf("publicWebSocketOriginAllowed() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandlePublicWebSocketRejectsCrossOriginForProtectedRoute(t *testing.T) {
+	t.Parallel()
+
+	hash, err := auth.HashPassword("session-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{}
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{Hostname: "demo.example.com"},
+		Tunnel: domain.Tunnel{
+			ID:                 "tun_1",
+			AccessPasswordHash: hash,
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/ws", nil)
+	req.Host = "demo.example.com"
+	req.Header.Set("Origin", "https://evil.example.com")
+	rr := httptest.NewRecorder()
+
+	srv.handlePublicWebSocket(rr, req, route, &session{})
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for cross-origin protected websocket, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "origin") {
+		t.Fatalf("expected origin rejection message, got %q", rr.Body.String())
 	}
 }
 
@@ -1989,4 +2145,27 @@ func TestSessionPendingLoad(t *testing.T) {
 	if ok4 {
 		t.Fatal("expected channel to be gone after pendingLoadAndDelete")
 	}
+}
+
+func writeTLSKeyPairFiles(t testing.TB, cert tls.Certificate) (string, string) {
+	t.Helper()
+
+	tmp := t.TempDir()
+	certFile := filepath.Join(tmp, "cert.pem")
+	keyFile := filepath.Join(tmp, "key.pem")
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	return certFile, keyFile
 }

@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseUpYAMLAndNormalize(t *testing.T) {
 	raw := `
@@ -61,6 +64,49 @@ tunnels:
 	}
 	if got := cfg.Access.PasswordEnv; got != "" {
 		t.Fatalf("expected password_env alias to be cleared after normalization, got %q", got)
+	}
+}
+
+func TestRenderUpYAMLPreservesProtectWithoutInlinePassword(t *testing.T) {
+	cfg := upConfig{
+		Version: 1,
+		Access: upAccessConfig{
+			Protect: true,
+		},
+		Tunnels: []upTunnelConfig{
+			{Name: "frontend", Subdomain: "myapp", Port: 3000, PathPrefix: "/", StripPrefix: false},
+		},
+	}
+	if err := cfg.normalizeAndValidate(); err != nil {
+		t.Fatalf("normalizeAndValidate error: %v", err)
+	}
+
+	raw := renderUpYAML(cfg)
+	if !strings.Contains(raw, "protect: true") {
+		t.Fatalf("expected rendered yaml to preserve protect flag, got:\n%s", raw)
+	}
+
+	parsed, err := parseUpYAML(raw)
+	if err != nil {
+		t.Fatalf("parseUpYAML round-trip error: %v", err)
+	}
+	if err := parsed.normalizeAndValidate(); err != nil {
+		t.Fatalf("normalizeAndValidate round-trip error: %v", err)
+	}
+	if !parsed.Access.Protect {
+		t.Fatal("expected protect flag to survive render/parse round-trip")
+	}
+
+	t.Setenv("EXPOSE_PASSWORD", "shared-secret")
+	resolved, err := resolveUpAccess(parsed.Access)
+	if err != nil {
+		t.Fatalf("resolveUpAccess round-trip error: %v", err)
+	}
+	if !resolved.Protect {
+		t.Fatal("expected resolved access to remain protected")
+	}
+	if resolved.Password != "shared-secret" {
+		t.Fatalf("expected EXPOSE_PASSWORD fallback after round-trip, got %q", resolved.Password)
 	}
 }
 

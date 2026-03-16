@@ -103,6 +103,11 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
+	if route.Tunnel.AccessPasswordHash != "" && !publicWebSocketOriginAllowed(r) {
+		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
+		return
+	}
+
 	streamID := s.nextWSStreamID()
 	stream, err := sess.acquireH3Worker(r.Context(), s.cfg.RequestTimeout)
 	if err != nil {
@@ -144,7 +149,11 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 		return
 	}
 
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	checkOrigin := func(*http.Request) bool { return true }
+	if route.Tunnel.AccessPasswordHash != "" {
+		checkOrigin = publicWebSocketOriginAllowed
+	}
+	upgrader := websocket.Upgrader{CheckOrigin: checkOrigin}
 	if p := ack.Subprotocol; p != "" {
 		upgrader.Subprotocols = []string{p}
 	}

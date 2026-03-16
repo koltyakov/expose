@@ -816,6 +816,54 @@ func TestStaticHandlerCollapsesMultilineBlockquotes(t *testing.T) {
 	}
 }
 
+func TestSanitizeMarkdownRawHTMLFragment(t *testing.T) {
+	t.Parallel()
+
+	clean, ok := sanitizeMarkdownRawHTMLFragment(`<a href="docs/getting-started">Docs</a>`, "/guides/index.md")
+	if !ok {
+		t.Fatal("expected relative link raw html to be allowed")
+	}
+	if !strings.Contains(clean, `href="/guides/docs/getting-started"`) {
+		t.Fatalf("expected relative href to be rewritten, got %q", clean)
+	}
+
+	if _, ok := sanitizeMarkdownRawHTMLFragment(`<a href="javascript:alert(1)">X</a>`, "/"); ok {
+		t.Fatal("expected javascript raw html link to be rejected")
+	}
+}
+
+func TestRenderMarkdownDocumentHighlightsCodeAndTracksMermaid(t *testing.T) {
+	t.Parallel()
+
+	src := strings.Join([]string{
+		"# Demo",
+		"",
+		"```go",
+		"package main",
+		"```",
+		"",
+		"```mermaid",
+		"graph LR",
+		`A["A"] --> B["B"]`,
+		"```",
+		"",
+	}, "\n")
+
+	body, title, hasMermaid := renderMarkdownDocument(src, "/docs/index.md")
+	if title != "Demo" {
+		t.Fatalf("expected markdown title Demo, got %q", title)
+	}
+	if !hasMermaid {
+		t.Fatal("expected mermaid fence to be detected")
+	}
+	if !strings.Contains(body, `class="tok-keyword">package</span>`) {
+		t.Fatalf("expected highlighted go keyword, got %q", body)
+	}
+	if !strings.Contains(body, `class="mermaid"`) {
+		t.Fatalf("expected mermaid block wrapper, got %q", body)
+	}
+}
+
 func newTestStaticHandler(t *testing.T, root string, opts staticServerOptions) http.Handler {
 	t.Helper()
 	policy, err := newStaticAccessPolicy(opts.Unprotected, opts.AllowPatterns)

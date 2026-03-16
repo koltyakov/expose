@@ -152,6 +152,11 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
+	if route.Tunnel.AccessPasswordHash != "" && !publicWebSocketOriginAllowed(r) {
+		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
+		return
+	}
+
 	streamID := s.nextWSStreamID()
 	streamCh := make(chan tunnelproto.Message, 64)
 	sess.wsPendingStore(streamID, streamCh)
@@ -204,7 +209,11 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	checkOrigin := func(*http.Request) bool { return true }
+	if route.Tunnel.AccessPasswordHash != "" {
+		checkOrigin = publicWebSocketOriginAllowed
+	}
+	upgrader := websocket.Upgrader{CheckOrigin: checkOrigin}
 	if p := strings.TrimSpace(ack.Subprotocol); p != "" {
 		upgrader.Subprotocols = []string{p}
 	}

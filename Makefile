@@ -12,7 +12,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race test-coverage bench bench-transport-matrix build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race test-coverage bench bench-transport build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"

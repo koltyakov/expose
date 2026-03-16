@@ -66,7 +66,7 @@ Heavy transport matrix report (fixed `10`, `25`, `50`, and `100`
 requests-per-tunnel scenarios up to `200 tunnels`):
 
 ```bash
-make bench-transport-matrix
+make bench-transport
 ```
 
 That refreshes [docs/benchmark.md](benchmark.md) with normalized metrics that

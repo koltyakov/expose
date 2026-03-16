@@ -6,13 +6,14 @@ GO ?= go
 CGO_ENABLED ?= 0
 BUILD_LDFLAGS := -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
 BUILD_FLAGS := -trimpath -ldflags "$(BUILD_LDFLAGS)"
+COVERAGE_MIN ?=50.0
 
 ifneq (,$(wildcard .env))
 include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race test-coverage bench bench-transport build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race test-coverage test-cov-check bench bench-transport build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -27,6 +28,7 @@ help:
 	@echo "  make test           	- Run tests"
 	@echo "  make test-race      	- Run tests with race detector"
 	@echo "  make test-coverage  	- Run tests with coverage output"
+	@echo "  make test-cov-check  - Enforce minimum total coverage ($(COVERAGE_MIN)%)"
 	@echo "  make bench          	- Run focused performance benchmarks"
 	@echo "  make bench-transport - Refresh docs/benchmark.md with the heavy WS vs QUIC matrix"
 	@echo "  make build          	- Build binary to ./$(BIN_DIR)/$(APP)"
@@ -109,6 +111,15 @@ test-coverage:
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
+test-cov-check:
+	go test -coverprofile=coverage.out ./...
+	@total="$$(go tool cover -func=coverage.out | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
+	if ! awk -v total="$$total" -v min="$(COVERAGE_MIN)" 'BEGIN { exit !(total + 0 >= min + 0) }'; then \
+		echo "coverage $$total% is below minimum $(COVERAGE_MIN)%"; \
+		exit 1; \
+	fi; \
+	echo "coverage $$total% meets minimum $(COVERAGE_MIN)%"
+
 bench:
 	go test ./internal/client ./internal/server ./internal/store/sqlite ./internal/tunnelproto -bench . -run ^$
 
@@ -145,7 +156,7 @@ release-local:
 	fi
 	goreleaser build --snapshot --clean
 
-ci: deps fmt vet test test-race build release-check
+ci: deps fmt vet test test-race test-cov-check build release-check
 	@echo "All CI checks passed."
 
 run-server:

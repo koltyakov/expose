@@ -32,6 +32,8 @@ import (
 	"github.com/koltyakov/expose/internal/waf"
 )
 
+const testAccessCookieSecret = "test-access-cookie-secret"
+
 func TestStableTemporarySubdomain(t *testing.T) {
 	a := stableTemporarySubdomain("WORKSTATION-1", "3000")
 	b := stableTemporarySubdomain("WORKSTATION-1", "3000")
@@ -466,6 +468,8 @@ func TestRemoveTunnelCertCacheBatch(t *testing.T) {
 }
 
 func TestPublicAccessCookieRoundTrip(t *testing.T) {
+	srv := &Server{cfg: config.ServerConfig{AccessCookieSecret: testAccessCookieSecret}}
+
 	hash, err := auth.HashPassword("session-pass")
 	if err != nil {
 		t.Fatal(err)
@@ -481,16 +485,25 @@ func TestPublicAccessCookieRoundTrip(t *testing.T) {
 	}
 	expectedUser := publicAccessExpectedUser(route)
 	now := time.Unix(1_700_000_000, 0)
-	cookieValue := publicAccessCookieValue(route, expectedUser, now)
+	cookieValue := srv.publicAccessCookieValue(route, expectedUser, now)
+	if cookieValue == "" {
+		t.Fatal("expected non-empty public access cookie value")
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: publicAccessCookieName, Value: cookieValue})
-	if valid, present := hasValidPublicAccessCookie(req, route, expectedUser, now.Add(time.Hour)); !present || !valid {
+	if valid, present := srv.hasValidPublicAccessCookie(req, route, expectedUser, now.Add(time.Hour)); !present || !valid {
 		t.Fatal("expected valid public access cookie to pass")
 	}
 
-	if valid, present := hasValidPublicAccessCookie(req, route, expectedUser, now.Add(publicAccessCookieTTL+time.Second)); !present || valid {
+	if valid, present := srv.hasValidPublicAccessCookie(req, route, expectedUser, now.Add(publicAccessCookieTTL+time.Second)); !present || valid {
 		t.Fatal("expected expired public access cookie to fail")
+	}
+
+	updatedRoute := route
+	updatedRoute.Tunnel.AccessPasswordHash = hash + "-rotated"
+	if valid, present := srv.hasValidPublicAccessCookie(req, updatedRoute, expectedUser, now.Add(time.Hour)); !present || valid {
+		t.Fatal("expected cookie signed for the old password hash to fail after credentials rotate")
 	}
 }
 
@@ -500,7 +513,7 @@ func TestAuthorizePublicRequestRendersAccessForm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := &Server{}
+	srv := &Server{cfg: config.ServerConfig{AccessCookieSecret: testAccessCookieSecret}}
 	route := domain.TunnelRoute{
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
@@ -544,7 +557,7 @@ func TestAuthorizePublicRequestLoginSubmissionSetsCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := &Server{}
+	srv := &Server{cfg: config.ServerConfig{AccessCookieSecret: testAccessCookieSecret}}
 	route := domain.TunnelRoute{
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
@@ -633,7 +646,7 @@ func TestHandlePublicWebSocketRejectsCrossOriginForProtectedRoute(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	srv := &Server{}
+	srv := &Server{cfg: config.ServerConfig{AccessCookieSecret: testAccessCookieSecret}}
 	route := domain.TunnelRoute{
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
@@ -662,7 +675,7 @@ func TestAuthorizePublicRequestAllowsValidCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := &Server{}
+	srv := &Server{cfg: config.ServerConfig{AccessCookieSecret: testAccessCookieSecret}}
 	route := domain.TunnelRoute{
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
@@ -675,7 +688,7 @@ func TestAuthorizePublicRequestAllowsValidCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/private", nil)
 	req.AddCookie(&http.Cookie{
 		Name:  publicAccessCookieName,
-		Value: publicAccessCookieValue(route, publicAccessExpectedUser(route), now),
+		Value: srv.publicAccessCookieValue(route, publicAccessExpectedUser(route), now),
 	})
 	rr := httptest.NewRecorder()
 
@@ -690,7 +703,7 @@ func TestAuthorizePublicRequestBasicMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := &Server{}
+	srv := &Server{cfg: config.ServerConfig{AccessCookieSecret: testAccessCookieSecret}}
 	route := domain.TunnelRoute{
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
@@ -1508,6 +1521,7 @@ func TestHandlePublicAppliesPublicRateLimit(t *testing.T) {
 	}
 
 	srv := &Server{
+		cfg:           config.ServerConfig{AccessCookieSecret: testAccessCookieSecret},
 		publicLimiter: newConfiguredRateLimiter(1, 1, time.Minute),
 		hub: &hub{
 			sessions: map[string]*session{

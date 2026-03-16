@@ -220,6 +220,7 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	t.Setenv("EXPOSE_ROUTE_CACHE_TTL", "2m")
 	t.Setenv("EXPOSE_WAF_COUNTER_RETENTION", "30m")
 	t.Setenv("EXPOSE_PPROF_LISTEN", "127.0.0.1:6060")
+	t.Setenv("EXPOSE_ACCESS_COOKIE_SECRET", "cookie-secret")
 
 	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
 	if err != nil {
@@ -242,6 +243,9 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 	if cfg.PprofListen != "127.0.0.1:6060" {
 		t.Fatalf("expected pprof listen 127.0.0.1:6060, got %q", cfg.PprofListen)
+	}
+	if cfg.AccessCookieSecret != "cookie-secret" {
+		t.Fatalf("expected access cookie secret from env, got %q", cfg.AccessCookieSecret)
 	}
 }
 

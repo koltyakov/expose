@@ -45,6 +45,7 @@ type ServerConfig struct {
 	DBMaxIdleConns         int
 	BaseDomain             string
 	APIKeyPepper           string
+	AccessCookieSecret     string
 	TLSMode                string
 	CertCacheDir           string
 	TLSCertFile            string
@@ -187,6 +188,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		DBMaxIdleConns:         envIntOrDefault("EXPOSE_DB_MAX_IDLE_CONNS", 10),
 		BaseDomain:             envOrDefault("EXPOSE_DOMAIN", ""),
 		APIKeyPepper:           envOrDefault("EXPOSE_API_KEY_PEPPER", ""),
+		AccessCookieSecret:     envOrDefault("EXPOSE_ACCESS_COOKIE_SECRET", ""),
 		TLSMode:                envOrDefault("EXPOSE_TLS_MODE", "auto"),
 		CertCacheDir:           envOrDefault("EXPOSE_CERT_CACHE_DIR", defaultServerCertCacheDir),
 		TLSCertFile:            envOrDefault("EXPOSE_TLS_CERT_FILE", ""),
@@ -220,6 +222,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "SQLite max idle connections")
 	fs.StringVar(&cfg.BaseDomain, "domain", cfg.BaseDomain, "Public base domain, e.g. example.com")
 	fs.StringVar(&cfg.APIKeyPepper, "api-key-pepper", cfg.APIKeyPepper, "API key hash pepper override")
+	fs.StringVar(&cfg.AccessCookieSecret, "access-cookie-secret", cfg.AccessCookieSecret, "Secret used to sign protected-route access cookies")
 	fs.StringVar(&cfg.TLSMode, "tls-mode", cfg.TLSMode, "TLS mode: auto|dynamic|wildcard")
 	fs.StringVar(&cfg.CertCacheDir, "cert-cache-dir", cfg.CertCacheDir, "TLS cert cache dir")
 	fs.StringVar(&cfg.TLSCertFile, "tls-cert-file", cfg.TLSCertFile, "Static TLS cert PEM file (optional, DNS-01 wildcard)")
@@ -232,6 +235,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	cfg.ListenHTTPS = normalizeListenAddr(cfg.ListenHTTPS)
 	cfg.ListenHTTP = normalizeListenAddr(cfg.ListenHTTP)
 	cfg.PprofListen = normalizeListenAddr(cfg.PprofListen)
+	cfg.AccessCookieSecret = strings.TrimSpace(cfg.AccessCookieSecret)
 
 	if strings.TrimSpace(cfg.BaseDomain) == "" {
 		return cfg, errors.New("missing --domain or EXPOSE_DOMAIN")

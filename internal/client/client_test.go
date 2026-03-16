@@ -554,6 +554,9 @@ func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
 	gotReq2Response := make(chan int, 1)
 	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -635,6 +638,7 @@ func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
 			case tunnelproto.KindResponse:
 				if msg.Response != nil && msg.Response.ID == "req_2" {
 					gotReq2Response <- msg.Response.Status
+					<-ctx.Done()
 					return
 				}
 			}
@@ -653,9 +657,6 @@ func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
 			},
 		},
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
 
 	reg := registerResponse{
 		WSURL: "ws" + strings.TrimPrefix(wsSrv.URL, "http"),

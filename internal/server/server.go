@@ -4,7 +4,10 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -168,6 +171,12 @@ var wsUpgrader = websocket.Upgrader{
 
 // New creates a Server with the given configuration, store, and logger.
 func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, version string) *Server {
+	if strings.TrimSpace(cfg.AccessCookieSecret) == "" {
+		cfg.AccessCookieSecret = newEphemeralAccessCookieSecret()
+		if logger != nil {
+			logger.Warn("access cookie secret not configured; using an ephemeral secret, protected-route form sessions will reset on restart", "env", "EXPOSE_ACCESS_COOKIE_SECRET")
+		}
+	}
 	var publicLimiter *rateLimiter
 	if cfg.PublicRateLimitRPS > 0 {
 		publicLimiter = newConfiguredRateLimiter(
@@ -193,6 +202,14 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		disconnectQ:   make(map[string]struct{}),
 		wafAuditQueue: make(chan wafAuditEvent, wafAuditQueueSize),
 	}
+}
+
+func newEphemeralAccessCookieSecret() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 // durationOr returns d if positive, otherwise the fallback.

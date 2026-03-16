@@ -198,15 +198,55 @@ func closeStmt(stmt **sql.Stmt) error {
 	return err
 }
 
+type schemaMigration struct {
+	version int
+	name    string
+	apply   func(context.Context, *sql.Tx) error
+}
+
+var schemaMigrations = []schemaMigration{
+	{version: 1, name: "base_schema", apply: applyBaseSchemaMigration},
+	{version: 2, name: "tunnels_access_password_hash", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "tunnels", "access_password_hash", `ALTER TABLE tunnels ADD COLUMN access_password_hash TEXT NULL`)
+	}},
+	{version: 3, name: "tunnels_access_user", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "tunnels", "access_user", `ALTER TABLE tunnels ADD COLUMN access_user TEXT NULL`)
+	}},
+	{version: 4, name: "tunnels_access_mode", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "tunnels", "access_mode", `ALTER TABLE tunnels ADD COLUMN access_mode TEXT NULL`)
+	}},
+	{version: 5, name: "api_keys_tunnel_limit", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "api_keys", "tunnel_limit", `ALTER TABLE api_keys ADD COLUMN tunnel_limit INTEGER NOT NULL DEFAULT -1`)
+	}},
+}
+
 // Migrate creates all required tables and indexes if they do not already exist.
 func (s *Store) Migrate(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	version INTEGER PRIMARY KEY,
+	name TEXT NOT NULL,
+	applied_at DATETIME NOT NULL
+)`); err != nil {
+		return err
+	}
+	for _, migration := range schemaMigrations {
+		if err := applySchemaMigration(ctx, s.db, migration); err != nil {
+			return fmt.Errorf("schema migration %d (%s): %w", migration.version, migration.name, err)
+		}
+	}
+	return nil
+}
+
+func applyBaseSchemaMigration(ctx context.Context, tx *sql.Tx) error {
 	const ddl = `
 CREATE TABLE IF NOT EXISTS api_keys (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
 	key_hash TEXT NOT NULL UNIQUE,
 	created_at DATETIME NOT NULL,
-	revoked_at DATETIME NULL
+	revoked_at DATETIME NULL,
+	tunnel_limit INTEGER NOT NULL DEFAULT -1
 );
 CREATE TABLE IF NOT EXISTS domains (
 	id TEXT PRIMARY KEY,
@@ -252,28 +292,88 @@ CREATE INDEX IF NOT EXISTS idx_connect_tokens_tunnel_id ON connect_tokens(tunnel
 CREATE INDEX IF NOT EXISTS idx_connect_tokens_expires_at ON connect_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS idx_connect_tokens_used_at ON connect_tokens(used_at);
 `
-	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+	_, err := tx.ExecContext(ctx, ddl)
+	return err
+}
+
+func applySchemaMigration(ctx context.Context, db *sql.DB, migration schemaMigration) (err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_password_hash TEXT NULL`); err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-			return err
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	applied, err := schemaMigrationApplied(ctx, tx, migration.version)
+	if err != nil {
+		return err
+	}
+	if applied {
+		return tx.Commit()
+	}
+	if err := migration.apply(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, applied_at) VALUES(?, ?, ?)`, migration.version, migration.name, time.Now().UTC()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func schemaMigrationApplied(ctx context.Context, tx *sql.Tx, version int) (bool, error) {
+	var applied int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&applied)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return false, err
+}
+
+func ensureColumn(ctx context.Context, tx *sql.Tx, table, column, ddl string) error {
+	hasColumn, err := tableHasColumn(ctx, tx, table, column)
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, ddl)
+	return err
+}
+
+func tableHasColumn(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	query := fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdent(table))
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(column)) {
+			return true, nil
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_user TEXT NULL`); err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-			return err
-		}
-	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tunnels ADD COLUMN access_mode TEXT NULL`); err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-			return err
-		}
-	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN tunnel_limit INTEGER NOT NULL DEFAULT -1`); err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-			return err
-		}
-	}
-	return nil
+	return false, rows.Err()
+}
+
+func quoteSQLiteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }

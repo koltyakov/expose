@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/debughttp"
 	ilog "github.com/koltyakov/expose/internal/log"
@@ -65,6 +66,16 @@ func runServer(ctx context.Context, args []string) int {
 	}
 	cfg.APIKeyPepper = pepper
 
+	accessCookieSecret, ephemeralCookieSecret, err := resolveAccessCookieSecret(cfg.AccessCookieSecret, cfg.BaseDomain)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "server config error:", err)
+		return 2
+	}
+	cfg.AccessCookieSecret = accessCookieSecret
+	if ephemeralCookieSecret {
+		logger.Warn("access cookie secret auto-generated for this process; protected-route form sessions will reset on restart", "env", "EXPOSE_ACCESS_COOKIE_SECRET")
+	}
+
 	// Create child context so the auto-update loop can trigger graceful shutdown.
 	serverCtx, serverCancel := context.WithCancel(ctx)
 	defer serverCancel()
@@ -109,11 +120,38 @@ func resolveServerPepper(ctx context.Context, store *sqlite.Store, configured st
 }
 
 func chooseServerPepper() string {
+	return deriveMachineBoundSecret("expose-pepper")
+}
+
+func resolveAccessCookieSecret(configured, baseDomain string) (string, bool, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		return configured, false, nil
+	}
+	if derived := chooseAccessCookieSecret(baseDomain); derived != "" {
+		return derived, false, nil
+	}
+	generated, err := auth.GenerateAPIKey()
+	if err != nil {
+		return "", false, err
+	}
+	return generated, true, nil
+}
+
+func chooseAccessCookieSecret(baseDomain string) string {
+	baseDomain = strings.TrimSpace(baseDomain)
+	if baseDomain == "" {
+		return deriveMachineBoundSecret("expose-access-cookie")
+	}
+	return deriveMachineBoundSecret("expose-access-cookie:" + baseDomain)
+}
+
+func deriveMachineBoundSecret(label string) string {
 	machineID := detectMachineID()
 	if machineID == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte("expose-pepper:" + machineID))
+	sum := sha256.Sum256([]byte(label + ":" + machineID))
 	return hex.EncodeToString(sum[:])
 }
 

@@ -362,6 +362,7 @@ func clearInitEnvForTest(t *testing.T) {
 		"EXPOSE_TLS_KEY_FILE",
 		"EXPOSE_LOG_LEVEL",
 		"EXPOSE_API_KEY_PEPPER",
+		"EXPOSE_ACCESS_COOKIE_SECRET",
 	} {
 		t.Setenv(k, "")
 	}

@@ -20,7 +20,7 @@ import (
 
 const (
 	publicAccessCookieName        = access.CookieName
-	publicAccessCookieVersion     = "v1"
+	publicAccessCookieVersion     = "v2"
 	publicAccessCookieTTL         = 24 * time.Hour
 	publicAccessFormActionField   = access.FormActionField
 	publicAccessFormUserField     = access.FormUserField
@@ -43,7 +43,7 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 	}
 
 	expectedUser := publicAccessExpectedUser(route)
-	if valid, present := hasValidPublicAccessCookie(r, route, expectedUser, time.Now()); valid {
+	if valid, present := s.hasValidPublicAccessCookie(r, route, expectedUser, time.Now()); valid {
 		return true
 	} else if present {
 		clearPublicAccessCookie(w)
@@ -88,7 +88,7 @@ func publicAccessExpectedUser(route domain.TunnelRoute) string {
 	return expectedUser
 }
 
-func hasValidPublicAccessCookie(r *http.Request, route domain.TunnelRoute, expectedUser string, now time.Time) (valid bool, present bool) {
+func (s *Server) hasValidPublicAccessCookie(r *http.Request, route domain.TunnelRoute, expectedUser string, now time.Time) (valid bool, present bool) {
 	if r == nil {
 		return false, false
 	}
@@ -96,10 +96,10 @@ func hasValidPublicAccessCookie(r *http.Request, route domain.TunnelRoute, expec
 	if err != nil {
 		return false, false
 	}
-	return publicAccessCookieMatches(route, expectedUser, cookie.Value, now), true
+	return s.publicAccessCookieMatches(route, expectedUser, cookie.Value, now), true
 }
 
-func publicAccessCookieMatches(route domain.TunnelRoute, expectedUser, raw string, now time.Time) bool {
+func (s *Server) publicAccessCookieMatches(route domain.TunnelRoute, expectedUser, raw string, now time.Time) bool {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 || parts[0] != publicAccessCookieVersion {
 		return false
@@ -113,17 +113,28 @@ func publicAccessCookieMatches(route domain.TunnelRoute, expectedUser, raw strin
 		return false
 	}
 
-	expectedSig := publicAccessCookieSignature(route, expectedUser, expiryUnix)
+	expectedSig := s.publicAccessCookieSignature(route, expectedUser, expiryUnix)
+	if expectedSig == "" {
+		return false
+	}
 	return hmac.Equal([]byte(parts[2]), []byte(expectedSig))
 }
 
-func publicAccessCookieValue(route domain.TunnelRoute, expectedUser string, now time.Time) string {
+func (s *Server) publicAccessCookieValue(route domain.TunnelRoute, expectedUser string, now time.Time) string {
 	expiryUnix := now.Add(publicAccessCookieTTL).Unix()
-	return publicAccessCookieVersion + "." + strconv.FormatInt(expiryUnix, 10) + "." + publicAccessCookieSignature(route, expectedUser, expiryUnix)
+	sig := s.publicAccessCookieSignature(route, expectedUser, expiryUnix)
+	if sig == "" {
+		return ""
+	}
+	return publicAccessCookieVersion + "." + strconv.FormatInt(expiryUnix, 10) + "." + sig
 }
 
-func publicAccessCookieSignature(route domain.TunnelRoute, expectedUser string, expiryUnix int64) string {
-	mac := hmac.New(sha256.New, []byte(route.Tunnel.AccessPasswordHash))
+func (s *Server) publicAccessCookieSignature(route domain.TunnelRoute, expectedUser string, expiryUnix int64) string {
+	secret := strings.TrimSpace(s.cfg.AccessCookieSecret)
+	if secret == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(publicAccessCookieVersion))
 	_, _ = mac.Write([]byte("|"))
 	_, _ = mac.Write([]byte(route.Domain.Hostname))
@@ -131,6 +142,8 @@ func publicAccessCookieSignature(route domain.TunnelRoute, expectedUser string, 
 	_, _ = mac.Write([]byte(expectedUser))
 	_, _ = mac.Write([]byte("|"))
 	_, _ = mac.Write([]byte(strconv.FormatInt(expiryUnix, 10)))
+	_, _ = mac.Write([]byte("|"))
+	_, _ = mac.Write([]byte(route.Tunnel.AccessPasswordHash))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -166,9 +179,15 @@ func (s *Server) handlePublicAccessLogin(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	cookieValue := s.publicAccessCookieValue(route, expectedUser, time.Now())
+	if cookieValue == "" {
+		http.Error(w, "protected route misconfigured: access cookie secret missing", http.StatusInternalServerError)
+		return
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     publicAccessCookieName,
-		Value:    publicAccessCookieValue(route, expectedUser, time.Now()),
+		Value:    cookieValue,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,

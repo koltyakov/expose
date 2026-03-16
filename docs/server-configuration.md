@@ -37,6 +37,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`           | -             | Static PEM certificate (for wildcard/auto)                     |
 | `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`            | -             | Static PEM private key (for wildcard/auto)                     |
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | -             | Explicit pepper for API key hashing                            |
+| `--access-cookie-secret`  | `EXPOSE_ACCESS_COOKIE_SECRET`    | auto-derived  | Secret used to sign protected-route access cookies             |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`               | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`                |
 | -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |
 | -                         | `EXPOSE_WAF_AUDIT_ONLY`          | `false`       | Evaluate WAF rules without blocking requests                   |
@@ -68,6 +69,7 @@ EXPOSE_TLS_MODE=auto
 EXPOSE_DB_PATH=./expose.db
 EXPOSE_CERT_CACHE_DIR=./cert
 EXPOSE_API_KEY_PEPPER=your-secret-pepper
+EXPOSE_ACCESS_COOKIE_SECRET=your-access-cookie-secret
 EXPOSE_LOG_LEVEL=info
 EXPOSE_WAF_ENABLE=true
 EXPOSE_WAF_AUDIT_ONLY=false
@@ -127,6 +129,14 @@ See [TLS Modes](tls-modes.md) for the full comparison and decision guide.
 API keys are hashed with SHA-256 plus a pepper for additional security. See [API Keys - Pepper](api-keys.md#pepper) for details on pepper derivation, persistence, and migration.
 
 **Production recommendation**: always set `EXPOSE_API_KEY_PEPPER` explicitly.
+
+## Access Cookie Secret
+
+Protected routes in `form` mode issue a signed edge-session cookie after a successful login. That cookie is now signed with `EXPOSE_ACCESS_COOKIE_SECRET`, not with the stored password hash.
+
+- **Production recommendation**: set `EXPOSE_ACCESS_COOKIE_SECRET` explicitly.
+- If omitted, the server derives a machine-bound fallback when possible.
+- If neither an explicit secret nor a stable machine ID is available, the server generates an ephemeral secret at startup and all form-login sessions are invalidated on restart.
 
 ## Health Check
 

@@ -930,6 +930,92 @@ func TestResolveServerPepperRejectsExplicitMismatch(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacySchemaAddsMissingColumnsAndRecordsVersions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(`
+CREATE TABLE api_keys (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	key_hash TEXT NOT NULL UNIQUE,
+	created_at DATETIME NOT NULL,
+	revoked_at DATETIME NULL
+);
+CREATE TABLE domains (
+	id TEXT PRIMARY KEY,
+	api_key_id TEXT NOT NULL,
+	type TEXT NOT NULL,
+	hostname TEXT NOT NULL UNIQUE,
+	status TEXT NOT NULL,
+	created_at DATETIME NOT NULL,
+	last_seen_at DATETIME NULL
+);
+CREATE TABLE tunnels (
+	id TEXT PRIMARY KEY,
+	api_key_id TEXT NOT NULL,
+	domain_id TEXT NOT NULL,
+	state TEXT NOT NULL,
+	is_temporary INTEGER NOT NULL,
+	client_meta TEXT NULL,
+	connected_at DATETIME NULL,
+	disconnected_at DATETIME NULL
+);
+CREATE TABLE connect_tokens (
+	token TEXT PRIMARY KEY,
+	tunnel_id TEXT NOT NULL,
+	expires_at DATETIME NOT NULL,
+	used_at DATETIME NULL
+);
+CREATE TABLE server_settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := &Store{db: db}
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		table  string
+		column string
+	}{
+		{table: "tunnels", column: "access_password_hash"},
+		{table: "tunnels", column: "access_user"},
+		{table: "tunnels", column: "access_mode"},
+		{table: "api_keys", column: "tunnel_limit"},
+	} {
+		ok, err := testSQLiteColumnExists(db, tc.table, tc.column)
+		if err != nil {
+			t.Fatalf("check column %s.%s: %v", tc.table, tc.column, err)
+		}
+		if !ok {
+			t.Fatalf("expected column %s.%s to exist after migration", tc.table, tc.column)
+		}
+	}
+
+	var applied int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != len(schemaMigrations) {
+		t.Fatalf("expected %d recorded migrations, got %d", len(schemaMigrations), applied)
+	}
+}
+
 func TestCreateAPIKeyDefaultTunnelLimit(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {
@@ -1115,6 +1201,33 @@ func openTestStoreWithOptions(t *testing.T, opts OpenOptions) (*Store, error) {
 		return nil, err
 	}
 	return OpenWithOptions(fmt.Sprintf("file:%s?mode=memory&cache=shared", id), opts)
+}
+
+func testSQLiteColumnExists(db *sql.DB, table, column string) (bool, error) {
+	query := fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdent(table))
+	rows, err := db.Query(query)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func assertStoreWritableAfterError(t *testing.T, store *Store, tunnelID string) {

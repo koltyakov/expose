@@ -164,3 +164,77 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 		t.Fatalf("unexpected mount prefix header %q", got.mount)
 	}
 }
+
+func TestStartUpLocalRouterPrefersLongestPathPrefix(t *testing.T) {
+	t.Parallel()
+
+	rootReqs := make(chan string, 1)
+	rootUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rootReqs <- r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer rootUpstream.Close()
+
+	adminReqs := make(chan string, 1)
+	adminUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminReqs <- r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer adminUpstream.Close()
+
+	rootAddr, ok := rootUpstream.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected root upstream addr type %T", rootUpstream.Listener.Addr())
+	}
+	adminAddr, ok := adminUpstream.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected admin upstream addr type %T", adminUpstream.Listener.Addr())
+	}
+
+	router, port, err := startUpLocalRouter(t.Context(), []upLocalRoute{
+		{
+			Name:        "api",
+			PathPrefix:  "/api",
+			StripPrefix: true,
+			LocalPort:   rootAddr.Port,
+		},
+		{
+			Name:        "admin",
+			PathPrefix:  "/api/admin",
+			StripPrefix: true,
+			LocalPort:   adminAddr.Port,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("start router: %v", err)
+	}
+	defer func() {
+		_ = router.server.Close()
+	}()
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/admin/users", port))
+	if err != nil {
+		t.Fatalf("GET longest path prefix route: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected status code %d", resp.StatusCode)
+	}
+
+	select {
+	case got := <-adminReqs:
+		if got != "/users" {
+			t.Fatalf("unexpected admin upstream path %q", got)
+		}
+	default:
+		t.Fatal("expected admin upstream to receive request")
+	}
+
+	select {
+	case got := <-rootReqs:
+		t.Fatalf("expected shorter prefix route to be skipped, got path %q", got)
+	default:
+	}
+}

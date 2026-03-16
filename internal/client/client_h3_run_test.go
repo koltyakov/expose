@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/koltyakov/expose/internal/config"
@@ -48,10 +49,9 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h3Addr := randomLoopbackUDPAddr(t)
-
 	var (
 		registerMu    sync.Mutex
+		h3Addr        string
 		resumeHeaders []string
 		modeHeaders   []string
 	)
@@ -59,7 +59,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 	firstGenDone := make(chan struct{})
 	secondGenDone := make(chan struct{})
 
-	startTunnelServer := func(done <-chan struct{}) func() {
+	startTunnelServer := func(done <-chan struct{}) (string, func()) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v1/tunnels/connect-h3", func(w http.ResponseWriter, r *http.Request) {
 			streamer, ok := w.(http3.HTTPStreamer)
@@ -91,10 +91,13 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 			<-done
 			closeHTTP3TestStream(stream)
 		})
-		return startHTTP3TestServerAtAddr(t, h3Addr, mux)
+		return startHTTP3TestServer(t, mux)
 	}
 
-	cleanupFirst := startTunnelServer(firstGenDone)
+	firstAddr, cleanupFirst := startTunnelServer(firstGenDone)
+	registerMu.Lock()
+	h3Addr = firstAddr
+	registerMu.Unlock()
 	defer cleanupFirst()
 
 	registerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,13 +107,14 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		}
 		registerMu.Lock()
 		resumeHeaders = append(resumeHeaders, r.Header.Get(domain.RegisterResumeTunnelHeader))
+		currentH3Addr := h3Addr
 		registerMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(registerResponse{
 			TunnelID:     "tun_h3",
 			PublicURL:    "https://demo.example.com",
 			WSURL:        "wss://unused.example.com/v1/tunnels/connect?token=unused",
-			H3URL:        "https://" + h3Addr + "/v1/tunnels/connect-h3?token=abc",
+			H3URL:        "https://" + currentH3Addr + "/v1/tunnels/connect-h3?token=abc",
 			Capabilities: []string{tunnelCapabilityH3MultistreamV2},
 		})
 	}))
@@ -153,14 +157,17 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		t.Fatalf("expected quic transport, got %q", firstReady.Transport)
 	}
 
-	close(firstGenDone)
-	cleanupFirst()
-
-	cleanupSecond := startTunnelServer(secondGenDone)
+	secondAddr, cleanupSecond := startTunnelServer(secondGenDone)
+	registerMu.Lock()
+	h3Addr = secondAddr
+	registerMu.Unlock()
 	defer func() {
 		close(secondGenDone)
 		cleanupSecond()
 	}()
+
+	close(firstGenDone)
+	cleanupFirst()
 
 	drop := waitSessionDropEvent(t, dropCh, 8*time.Second, "session drop after first server shutdown")
 	if drop.Err == nil {
@@ -243,13 +250,12 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h3Addr := randomLoopbackUDPAddr(t)
 	controlDone := make(chan struct{})
 	closeWS := make(chan struct{})
 	ackCh := make(chan tunnelproto.Message, 1)
 	var dispatched atomic.Bool
 
-	cleanupH3 := startHTTP3TestServerAtAddr(t, h3Addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h3Addr, cleanupH3 := startHTTP3TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/tunnels/connect-h3":
 			streamer, ok := w.(http3.HTTPStreamer)
@@ -518,7 +524,7 @@ func requireNoAsyncTestError(t testing.TB, ch <-chan error) {
 	}
 }
 
-func startHTTP3TestServerAtAddr(t testing.TB, addr string, handler http.Handler) func() {
+func startHTTP3TestServer(t testing.TB, handler http.Handler) (string, func()) {
 	t.Helper()
 
 	cert := selfSignedCertForLoopback(t)
@@ -526,6 +532,11 @@ func startHTTP3TestServerAtAddr(t testing.TB, addr string, handler http.Handler)
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
 	})
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen packet: %v", err)
+	}
+	addr := conn.LocalAddr().String()
 	server := &http3.Server{
 		Addr:      addr,
 		Handler:   handler,
@@ -534,7 +545,7 @@ func startHTTP3TestServerAtAddr(t testing.TB, addr string, handler http.Handler)
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil {
+		if err := server.Serve(conn); err != nil {
 			errCh <- err
 		}
 	}()
@@ -549,11 +560,19 @@ func startHTTP3TestServerAtAddr(t testing.TB, addr string, handler http.Handler)
 			t.Fatalf("http3 test server failed: %v", err)
 		default:
 		}
-		conn, err := net.DialTimeout("udp", addr, 100*time.Millisecond)
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		probeConn, err := quic.DialAddr(probeCtx, addr, &tls.Config{
+			MinVersion:         tls.VersionTLS13,
+			NextProtos:         []string{http3.NextProtoH3},
+			ServerName:         "localhost",
+			InsecureSkipVerify: true,
+		}, nil)
+		probeCancel()
 		if err == nil {
-			_ = conn.Close()
-			return func() {
+			_ = probeConn.CloseWithError(0, "")
+			return addr, func() {
 				_ = server.Close()
+				_ = conn.Close()
 			}
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -567,16 +586,6 @@ func closeHTTP3TestStream(stream *http3.Stream) {
 	stream.CancelRead(0)
 	stream.CancelWrite(0)
 	_ = stream.Close()
-}
-
-func randomLoopbackUDPAddr(t testing.TB) string {
-	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen random udp addr: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-	return conn.LocalAddr().String()
 }
 
 func selfSignedCertForLoopback(t testing.TB) tls.Certificate {

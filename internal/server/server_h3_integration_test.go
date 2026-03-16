@@ -279,12 +279,16 @@ func TestHTTP3IntegrationDistinctWorkerStreamsForHTTPAndWS(t *testing.T) {
 func startHTTP3IntegrationServer(t testing.TB, handler http.Handler) (string, func()) {
 	t.Helper()
 
-	addr := randomLoopbackUDPAddr(t)
 	cert := selfSignedCertForLoopback(t)
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
 	})
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen packet: %v", err)
+	}
+	addr := conn.LocalAddr().String()
 	server := &http3.Server{
 		Addr:      addr,
 		Handler:   handler,
@@ -293,7 +297,7 @@ func startHTTP3IntegrationServer(t testing.TB, handler http.Handler) (string, fu
 
 	errCh := make(chan error, 1)
 	go func() {
-		err := server.ListenAndServe()
+		err := server.Serve(conn)
 		if err != nil {
 			errCh <- err
 		}
@@ -309,11 +313,19 @@ func startHTTP3IntegrationServer(t testing.TB, handler http.Handler) (string, fu
 			t.Fatalf("http3 test server failed: %v", err)
 		default:
 		}
-		conn, err := net.DialTimeout("udp", addr, 100*time.Millisecond)
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		probeConn, err := quic.DialAddr(probeCtx, addr, &tls.Config{
+			MinVersion:         tls.VersionTLS13,
+			NextProtos:         []string{http3.NextProtoH3},
+			ServerName:         "localhost",
+			InsecureSkipVerify: true,
+		}, nil)
+		probeCancel()
 		if err == nil {
-			_ = conn.Close()
+			_ = probeConn.CloseWithError(0, "")
 			return addr, func() {
 				_ = server.Close()
+				_ = conn.Close()
 			}
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -358,16 +370,6 @@ func openHTTP3RequestStream(t testing.TB, clientConn *http3.ClientConn, rawURL, 
 		t.Fatalf("send request header: %v", err)
 	}
 	return stream
-}
-
-func randomLoopbackUDPAddr(t testing.TB) string {
-	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen random udp addr: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-	return conn.LocalAddr().String()
 }
 
 func selfSignedCertForLoopback(t testing.TB) tls.Certificate {

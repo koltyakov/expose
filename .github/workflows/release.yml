@@ -18,6 +18,7 @@ permissions:
 
 env:
   GO_VERSION: "1.26.x"
+  GORELEASER_VERSION: "v2.14.3"
 
 jobs:
   goreleaser:
@@ -40,7 +41,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: ${{ env.GORELEASER_VERSION }}
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

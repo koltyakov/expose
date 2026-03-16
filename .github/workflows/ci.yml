@@ -15,6 +15,8 @@ permissions:
 
 env:
   GO_VERSION: "1.26.x"
+  GOLANGCI_LINT_VERSION: "v2.11.3"
+  GORELEASER_VERSION: "v2.14.3"
 
 jobs:
   test:
@@ -66,7 +68,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
 
   build:
     runs-on: ubuntu-latest
@@ -85,5 +87,5 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: ${{ env.GORELEASER_VERSION }}
           args: check

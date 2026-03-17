@@ -1,6 +1,7 @@
 package log
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"strings"
@@ -23,7 +24,11 @@ func TestNewLoggerAppliesLevelFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTemp() error = %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 
 	logger := newLogger(file, "warn")
 	logger.Debug("debug message")
@@ -58,10 +63,14 @@ func TestNewLoggerDefaultsToInfoLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTemp() error = %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 
 	logger := newLogger(file, "invalid")
-	logger.Log(nil, slog.LevelInfo, "info message")
+	logger.Log(context.TODO(), slog.LevelInfo, "info message")
 	logger.Debug("debug message")
 
 	if err := file.Sync(); err != nil {

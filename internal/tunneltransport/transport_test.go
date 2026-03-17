@@ -169,7 +169,9 @@ func TestWebSocketWritePumpWritesMessages(t *testing.T) {
 	pump := NewWebSocketWritePump(clientConn, time.Second, 4, 4)
 	defer pump.Close()
 
-	serverConn.SetReadDeadline(time.Now().Add(time.Second))
+	if err := serverConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
 	if err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
 		t.Fatalf("WriteJSON() error = %v", err)
 	}
@@ -182,7 +184,9 @@ func TestWebSocketWritePumpWritesMessages(t *testing.T) {
 		t.Fatalf("first message kind = %q, want %q", got.Kind, tunnelproto.KindPing)
 	}
 
-	serverConn.SetReadDeadline(time.Now().Add(time.Second))
+	if err := serverConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
 	if err := pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "req-1", 0, []byte("body")); err != nil {
 		t.Fatalf("WriteBinaryFrame() error = %v", err)
 	}
@@ -274,16 +278,21 @@ func TestStreamWritePumpHandlesDeadlineErrorAndNilStream(t *testing.T) {
 
 	deadlineErr := errors.New("deadline failed")
 	stream := &testStream{deadlineErr: deadlineErr}
-	closed := false
+	closeCalled := make(chan struct{}, 2)
 	pump := NewStreamWritePump(stream, time.Second, 1, 1, func() {
-		closed = true
+		select {
+		case closeCalled <- struct{}{}:
+		default:
+		}
 	})
 	defer pump.Close()
 
 	if err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); !errors.Is(err, deadlineErr) {
 		t.Fatalf("WriteJSON() error = %v, want %v", err, deadlineErr)
 	}
-	if !closed {
+	select {
+	case <-closeCalled:
+	case <-time.After(time.Second):
 		t.Fatal("expected closeFn to run on deadline error")
 	}
 

@@ -126,6 +126,7 @@ func TestLocalTargetDialAddr(t *testing.T) {
 		{name: "http default port", raw: "http://example.com/path", wantCache: "example.com:80", wantDial: "example.com:80", wantOK: true},
 		{name: "https default port", raw: " https://example.com/path ", wantCache: "example.com:443", wantDial: "example.com:443", wantOK: true},
 		{name: "explicit port", raw: "http://127.0.0.1:8080", wantCache: "127.0.0.1:8080", wantDial: "127.0.0.1:8080", wantOK: true},
+		{name: "bare host port", raw: "localhost:3000", wantCache: "localhost:3000", wantDial: "localhost:3000", wantOK: true},
 		{name: "unsupported scheme", raw: "tcp://example.com", wantOK: false},
 		{name: "missing host", raw: "http:///path", wantOK: false},
 		{name: "invalid url", raw: "://bad", wantOK: false},
@@ -156,7 +157,7 @@ func TestAppendLatencySampleLocked(t *testing.T) {
 
 	d.mu.Lock()
 	d.appendLatencySampleLocked(-5 * time.Millisecond)
-	for i := range make([]struct{}, displayLatencySampleMax+2) {
+	for i := 0; i < displayLatencySampleMax+2; i++ {
 		d.appendLatencySampleLocked(time.Duration(i+1) * time.Millisecond)
 	}
 	d.mu.Unlock()

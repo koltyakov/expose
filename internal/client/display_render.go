@@ -252,7 +252,19 @@ func (d *Display) localTargetHealthy(raw string) bool {
 }
 
 func localTargetDialAddr(raw string) (cacheKey string, dialAddr string, ok bool) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", false
+	}
+	if !strings.Contains(raw, "://") {
+		host, port, err := net.SplitHostPort(raw)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return "", "", false
+		}
+		dialAddr = net.JoinHostPort(strings.TrimSpace(host), strings.TrimSpace(port))
+		return dialAddr, dialAddr, true
+	}
+	u, err := url.Parse(raw)
 	if err != nil {
 		return "", "", false
 	}

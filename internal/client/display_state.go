@@ -319,8 +319,7 @@ func (d *Display) RecordTraffic(direction traffic.Direction, bytes int64) {
 }
 
 // appendEntry adds a request entry to the rolling log, evicting the oldest
-// entry when the log exceeds maxDisplayRequests. It copies into a new backing
-// array to avoid retaining references from a growing underlying slice.
+// entry when the log exceeds maxDisplayRequests.
 // Caller must hold d.mu.
 func (d *Display) appendEntry(e requestEntry) {
 	d.requests = append(d.requests, e)

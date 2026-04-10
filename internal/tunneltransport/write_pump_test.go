@@ -101,6 +101,135 @@ func TestWritePumpCloseRejectsNewWrites(t *testing.T) {
 	}
 }
 
+func TestWritePumpDefaultCapacityAndTimeouts(t *testing.T) {
+	t.Parallel()
+
+	// Passing zero/negative values for cap and timeouts should use defaults.
+	var written int
+	pump := NewWritePump(func(writeRequest) error {
+		written++
+		return nil
+	}, nil, 0, 0, 0, 0)
+	defer pump.Close()
+
+	if err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
+		t.Fatalf("WriteJSON failed: %v", err)
+	}
+	if written != 1 {
+		t.Fatalf("expected 1 write, got %d", written)
+	}
+}
+
+func TestWritePumpWriteError(t *testing.T) {
+	t.Parallel()
+
+	writeErr := errors.New("write failed")
+	pump := NewWritePump(func(writeRequest) error {
+		return writeErr
+	}, nil, 4, 4, time.Second, time.Second)
+
+	err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected writeErr, got %v", err)
+	}
+
+	// After a write error the pump should be closed.
+	<-pump.done
+	if err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); !errors.Is(err, ErrWritePumpClosed) {
+		t.Fatalf("expected ErrWritePumpClosed after write error, got %v", err)
+	}
+}
+
+func TestWritePumpNilWriteFn(t *testing.T) {
+	t.Parallel()
+
+	pump := NewWritePump(nil, nil, 1, 1, time.Second, time.Second)
+
+	err := pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing})
+	if !errors.Is(err, ErrWritePumpClosed) {
+		t.Fatalf("expected ErrWritePumpClosed with nil writeFn, got %v", err)
+	}
+
+	<-pump.done
+}
+
+func TestWritePumpEnqueueAfterStop(t *testing.T) {
+	t.Parallel()
+
+	// Create a pump, close it, then try to enqueue via both high and low paths.
+	pump := NewWritePump(func(writeRequest) error {
+		return nil
+	}, nil, 4, 4, time.Second, time.Second)
+	pump.Close()
+
+	if err := pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "test", 0, []byte("x")); !errors.Is(err, ErrWritePumpClosed) {
+		t.Fatalf("expected ErrWritePumpClosed for binary write after close, got %v", err)
+	}
+}
+
+func TestWritePumpConcurrentWrites(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var count int
+
+	pump := NewWritePump(func(writeRequest) error {
+		mu.Lock()
+		count++
+		mu.Unlock()
+		return nil
+	}, nil, 8, 8, time.Second, time.Second)
+	defer pump.Close()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				_ = pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing})
+			} else {
+				_ = pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "c", 0, []byte("x"))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if count != n {
+		t.Fatalf("expected %d writes, got %d", n, count)
+	}
+}
+
+func TestReleaseWriteCompletionNil(t *testing.T) {
+	t.Parallel()
+	// Should not panic.
+	releaseWriteCompletion(nil)
+}
+
+func TestAcquireReleaseWriteCompletion(t *testing.T) {
+	t.Parallel()
+
+	comp := acquireWriteCompletion()
+	if comp == nil {
+		t.Fatal("expected non-nil completion")
+	}
+	// Simulate a pending error in the channel.
+	comp.ch <- errors.New("leftover")
+	releaseWriteCompletion(comp)
+
+	// Acquire again — channel should be drained.
+	comp2 := acquireWriteCompletion()
+	select {
+	case <-comp2.ch:
+		t.Fatal("channel should be empty after acquire")
+	default:
+	}
+	releaseWriteCompletion(comp2)
+}
+
 func TestWritePumpBackpressureClosesPump(t *testing.T) {
 	t.Parallel()
 

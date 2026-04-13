@@ -10,13 +10,8 @@ import (
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
-	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/traffic"
 )
-
-// Type aliases for the shared domain request/response types.
-type registerRequest = domain.RegisterRequest
-type registerResponse = domain.RegisterResponse
 
 // TunnelReadyEvent is emitted when a client successfully registers and has an
 // active tunnel session ready.

@@ -26,7 +26,7 @@ import (
 const defaultClientPingInterval = 30 * time.Second
 
 func runHTTP(ctx context.Context, args []string) int {
-	args = configNormalizeProtectFlagArgs(args)
+	args = config.NormalizeProtectFlagArgs(args)
 
 	fs := flag.NewFlagSet("http", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
@@ -76,7 +76,7 @@ func runHTTP(ctx context.Context, args []string) int {
 }
 
 func runStatic(ctx context.Context, args []string) int {
-	args = configNormalizeProtectFlagArgs(args)
+	args = config.NormalizeProtectFlagArgs(args)
 	loadClientEnvFromDotEnv(".env")
 
 	fs := flag.NewFlagSet("static", flag.ContinueOnError)
@@ -198,26 +198,6 @@ func newStaticClientConfig(serverURL, apiKey, transport, name, protectMode strin
 		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
 		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
 	}
-}
-
-func configNormalizeProtectFlagArgs(args []string) []string {
-	if len(args) == 0 {
-		return args
-	}
-	out := make([]string, 0, len(args))
-	for _, arg := range args {
-		switch arg {
-		case "--protect":
-			out = append(out, "--protect="+access.ModeForm)
-		case "--protect=true":
-			out = append(out, "--protect="+access.ModeForm)
-		case "--protect=false":
-			out = append(out, "--protect=off")
-		default:
-			out = append(out, arg)
-		}
-	}
-	return out
 }
 
 func runTunnel(ctx context.Context, args []string) int {

@@ -94,7 +94,7 @@ func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	c.entries[host] = routeCacheEntry{
 		route:             route,
 		found:             true,
-		expiresAtUnixNano: time.Now().Add(c.cacheTTL()).UnixNano(),
+		expiresAtUnixNano: c.nowNanos() + int64(c.cacheTTL()),
 	}
 	c.trackHostLocked(route.Tunnel.ID, host)
 	c.mu.Unlock()
@@ -110,13 +110,13 @@ func (c *routeCache) setMiss(host string) {
 	}
 	c.entries[host] = routeCacheEntry{
 		found:             false,
-		expiresAtUnixNano: time.Now().Add(c.cacheTTL()).UnixNano(),
+		expiresAtUnixNano: c.nowNanos() + int64(c.cacheTTL()),
 	}
 	c.mu.Unlock()
 }
 
 func (c *routeCache) cleanup() {
-	nowUnix := time.Now().UnixNano()
+	nowUnix := c.nowNanos()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for host, e := range c.entries {

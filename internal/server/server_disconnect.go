@@ -20,6 +20,7 @@ func (s *Server) queueTunnelDisconnect(tunnelID string) {
 	case s.disconnects <- tunnelID:
 	default:
 		s.completeDisconnectTunnel(tunnelID)
+		s.disconnectDrops.Add(1)
 		s.markTunnelDisconnectedNow(s.serverContext(), tunnelID)
 	}
 }

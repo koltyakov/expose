@@ -2,8 +2,9 @@ package cli
 
 import (
 	"os"
-	"strconv"
 	"strings"
+
+	"github.com/koltyakov/expose/internal/config"
 )
 
 func loadServerEnvFromDotEnv(path string) {
@@ -28,20 +29,9 @@ func loadExposeEnvFromDotEnv(path string) {
 }
 
 func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+	return config.EnvOrDefault(key, def)
 }
 
 func parseIntEnv(key string, def int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
+	return config.EnvIntOrDefault(key, def)
 }

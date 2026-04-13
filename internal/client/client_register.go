@@ -56,7 +56,7 @@ func (c *Client) openLocalWebSocket(ctx context.Context, base *url.URL, req *tun
 	return upstreamConn, http.StatusSwitchingProtocols, upstreamConn.Subprotocol(), nil
 }
 
-func (c *Client) register(ctx context.Context) (registerResponse, error) {
+func (c *Client) register(ctx context.Context) (domain.RegisterResponse, error) {
 	mode := strings.TrimSpace(c.cfg.RegistrationMode)
 	if mode == "" {
 		mode = "temporary"
@@ -70,7 +70,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	if user == "" {
 		user = "admin"
 	}
-	body, _ := json.Marshal(registerRequest{
+	body, _ := json.Marshal(domain.RegisterRequest{
 		Mode:            mode,
 		Subdomain:       strings.TrimSpace(c.cfg.Name),
 		User:            user,
@@ -84,7 +84,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
-		return registerResponse{}, err
+		return domain.RegisterResponse{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -94,7 +94,7 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 
 	resp, err := c.apiClient.Do(req)
 	if err != nil {
-		return registerResponse{}, err
+		return domain.RegisterResponse{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -109,16 +109,16 @@ func (c *Client) register(ctx context.Context) (registerResponse, error) {
 			re.Message = errResp.Error
 			re.Code = errResp.ErrorCode
 		}
-		return registerResponse{}, re
+		return domain.RegisterResponse{}, re
 	}
-	var out registerResponse
+	var out domain.RegisterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return registerResponse{}, err
+		return domain.RegisterResponse{}, err
 	}
 	out.WSURL = normalizeWSURLPort(out.WSURL, c.cfg.ServerURL)
 	out.H3URL = strings.TrimSpace(out.H3URL)
 	if out.WSURL == "" {
-		return registerResponse{}, errors.New("server returned empty ws_url")
+		return domain.RegisterResponse{}, errors.New("server returned empty ws_url")
 	}
 	return out, nil
 }

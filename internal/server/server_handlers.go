@@ -24,7 +24,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.regLimiter.allow(keyID) {
-		writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "rate limit exceeded", ErrorCode: errCodeRateLimit})
+		writeJSON(w, http.StatusTooManyRequests, domain.ErrorResponse{Error: "rate limit exceeded", ErrorCode: errCodeRateLimit})
 		return
 	}
 
@@ -51,14 +51,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		active := s.activeTunnels.activeCount(keyID)
 		if keyLimit >= 0 && active >= keyLimit {
-			writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
+			writeJSON(w, http.StatusTooManyRequests, domain.ErrorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
 			return
 		}
 
 		domainRec, tunnelRec, err = s.allocateRegisterRoute(r.Context(), keyID, prepared)
 		if err != nil {
 			if isHostnameInUseError(err) {
-				writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
+				writeJSON(w, http.StatusConflict, domain.ErrorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
 			} else {
 				http.Error(w, err.Error(), http.StatusConflict)
 			}
@@ -90,7 +90,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	publicURL, wsURL, h3URL := s.registerURLs(r.Host, domainRec.Hostname, token)
 	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream_v2", "h3_multistream"}
 
-	resp := registerResponse{
+	resp := domain.RegisterResponse{
 		TunnelID:      tunnelRec.ID,
 		PublicURL:     publicURL,
 		WSURL:         wsURL,

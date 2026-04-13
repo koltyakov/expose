@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
@@ -28,7 +29,7 @@ const (
 	h3WorkerOpenCountCeiling = 64
 )
 
-func newSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL, reg registerResponse) (sessionRuntime, error) {
+func newSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL, reg domain.RegisterResponse) (sessionRuntime, error) {
 	conn, err := c.connectSessionTransport(parentCtx, reg)
 	if err != nil {
 		return nil, err

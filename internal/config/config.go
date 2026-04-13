@@ -90,20 +90,20 @@ const defaultServerCertCacheDir = "./cert"
 
 // ParseClientFlags parses CLI flags and env vars into a [ClientConfig].
 func ParseClientFlags(args []string) (ClientConfig, error) {
-	args = normalizeProtectFlagArgs(args)
+	args = NormalizeProtectFlagArgs(args)
 
 	cfg := ClientConfig{
-		ServerURL:             envOrDefault("EXPOSE_DOMAIN", ""),
-		APIKey:                envOrDefault("EXPOSE_API_KEY", ""),
-		Transport:             normalizeClientTransport(envOrDefault("EXPOSE_TRANSPORT", "ws")),
-		User:                  envOrDefault("EXPOSE_USER", "admin"),
-		Password:              envOrDefault("EXPOSE_PASSWORD", ""),
-		LocalPort:             envIntOrDefault("EXPOSE_PORT", 0),
-		Name:                  envOrDefault("EXPOSE_SUBDOMAIN", ""),
+		ServerURL:             EnvOrDefault("EXPOSE_DOMAIN", ""),
+		APIKey:                EnvOrDefault("EXPOSE_API_KEY", ""),
+		Transport:             normalizeClientTransport(EnvOrDefault("EXPOSE_TRANSPORT", "ws")),
+		User:                  EnvOrDefault("EXPOSE_USER", "admin"),
+		Password:              EnvOrDefault("EXPOSE_PASSWORD", ""),
+		LocalPort:             EnvIntOrDefault("EXPOSE_PORT", 0),
+		Name:                  EnvOrDefault("EXPOSE_SUBDOMAIN", ""),
 		Timeout:               30 * time.Second,
 		PingInterval:          defaultClientPingInterval,
-		MaxConcurrentForwards: envIntOrDefault("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
-		PprofListen:           strings.TrimSpace(envOrDefault("EXPOSE_PPROF_LISTEN", "")),
+		MaxConcurrentForwards: EnvIntOrDefault("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		PprofListen:           strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
 	}
 
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
@@ -157,7 +157,9 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	return cfg, nil
 }
 
-func normalizeProtectFlagArgs(args []string) []string {
+// NormalizeProtectFlagArgs rewrites --protect, --protect=true and
+// --protect=false flag forms into --protect=<mode> equivalents.
+func NormalizeProtectFlagArgs(args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
@@ -180,20 +182,20 @@ func normalizeProtectFlagArgs(args []string) []string {
 // ParseServerFlags parses CLI flags and env vars into a [ServerConfig].
 func ParseServerFlags(args []string) (ServerConfig, error) {
 	cfg := ServerConfig{
-		ListenHTTPS:            envOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
-		ListenHTTP:             envOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
-		PprofListen:            strings.TrimSpace(envOrDefault("EXPOSE_PPROF_LISTEN", "")),
-		DBPath:                 envOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
-		DBMaxOpenConns:         envIntOrDefault("EXPOSE_DB_MAX_OPEN_CONNS", 10),
-		DBMaxIdleConns:         envIntOrDefault("EXPOSE_DB_MAX_IDLE_CONNS", 10),
-		BaseDomain:             envOrDefault("EXPOSE_DOMAIN", ""),
-		APIKeyPepper:           envOrDefault("EXPOSE_API_KEY_PEPPER", ""),
-		AccessCookieSecret:     envOrDefault("EXPOSE_ACCESS_COOKIE_SECRET", ""),
-		TLSMode:                envOrDefault("EXPOSE_TLS_MODE", "auto"),
-		CertCacheDir:           envOrDefault("EXPOSE_CERT_CACHE_DIR", defaultServerCertCacheDir),
-		TLSCertFile:            envOrDefault("EXPOSE_TLS_CERT_FILE", ""),
-		TLSKeyFile:             envOrDefault("EXPOSE_TLS_KEY_FILE", ""),
-		LogLevel:               envOrDefault("EXPOSE_LOG_LEVEL", "info"),
+		ListenHTTPS:            EnvOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
+		ListenHTTP:             EnvOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
+		PprofListen:            strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
+		DBPath:                 EnvOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
+		DBMaxOpenConns:         EnvIntOrDefault("EXPOSE_DB_MAX_OPEN_CONNS", 10),
+		DBMaxIdleConns:         EnvIntOrDefault("EXPOSE_DB_MAX_IDLE_CONNS", 10),
+		BaseDomain:             EnvOrDefault("EXPOSE_DOMAIN", ""),
+		APIKeyPepper:           EnvOrDefault("EXPOSE_API_KEY_PEPPER", ""),
+		AccessCookieSecret:     EnvOrDefault("EXPOSE_ACCESS_COOKIE_SECRET", ""),
+		TLSMode:                EnvOrDefault("EXPOSE_TLS_MODE", "auto"),
+		CertCacheDir:           EnvOrDefault("EXPOSE_CERT_CACHE_DIR", defaultServerCertCacheDir),
+		TLSCertFile:            EnvOrDefault("EXPOSE_TLS_CERT_FILE", ""),
+		TLSKeyFile:             EnvOrDefault("EXPOSE_TLS_KEY_FILE", ""),
+		LogLevel:               EnvOrDefault("EXPOSE_LOG_LEVEL", "info"),
 		RequestTimeout:         30 * time.Second,
 		MaxBodyBytes:           10 * 1024 * 1024,
 		ConnectTokenTTL:        60 * time.Second,
@@ -201,16 +203,16 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		HeartbeatCheckInterval: defaultServerHeartbeatCheckInterval,
 		CleanupInterval:        defaultServerCleanupInterval,
 		TempRetention:          defaultServerTempRetention,
-		WAFEnabled:             envBoolOrDefault("EXPOSE_WAF_ENABLE", true),
-		WAFAuditOnly:           envBoolOrDefault("EXPOSE_WAF_AUDIT_ONLY", false),
-		WAFBodyInspectLimit:    envInt64OrDefault("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024),
-		WAFMaxURILength:        envIntOrDefault("EXPOSE_WAF_MAX_URI_LENGTH", 0),
-		WAFMaxHeaderCount:      envIntOrDefault("EXPOSE_WAF_MAX_HEADER_COUNT", 0),
-		MaxPendingPerTunnel:    envIntOrDefault("EXPOSE_MAX_PENDING_PER_TUNNEL", 32),
-		PublicRateLimitRPS:     envIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0),
-		PublicRateLimitBurst:   envIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0),
-		RouteCacheTTL:          envDurationOrDefault("EXPOSE_ROUTE_CACHE_TTL", time.Minute),
-		WAFCounterRetention:    envDurationOrDefault("EXPOSE_WAF_COUNTER_RETENTION", time.Hour),
+		WAFEnabled:             EnvBoolOrDefault("EXPOSE_WAF_ENABLE", true),
+		WAFAuditOnly:           EnvBoolOrDefault("EXPOSE_WAF_AUDIT_ONLY", false),
+		WAFBodyInspectLimit:    EnvInt64OrDefault("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024),
+		WAFMaxURILength:        EnvIntOrDefault("EXPOSE_WAF_MAX_URI_LENGTH", 0),
+		WAFMaxHeaderCount:      EnvIntOrDefault("EXPOSE_WAF_MAX_HEADER_COUNT", 0),
+		MaxPendingPerTunnel:    EnvIntOrDefault("EXPOSE_MAX_PENDING_PER_TUNNEL", 32),
+		PublicRateLimitRPS:     EnvIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0),
+		PublicRateLimitBurst:   EnvIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0),
+		RouteCacheTTL:          EnvDurationOrDefault("EXPOSE_ROUTE_CACHE_TTL", time.Minute),
+		WAFCounterRetention:    EnvDurationOrDefault("EXPOSE_WAF_COUNTER_RETENTION", time.Hour),
 	}
 
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -302,14 +304,14 @@ func normalizeClientTransport(v string) string {
 	return normalizeLowerOrDefault(v, "ws")
 }
 
-func envOrDefault(key, def string) string {
+func EnvOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
 }
 
-func envIntOrDefault(key string, def int) int {
+func EnvIntOrDefault(key string, def int) int {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return def
@@ -321,7 +323,7 @@ func envIntOrDefault(key string, def int) int {
 	return n
 }
 
-func envInt64OrDefault(key string, def int64) int64 {
+func EnvInt64OrDefault(key string, def int64) int64 {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return def
@@ -333,7 +335,7 @@ func envInt64OrDefault(key string, def int64) int64 {
 	return n
 }
 
-func envDurationOrDefault(key string, def time.Duration) time.Duration {
+func EnvDurationOrDefault(key string, def time.Duration) time.Duration {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return def
@@ -353,16 +355,18 @@ func trimOrDefault(v, def string) string {
 	return v
 }
 
-func envBoolOrDefault(key string, def bool) bool {
+func EnvBoolOrDefault(key string, def bool) bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	if v == "" {
 		return def
 	}
 	switch v {
+	case "true", "1", "yes", "on":
+		return true
 	case "false", "0", "no", "off":
 		return false
 	default:
-		return true
+		return def
 	}
 }
 

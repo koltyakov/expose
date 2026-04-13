@@ -114,7 +114,7 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 	i.trackHostKeyLocked(hostShard, entry.keyID, host)
 }
 
-func (i *liveRouteIndex) upsertFromStore(ctx context.Context, store serverStore, host string) (liveRouteSnapshot, error) {
+func (i *liveRouteIndex) upsertFromStore(ctx context.Context, store routeResolver, host string) (liveRouteSnapshot, error) {
 	if i == nil || store == nil {
 		return liveRouteSnapshot{}, sql.ErrNoRows
 	}
@@ -129,7 +129,7 @@ func (i *liveRouteIndex) upsertFromStore(ctx context.Context, store serverStore,
 	return liveRouteSnapshot{route: route}, nil
 }
 
-func (i *liveRouteIndex) upsertTunnelFromStore(ctx context.Context, store serverStore, tunnelID string) (liveRouteSnapshot, error) {
+func (i *liveRouteIndex) upsertTunnelFromStore(ctx context.Context, store routeResolver, tunnelID string) (liveRouteSnapshot, error) {
 	if i == nil || store == nil {
 		return liveRouteSnapshot{}, sql.ErrNoRows
 	}

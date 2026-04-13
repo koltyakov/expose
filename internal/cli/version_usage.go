@@ -71,7 +71,10 @@ For detailed documentation, see: https://github.com/koltyakov/expose`)
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
-func init() {
+// resolveVersion resolves the version string. For dev builds it attempts
+// git describe; for release builds (where Version is set via ldflags) it
+// only normalizes the "v" prefix.
+func resolveVersion() {
 	if Version == "dev" {
 		if desc, err := exec.Command("git", "describe", "--tags", "--always").Output(); err == nil {
 			if v := strings.TrimSpace(string(desc)); v != "" {
@@ -79,8 +82,6 @@ func init() {
 			}
 		}
 	}
-	// Normalize: ensure non-dev versions start with "v" (GoReleaser
-	// template {{.Version}} strips the prefix while git-describe keeps it).
 	if Version != "dev" && !strings.HasPrefix(Version, "v") {
 		Version = "v" + Version
 	}

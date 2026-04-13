@@ -24,27 +24,43 @@ import (
 	"github.com/koltyakov/expose/internal/waf"
 )
 
-type serverStore interface {
-	ResetConnectedTunnels(ctx context.Context) (int64, error)
-	ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error)
-	GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error)
-	IsHostnameActive(ctx context.Context, host string) (bool, error)
+type tunnelRegistrar interface {
 	AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID, mode, subdomain, baseDomain, clientMeta string) (domain.Domain, domain.Tunnel, error)
 	SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, mode, hash string) error
 	CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error)
+	ResumeTunnelSession(ctx context.Context, tunnelID, keyID, clientMeta string) (domain.Domain, domain.Tunnel, error)
+	IsHostnameActive(ctx context.Context, host string) (bool, error)
+}
+
+type tunnelConnector interface {
 	ConsumeConnectToken(ctx context.Context, token string) (string, error)
 	SetTunnelConnected(ctx context.Context, tunnelID string) error
 	TrySetTunnelConnected(ctx context.Context, tunnelID string) error
-	ResumeTunnelSession(ctx context.Context, tunnelID, keyID, clientMeta string) (domain.Domain, domain.Tunnel, error)
 	SetTunnelDisconnected(ctx context.Context, tunnelID string) error
 	SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) error
+	ResetConnectedTunnels(ctx context.Context) (int64, error)
+	CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error)
+}
+
+type routeResolver interface {
 	FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error)
 	FindRouteByTunnelID(ctx context.Context, tunnelID string) (domain.TunnelRoute, error)
 	TouchDomain(ctx context.Context, domainID string) error
+}
+
+type tunnelLimiter interface {
+	ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error)
+	GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error)
+}
+
+type serverStore interface {
+	tunnelRegistrar
+	tunnelConnector
+	routeResolver
+	tunnelLimiter
+	ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error)
 	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
 	PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error)
-	CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error)
-	ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error)
 }
 
 var _ serverStore = (*sqlite.Store)(nil)
@@ -52,29 +68,32 @@ var _ serverStore = (*sqlite.Store)(nil)
 // Server is the main expose HTTPS server that manages tunnel registrations,
 // WebSocket sessions, TLS certificates, and public HTTP proxying.
 type Server struct {
-	cfg           config.ServerConfig
-	store         serverStore
-	log           *slog.Logger
-	hub           *hub
-	version       string
-	wildcardTLSOn bool
-	requestSeq    atomic.Uint64
-	regLimiter    *rateLimiter
-	publicLimiter *rateLimiter
-	routes        routeCache
-	liveRoutes    *liveRouteIndex
-	activeTunnels *activeTunnelTracker
-	runtimeCtx    atomic.Value // context.Context
-	domainTouches chan string
-	domainTouchMu sync.Mutex
-	domainTouched map[string]struct{}
-	disconnects   chan string
-	disconnectMu  sync.Mutex
-	disconnectQ   map[string]struct{}
-	disconnectWg  sync.WaitGroup
-	wafBlocks     sync.Map // hostname → *wafCounter
-	wafAuditQueue chan wafAuditEvent
-	h3Sessions    sync.Map // auth token -> *session
+	cfg              config.ServerConfig
+	store            serverStore
+	log              *slog.Logger
+	hub              *hub
+	version          string
+	wildcardTLSOn    bool
+	requestSeq       atomic.Uint64
+	regLimiter       *rateLimiter
+	publicLimiter    *rateLimiter
+	routes           routeCache
+	liveRoutes       *liveRouteIndex
+	activeTunnels    *activeTunnelTracker
+	runtimeCtx       atomic.Value // context.Context
+	domainTouches    chan string
+	domainTouchMu    sync.Mutex
+	domainTouched    map[string]struct{}
+	disconnects      chan string
+	disconnectMu     sync.Mutex
+	disconnectQ      map[string]struct{}
+	disconnectWg     sync.WaitGroup
+	wafBlocks        sync.Map // hostname → *wafCounter
+	wafAuditQueue    chan wafAuditEvent
+	h3Sessions       sync.Map // auth token -> *session
+	wafAuditDrops    atomic.Int64
+	domainTouchDrops atomic.Int64
+	disconnectDrops  atomic.Int64
 }
 
 type wafAuditEvent struct {
@@ -153,11 +172,6 @@ const (
 	wsWriteControlQueueSize     = 64
 	wsWriteDataQueueSize        = 128
 )
-
-// Type aliases for the shared domain request/response types.
-type registerRequest = domain.RegisterRequest
-type registerResponse = domain.RegisterResponse
-type errorResponse = domain.ErrorResponse
 
 const (
 	errCodeHostnameInUse = "hostname_in_use"

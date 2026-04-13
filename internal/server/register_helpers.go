@@ -15,7 +15,7 @@ import (
 )
 
 type preparedRegisterRequest struct {
-	request             registerRequest
+	request             domain.RegisterRequest
 	accessUser          string
 	accessMode          string
 	passwordHash        string
@@ -52,7 +52,7 @@ func reuseStableAccessPasswordHash(prepared *preparedRegisterRequest, existing d
 }
 
 func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.Request) (preparedRegisterRequest, bool) {
-	var req registerRequest
+	var req domain.RegisterRequest
 	if err := decodeJSONBody(w, r, maxRegisterBodyBytes, &req); err != nil {
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)

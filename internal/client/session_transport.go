@@ -15,6 +15,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 )
@@ -60,7 +61,7 @@ const (
 	tunnelCapabilityH3Multistream   = "h3_multistream"
 )
 
-func (c *Client) connectSessionTransport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
+func (c *Client) connectSessionTransport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
 	switch c.cfg.Transport {
 	case "ws":
 		return c.connectWebSocketTransport(ctx, reg)
@@ -89,7 +90,7 @@ func (c *Client) connectSessionTransport(ctx context.Context, reg registerRespon
 	}
 }
 
-func (c *Client) connectWebSocketTransport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
+func (c *Client) connectWebSocketTransport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: wsHandshakeTimeout,
 		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
@@ -106,7 +107,7 @@ func (c *Client) connectWebSocketTransport(ctx context.Context, reg registerResp
 	}, nil
 }
 
-func (c *Client) connectHTTP3Transport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
+func (c *Client) connectHTTP3Transport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
 	target, err := url.Parse(strings.TrimSpace(reg.H3URL))
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
@@ -169,7 +170,7 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg registerResponse
 	}, nil
 }
 
-func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg registerResponse) (sessionTransportConn, error) {
+func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
 	target, err := url.Parse(strings.TrimSpace(reg.H3URL))
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
@@ -300,7 +301,7 @@ func http3DialAuthority(u *url.URL) string {
 	return net.JoinHostPort(host, port)
 }
 
-func canUseH3Compat(reg registerResponse) bool {
+func canUseH3Compat(reg domain.RegisterResponse) bool {
 	if strings.TrimSpace(reg.H3URL) == "" {
 		return false
 	}
@@ -310,7 +311,7 @@ func canUseH3Compat(reg registerResponse) bool {
 	return hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3CompatV1)
 }
 
-func canUseH3MultiStream(reg registerResponse) bool {
+func canUseH3MultiStream(reg domain.RegisterResponse) bool {
 	if strings.TrimSpace(reg.H3URL) == "" {
 		return false
 	}
@@ -321,7 +322,7 @@ func canUseH3MultiStream(reg registerResponse) bool {
 		hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3Multistream)
 }
 
-func h3MultiStreamProtocol(reg registerResponse) string {
+func h3MultiStreamProtocol(reg domain.RegisterResponse) string {
 	if hasTunnelCapability(reg.Capabilities, tunnelCapabilityH3MultistreamV2) {
 		return tunnelCapabilityH3MultistreamV2
 	}

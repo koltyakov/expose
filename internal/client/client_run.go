@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/versionutil"
 )
 
@@ -217,7 +218,7 @@ func shouldResetReconnectSchedule(startedAt, now time.Time) bool {
 	return now.Sub(startedAt) >= reconnectInitialWindow
 }
 
-func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg registerResponse) error {
+func (c *Client) runSession(ctx context.Context, localBase *url.URL, reg domain.RegisterResponse) error {
 	rt, err := newSessionRuntime(c, ctx, localBase, reg)
 	if err != nil {
 		return err

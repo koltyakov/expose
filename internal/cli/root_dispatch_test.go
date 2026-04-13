@@ -28,8 +28,8 @@ func TestRunDispatchesClientCommands(t *testing.T) {
 	if code := Run([]string{"client", "static", "--domain", "incorrect one"}); code != 2 {
 		t.Fatalf("Run(client static) = %d, want 2", code)
 	}
-	if code := Run([]string{}); code != 2 {
-		t.Fatalf("Run(default client) = %d, want 2", code)
+	if code := Run([]string{}); code != 0 {
+		t.Fatalf("Run(default help) = %d, want 0", code)
 	}
 }
 

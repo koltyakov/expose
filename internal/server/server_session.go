@@ -526,13 +526,6 @@ func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Du
 	if wait <= 0 {
 		return false
 	}
-	if wait > 0 {
-		select {
-		case ch <- msg:
-			return true
-		default:
-		}
-	}
 
 	timer := timerpool.Acquire(wait)
 	defer timerpool.Release(timer)
@@ -577,6 +570,7 @@ func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
 		select {
 		case s.wafAuditQueue <- event:
 		default:
+			s.wafAuditDrops.Add(1)
 		}
 		return
 	}

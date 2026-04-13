@@ -23,6 +23,7 @@ func (s *Server) queueDomainTouch(domainID string) {
 	case s.domainTouches <- domainID:
 	default:
 		s.completeDomainTouch(domainID)
+		s.domainTouchDrops.Add(1)
 	}
 }
 
@@ -80,6 +81,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.cleanupStaleTemporaryResources(ctx)
 			s.cleanupStaleWAFCounters()
 			s.cleanupStaleH3Sessions()
+			s.logDroppedQueueEvents()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
 			if s.publicLimiter != nil {
@@ -270,4 +272,16 @@ func (s *Server) cleanupStaleH3Sessions() {
 
 func isHostnameInUseError(err error) bool {
 	return errors.Is(err, sqlite.ErrHostnameInUse)
+}
+
+func (s *Server) logDroppedQueueEvents() {
+	if drops := s.wafAuditDrops.Swap(0); drops > 0 {
+		s.log.Warn("waf audit events dropped due to queue pressure", "count", drops)
+	}
+	if drops := s.domainTouchDrops.Swap(0); drops > 0 {
+		s.log.Warn("domain touch events dropped due to queue pressure", "count", drops)
+	}
+	if drops := s.disconnectDrops.Swap(0); drops > 0 {
+		s.log.Warn("tunnel disconnect events dropped due to queue pressure", "count", drops)
+	}
 }

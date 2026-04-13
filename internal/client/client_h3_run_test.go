@@ -110,7 +110,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		currentH3Addr := h3Addr
 		registerMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(registerResponse{
+		_ = json.NewEncoder(w).Encode(domain.RegisterResponse{
 			TunnelID:     "tun_h3",
 			PublicURL:    "https://demo.example.com",
 			WSURL:        "wss://unused.example.com/v1/tunnels/connect?token=unused",
@@ -351,7 +351,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(registerResponse{
+		_ = json.NewEncoder(w).Encode(domain.RegisterResponse{
 			TunnelID:     "tun_h3_display",
 			PublicURL:    "https://demo.example.com",
 			WSURL:        "wss://unused.example.com/v1/tunnels/connect?token=unused",

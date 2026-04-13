@@ -658,7 +658,7 @@ func TestRunSessionStreamedRequestEarlyFailureDoesNotStallLoop(t *testing.T) {
 		},
 	}
 
-	reg := registerResponse{
+	reg := domain.RegisterResponse{
 		WSURL: "ws" + strings.TrimPrefix(wsSrv.URL, "http"),
 	}
 	errCh := make(chan error, 1)
@@ -814,7 +814,7 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 			auth:     r.Header.Get("Authorization"),
 			resumeID: r.Header.Get(domain.RegisterResumeTunnelHeader),
 		}
-		var req registerRequest
+		var req domain.RegisterRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -899,7 +899,7 @@ func TestConnectSessionTransportQUICRequiresH3URL(t *testing.T) {
 	t.Parallel()
 
 	c := &Client{cfg: config.ClientConfig{Transport: "quic"}}
-	_, err := c.connectSessionTransport(t.Context(), registerResponse{
+	_, err := c.connectSessionTransport(t.Context(), domain.RegisterResponse{
 		WSURL: "wss://example.com/v1/tunnels/connect?token=abc",
 	})
 	if err == nil {
@@ -935,7 +935,7 @@ func TestHTTP3DialAuthority(t *testing.T) {
 func TestCanUseH3Modes(t *testing.T) {
 	t.Parallel()
 
-	reg := registerResponse{
+	reg := domain.RegisterResponse{
 		H3URL:        "https://example.com/v1/tunnels/connect-h3?token=abc",
 		Capabilities: []string{"h3_compat", "h3_multistream_v2", "h3_multistream"},
 	}

@@ -65,7 +65,7 @@ func TestStableTemporarySubdomainRequiresInputs(t *testing.T) {
 func TestDecodeJSONBodyRejectsUnknownFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","unknown":"x"}`))
 	w := httptest.NewRecorder()
-	var body registerRequest
+	var body domain.RegisterRequest
 
 	if err := decodeJSONBody(w, req, maxRegisterBodyBytes, &body); err == nil {
 		t.Fatal("expected unknown JSON fields to be rejected")
@@ -277,7 +277,7 @@ func TestHandleRegisterResumesSameTunnelIDBeforeActiveLimitCheck(t *testing.T) {
 		t.Fatalf("expected 200 on resume, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	var resp registerResponse
+	var resp domain.RegisterResponse
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestReuseStableAccessPasswordHashWhenCredentialsUnchanged(t *testing.T) {
 	}
 
 	prepared := preparedRegisterRequest{
-		request:      registerRequest{Password: "secret"},
+		request:      domain.RegisterRequest{Password: "secret"},
 		accessUser:   "admin",
 		accessMode:   "form",
 		passwordHash: newHash,
@@ -335,7 +335,7 @@ func TestReuseStableAccessPasswordHashSkipsWhenPasswordChanged(t *testing.T) {
 	}
 
 	prepared := preparedRegisterRequest{
-		request:      registerRequest{Password: "new-secret"},
+		request:      domain.RegisterRequest{Password: "new-secret"},
 		accessUser:   "admin",
 		accessMode:   "form",
 		passwordHash: newHash,
@@ -365,7 +365,7 @@ func TestReuseStableAccessPasswordHashSkipsWhenKeyDiffers(t *testing.T) {
 	}
 
 	prepared := preparedRegisterRequest{
-		request:      registerRequest{Password: "secret"},
+		request:      domain.RegisterRequest{Password: "secret"},
 		accessUser:   "admin",
 		accessMode:   "form",
 		passwordHash: newHash,

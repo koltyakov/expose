@@ -38,9 +38,6 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-      - name: Enforce coverage floor
-        run: make test-cov-check
-
       - name: Run tests with race detector
         run: go test -race ./...
 

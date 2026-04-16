@@ -69,7 +69,25 @@ For transport mode details (`ws|quic`) and QUIC requirements, see [Client Config
 
 ### 1. Install
 
-Download the latest binary from [Releases](https://github.com/koltyakov/expose/releases) and place it in your `PATH`.
+Release binaries are published for macOS, Linux, and Windows on both `amd64` and `arm64`, including Windows on Arm.
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.ps1 | iex
+```
+
+Or install from source with Go:
+
+```bash
+go install github.com/koltyakov/expose/cmd/expose@latest
+```
 
 ### 2. Server - init and run
 
@@ -110,6 +128,20 @@ For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick 
 ## Documentation
 
 See the [docs/](docs/README.md) folder for all guides - server & client configuration, [static sites](docs/static-sites.md), TLS modes, DNS setup, deployment, WAF, auto-update, troubleshooting, and more.
+
+## Development
+
+Build and install locally:
+
+```bash
+make install
+```
+
+Generate coverage reports:
+
+```bash
+make cov
+```
 
 ## Acknowledgements
 

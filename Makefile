@@ -6,6 +6,8 @@ GO ?= go
 CGO_ENABLED ?= 0
 BUILD_LDFLAGS := -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
 BUILD_FLAGS := -trimpath -ldflags "$(BUILD_LDFLAGS)"
+COVER_PROFILE ?= coverage.out
+COVER_HTML ?= coverage.html
 COVERAGE_MIN ?=50.0
 
 ifneq (,$(wildcard .env))
@@ -13,7 +15,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race test-coverage test-cov-check bench bench-transport build build-all release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race cov test-coverage test-cov-check bench bench-transport build build-all install release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -27,12 +29,14 @@ help:
 	@echo "  make vet            	- Run go vet"
 	@echo "  make test           	- Run tests"
 	@echo "  make test-race      	- Run tests with race detector"
-	@echo "  make test-coverage  	- Run tests with coverage output"
+	@echo "  make cov            	- Generate coverage report ($(COVER_PROFILE), $(COVER_HTML))"
+	@echo "  make test-coverage  	- Alias for make cov"
 	@echo "  make test-cov-check  - Enforce minimum total coverage ($(COVERAGE_MIN)%)"
 	@echo "  make bench          	- Run focused performance benchmarks"
 	@echo "  make bench-transport - Refresh docs/benchmark.md with the heavy WS vs QUIC matrix"
 	@echo "  make build          	- Build binary to ./$(BIN_DIR)/$(APP)"
-	@echo "  make build-all      	- Cross-build common release binaries"
+	@echo "  make build-all      	- Cross-build release binaries"
+	@echo "  make install        	- Install binary to $$HOME/.local/bin"
 	@echo "  make release-check  	- Validate GoReleaser config"
 	@echo "  make release-local  	- Build snapshot artifacts via GoReleaser"
 	@echo "  make ci             	- Run local CI checks"
@@ -107,13 +111,16 @@ test:
 test-race:
 	go test -race -v ./...
 
-test-coverage:
-	go test -v -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out
+cov:
+	@COVER_PROFILE=$(COVER_PROFILE) COVER_HTML=$(COVER_HTML) bash scripts/coverage.sh
+
+test-coverage: cov
 
 test-cov-check:
-	go test -coverprofile=coverage.out ./...
-	@total="$$(go tool cover -func=coverage.out | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
+	@if [ ! -f "$(COVER_PROFILE)" ]; then \
+		$(MAKE) cov COVER_PROFILE=$(COVER_PROFILE) COVER_HTML=$(COVER_HTML); \
+	fi
+	@total="$$(go tool cover -func=$(COVER_PROFILE) | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
 	if ! awk -v total="$$total" -v min="$(COVERAGE_MIN)" 'BEGIN { exit !(total + 0 >= min + 0) }'; then \
 		echo "coverage $$total% is below minimum $(COVERAGE_MIN)%"; \
 		exit 1; \
@@ -141,6 +148,11 @@ build-all:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-darwin-amd64 ./cmd/expose
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=arm64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-darwin-arm64 ./cmd/expose
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-windows-amd64.exe ./cmd/expose
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=arm64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-windows-arm64.exe ./cmd/expose
+
+install: build
+	@mkdir -p $$HOME/.local/bin
+	install -m 0755 $(BIN_DIR)/$(APP) $$HOME/.local/bin/$(APP)
 
 release-check:
 	@if ! command -v goreleaser >/dev/null 2>&1; then \

@@ -15,7 +15,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race cov test-coverage test-cov-check bench bench-transport build build-all install release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race cov test-coverage test-cov-check bench bench-transport build build-all install uninstall release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -37,6 +37,7 @@ help:
 	@echo "  make build          	- Build binary to ./$(BIN_DIR)/$(APP)"
 	@echo "  make build-all      	- Cross-build release binaries"
 	@echo "  make install        	- Install binary to $$HOME/.local/bin"
+	@echo "  make uninstall      	- Remove binary from $$HOME/.local/bin"
 	@echo "  make release-check  	- Validate GoReleaser config"
 	@echo "  make release-local  	- Build snapshot artifacts via GoReleaser"
 	@echo "  make ci             	- Run local CI checks"
@@ -153,6 +154,14 @@ build-all:
 install: build
 	@mkdir -p $$HOME/.local/bin
 	install -m 0755 $(BIN_DIR)/$(APP) $$HOME/.local/bin/$(APP)
+
+uninstall:
+	@if [ -e "$$HOME/.local/bin/$(APP)" ]; then \
+		rm -f "$$HOME/.local/bin/$(APP)"; \
+		echo "Removed $$HOME/.local/bin/$(APP)"; \
+	else \
+		echo "$(APP) is not installed at $$HOME/.local/bin/$(APP)"; \
+	fi
 
 release-check:
 	@if ! command -v goreleaser >/dev/null 2>&1; then \

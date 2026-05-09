@@ -83,6 +83,16 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.ps1 | iex
 ```
 
+To uninstall, run the matching script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/uninstall.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/koltyakov/expose/main/scripts/uninstall.ps1 | iex
+```
+
 Or install from source with Go:
 
 ```bash

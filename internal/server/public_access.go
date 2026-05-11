@@ -468,7 +468,7 @@ func publicAccessFormAction(r *http.Request) string {
 	if path == "" {
 		return "/"
 	}
-	return path
+	return publicAccessRedirectTarget(path, "/")
 }
 
 func publicAccessRedirectTarget(raw, fallback string) string {

@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -359,6 +360,10 @@ func (c *Client) forwardAndSend(
 			}
 		}
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				c.logForwardResult(req, http.StatusBadGateway, started)
+				return
+			}
 			break
 		}
 	}

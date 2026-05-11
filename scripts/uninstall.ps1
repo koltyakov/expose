@@ -21,6 +21,18 @@ Examples:
 "@
 }
 
+function Normalize-PathEntry {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return ''
+  }
+  try {
+    return [System.IO.Path]::GetFullPath($Path.Trim()).TrimEnd([char[]]@('\', '/'))
+  } catch {
+    return $Path.Trim().TrimEnd([char[]]@('\', '/'))
+  }
+}
+
 if ($Help) {
   Show-Usage
   exit 0
@@ -45,7 +57,11 @@ if (Test-Path $installDir) {
 
 $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
 if ($userPath) {
-  $parts = $userPath -split ';' | Where-Object { $_ -and ($_ -ne $installDir) }
+  $installDirKey = Normalize-PathEntry $installDir
+  $parts = $userPath -split ';' | Where-Object {
+    $entry = ([string]$_).Trim()
+    $entry -and ((Normalize-PathEntry $entry) -ine $installDirKey)
+  }
   $newPath = $parts -join ';'
   if ($newPath -ne $userPath) {
     [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')

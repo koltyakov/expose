@@ -290,6 +290,9 @@ func (rt *clientH3MultiStreamRuntime) initialWorkerCount() int {
 
 func (rt *clientH3MultiStreamRuntime) openWorker() {
 	rt.workerWG.Go(func() {
+		rt.h3Workers.opened()
+		defer rt.h3Workers.closed()
+
 		backoff := 100 * time.Millisecond
 		for {
 			if rt.ctx.Err() != nil {
@@ -319,9 +322,6 @@ func (rt *clientH3MultiStreamRuntime) openWorker() {
 }
 
 func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
-	rt.h3Workers.opened()
-	defer rt.h3Workers.closed()
-
 	openCtx, cancel := context.WithTimeout(rt.ctx, h3WorkerConnectTimeout)
 	defer cancel()
 

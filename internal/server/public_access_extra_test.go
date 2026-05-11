@@ -145,6 +145,10 @@ func TestPublicAccessHelpers(t *testing.T) {
 	if got := publicAccessFormAction(req); got != "/private/docs" {
 		t.Fatalf("publicAccessFormAction() = %q", got)
 	}
+	crossOriginActionReq := httptest.NewRequest(http.MethodGet, "https://demo.example.com//evil.example/login", nil)
+	if got := publicAccessFormAction(crossOriginActionReq); got != "/" {
+		t.Fatalf("publicAccessFormAction(cross-origin) = %q", got)
+	}
 	if got := publicAccessRedirectTarget("//evil.example.com", "/safe"); got != "/safe" {
 		t.Fatalf("publicAccessRedirectTarget(cross-origin) = %q", got)
 	}

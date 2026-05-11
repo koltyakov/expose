@@ -27,6 +27,30 @@ type testTrafficRecorder struct {
 	outbound atomic.Int64
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type readErrorAfterFirstBody struct {
+	first []byte
+	err   error
+	sent  bool
+}
+
+func (b *readErrorAfterFirstBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, b.first), nil
+	}
+	return 0, b.err
+}
+
+func (b *readErrorAfterFirstBody) Close() error {
+	return nil
+}
+
 func (r *testTrafficRecorder) RecordTraffic(direction traffic.Direction, bytes int64) {
 	switch direction {
 	case traffic.DirectionInbound:
@@ -1229,6 +1253,53 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 		if reassembled[i] != largeBody[i] {
 			t.Fatalf("body mismatch at byte %d", i)
 		}
+	}
+}
+
+func TestForwardAndSendLargeResponseReadErrorDoesNotEndStream(t *testing.T) {
+	t.Parallel()
+
+	firstChunk := make([]byte, streamingThreshold+1)
+	for i := range firstChunk {
+		firstChunk[i] = 'x'
+	}
+	readErr := errors.New("upstream body read failed")
+	c := &Client{
+		fwdClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       &readErrorAfterFirstBody{first: firstChunk, err: readErr},
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+	base, err := url.Parse("http://local.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var msgs []tunnelproto.Message
+	c.forwardAndSend(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID:     "req_read_error",
+		Method: http.MethodGet,
+		Path:   "/download",
+	}, nil, func(msg tunnelproto.Message) error {
+		msgs = append(msgs, msg)
+		return nil
+	}, nil)
+
+	if len(msgs) != 2 {
+		t.Fatalf("expected streamed response header and first chunk only, got %d messages", len(msgs))
+	}
+	if msgs[0].Kind != tunnelproto.KindResponse || !msgs[0].Response.Streamed {
+		t.Fatalf("expected streamed response header, got %#v", msgs[0])
+	}
+	if msgs[1].Kind != tunnelproto.KindRespBody {
+		t.Fatalf("expected body chunk before read error, got %q", msgs[1].Kind)
 	}
 }
 

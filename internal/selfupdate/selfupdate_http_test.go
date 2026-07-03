@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -148,8 +150,15 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 		t.Fatalf("assetNameForPlatform() error = %v", err)
 	}
 
+	assetBody := []byte("not an archive")
+	digest := sha256.Sum256(assetBody)
+	manifest := hex.EncodeToString(digest[:]) + "  " + assetName + "\n"
 	downloadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("not an archive"))
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			_, _ = w.Write([]byte(manifest))
+			return
+		}
+		_, _ = w.Write(assetBody)
 	}))
 	defer downloadServer.Close()
 	useDownloadServer(t, downloadServer)
@@ -158,6 +167,7 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 		TagName: "v9.9.9",
 		Assets: []Asset{
 			{Name: assetName, BrowserDownloadURL: downloadServer.URL + "/asset"},
+			{Name: checksumAssetName, BrowserDownloadURL: downloadServer.URL + "/checksums.txt"},
 		},
 	}
 	if _, err := Apply(context.Background(), rel); err == nil || !strings.Contains(err.Error(), "extract binary") {
@@ -167,6 +177,38 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 	if _, err := Apply(context.Background(), &Release{TagName: "v9.9.9"}); err == nil || !strings.Contains(err.Error(), "no release asset") {
 		t.Fatalf("Apply(missing asset) error = %v, want missing asset error", err)
 	}
+
+	noManifest := &Release{
+		TagName: "v9.9.9",
+		Assets: []Asset{
+			{Name: assetName, BrowserDownloadURL: downloadServer.URL + "/asset"},
+		},
+	}
+	if _, err := Apply(context.Background(), noManifest); err == nil || !strings.Contains(err.Error(), "refusing unverified update") {
+		t.Fatalf("Apply(no checksums.txt) error = %v, want unverified update refusal", err)
+	}
+
+	tamperedManifest := strings.Repeat("0", 64) + "  " + assetName + "\n"
+	tamperedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			_, _ = w.Write([]byte(tamperedManifest))
+			return
+		}
+		_, _ = w.Write(assetBody)
+	}))
+	defer tamperedServer.Close()
+	useDownloadServer(t, tamperedServer)
+	tampered := &Release{
+		TagName: "v9.9.9",
+		Assets: []Asset{
+			{Name: assetName, BrowserDownloadURL: tamperedServer.URL + "/asset"},
+			{Name: checksumAssetName, BrowserDownloadURL: tamperedServer.URL + "/checksums.txt"},
+		},
+	}
+	if _, err := Apply(context.Background(), tampered); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("Apply(tampered) error = %v, want checksum mismatch", err)
+	}
+	useDownloadServer(t, downloadServer)
 
 	releaseTag := "v1.2.3"
 	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +230,7 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 
 	releaseTag = "v9.9.9"
 	releaseServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9","assets":[{"name":"` + assetName + `","browser_download_url":"` + downloadServer.URL + `/asset"}]}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9","assets":[{"name":"` + assetName + `","browser_download_url":"` + downloadServer.URL + `/asset"},{"name":"checksums.txt","browser_download_url":"` + downloadServer.URL + `/checksums.txt"}]}`))
 	})
 	result, err = CheckAndApply(context.Background(), "1.0.0")
 	if err == nil || !strings.Contains(err.Error(), "extract binary") {

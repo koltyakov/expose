@@ -10,6 +10,15 @@ const (
 	regBurstLimit = 10.0            // max burst
 	regCleanupAge = 5 * time.Minute // evict idle buckets
 
+	// Failed-auth throttling for protected tunnels: after
+	// accessAuthFailBurst wrong passwords from one hostname+IP, further
+	// attempts are rejected before bcrypt runs, refilling one attempt
+	// every 1/accessAuthFailRate seconds. Successful requests never
+	// consume tokens, so legitimate users are unaffected.
+	accessAuthFailRate   = 0.2 // one retry allowed per 5 seconds
+	accessAuthFailBurst  = 10.0
+	accessAuthCleanupAge = 15 * time.Minute
+
 	// rateLimiterShards controls how many independent shards the rate limiter
 	// uses.  Each shard has its own mutex, which drastically reduces lock
 	// contention under concurrent registrations from distinct API keys.
@@ -71,6 +80,9 @@ func shardIndex(key string) int {
 }
 
 func (rl *rateLimiter) allow(key string) bool {
+	if rl == nil {
+		return true
+	}
 	s := rl.shard(key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,6 +106,31 @@ func (rl *rateLimiter) allow(key string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// exhausted reports whether key has no tokens left, without consuming one.
+// Used for failure-driven throttling where only failed attempts (recorded
+// via allow) should drain the bucket.
+func (rl *rateLimiter) exhausted(key string) bool {
+	if rl == nil {
+		return false
+	}
+	s := rl.shard(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	b, ok := s.buckets[key]
+	if !ok {
+		return false
+	}
+	now := time.Now()
+	elapsed := now.Sub(b.lastCheck).Seconds()
+	b.tokens += elapsed * rl.rate
+	if b.tokens > rl.burst {
+		b.tokens = rl.burst
+	}
+	b.lastCheck = now
+	return b.tokens < 1.0
 }
 
 // cleanup evicts idle rate-limit buckets across all shards.

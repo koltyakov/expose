@@ -151,8 +151,12 @@ func (s *Server) requestTimeoutMillis() int {
 
 // writeStreamedResponseBody reads body chunks from the pending channel and
 // writes them to the HTTP response writer, flushing after each chunk.
-// It returns true when the upstream stream completed normally.
-func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, bodyCh <-chan []byte, doneCh <-chan struct{}, chunkTimeout time.Duration) bool {
+// It returns true when the upstream stream completed normally; an
+// abort-terminated stream (client reported an upstream failure) returns
+// false so the caller can tear the public connection down rather than end
+// the truncated response as if it were complete.
+func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, pending *pendingRequest, chunkTimeout time.Duration) bool {
+	bodyCh, doneCh := pending.bodyStream()
 	flusher, canFlush := w.(http.Flusher)
 	timer := timerpool.Acquire(chunkTimeout)
 	defer timerpool.Release(timer)
@@ -192,7 +196,7 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 						flusher.Flush()
 					}
 				default:
-					return true
+					return !pending.wasAborted()
 				}
 			}
 		case <-timer.C:

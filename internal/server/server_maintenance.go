@@ -84,6 +84,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.logDroppedQueueEvents()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
+			s.accessLimiter.cleanup()
 			if s.publicLimiter != nil {
 				s.publicLimiter.cleanup()
 			}

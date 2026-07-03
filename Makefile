@@ -6,8 +6,8 @@ GO ?= go
 CGO_ENABLED ?= 0
 BUILD_LDFLAGS := -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
 BUILD_FLAGS := -trimpath -ldflags "$(BUILD_LDFLAGS)"
-COVER_PROFILE ?= coverage.out
-COVER_HTML ?= coverage.html
+COVER_PROFILE ?= tmp/coverage.out
+COVER_HTML ?= tmp/coverage.html
 COVERAGE_MIN ?=50.0
 
 ifneq (,$(wildcard .env))
@@ -212,4 +212,4 @@ apikey-revoke:
 	go run ./cmd/expose server apikey revoke --id $$KEY_ID
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) tmp/coverage.out tmp/coverage.html

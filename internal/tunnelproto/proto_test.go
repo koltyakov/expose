@@ -178,3 +178,22 @@ func TestPayloadFallbackToBase64(t *testing.T) {
 		t.Fatalf("unexpected ws data payload %q", string(gotWS))
 	}
 }
+
+func TestBodyEndErrorFrameRoundTrip(t *testing.T) {
+	for _, kind := range []string{KindReqBodyEnd, KindRespBodyEnd} {
+		for _, wantErr := range []string{"upstream read failed", ""} {
+			msg := Message{Kind: kind, BodyChunk: &BodyChunk{ID: "req_9", Error: wantErr}}
+			var buf bytes.Buffer
+			if err := WriteMessage(&buf, msg); err != nil {
+				t.Fatalf("write %s: %v", kind, err)
+			}
+			got, err := decodeBinaryFrame(buf.Bytes())
+			if err != nil {
+				t.Fatalf("decode %s: %v", kind, err)
+			}
+			if got.BodyChunk == nil || got.BodyChunk.ID != "req_9" || got.BodyChunk.Error != wantErr {
+				t.Fatalf("round trip %s = %#v, want error %q", kind, got.BodyChunk, wantErr)
+			}
+		}
+	}
+}

@@ -431,6 +431,9 @@ func writeH3StreamedResponseBody(
 				}
 			}
 		case tunnelproto.KindRespBodyEnd:
+			if msg.BodyChunk != nil && msg.BodyChunk.Error != "" {
+				return false
+			}
 			return true
 		}
 		select {

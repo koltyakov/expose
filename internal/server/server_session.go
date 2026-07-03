@@ -355,7 +355,13 @@ func (s *Server) readLoop(sess *session) {
 			}
 			if pending, ok := sess.pendingLoadAndDelete(msg.BodyChunk.ID); ok {
 				sess.releasePending()
-				pending.finish()
+				if msg.BodyChunk.Error != "" {
+					s.log.Warn("upstream response stream failed, aborting",
+						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID, "error", msg.BodyChunk.Error)
+					pending.abort()
+				} else {
+					pending.finish()
+				}
 			}
 		case tunnelproto.KindWSOpenAck:
 			if msg.WSOpenAck == nil {

@@ -90,6 +90,10 @@ func Apply(ctx context.Context, rel *Release) (*Result, error) {
 		return nil, fmt.Errorf("download %s: %w", assetName, err)
 	}
 
+	if err := verifyAssetChecksum(ctx, rel, assetName, data); err != nil {
+		return nil, fmt.Errorf("verify %s: %w", assetName, err)
+	}
+
 	binary, err := extractBinary(assetName, data)
 	if err != nil {
 		return nil, fmt.Errorf("extract binary: %w", err)

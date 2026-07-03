@@ -122,6 +122,10 @@ type BodyChunk struct {
 	ID      string `json:"id"`
 	DataB64 string `json:"data_b64,omitempty"`
 	Data    []byte `json:"-"`
+	// Error marks a stream that ended abnormally (used with the *BodyEnd
+	// kinds): the sender could not produce the rest of the body and the
+	// receiver must abort the in-flight request instead of completing it.
+	Error string `json:"error,omitempty"`
 }
 
 // WSOpen requests opening a local websocket stream on the client.
@@ -221,6 +225,31 @@ type errorMeta struct {
 
 type workerControlMeta struct {
 	Desired int `json:"desired,omitempty"`
+}
+
+// bodyEndFrameMeta encodes the optional abnormal-end marker for *BodyEnd
+// frames. Clean stream ends keep the frame meta empty, matching the codec
+// emitted by older peers.
+func bodyEndFrameMeta(chunk *BodyChunk) []byte {
+	if chunk == nil || chunk.Error == "" {
+		return nil
+	}
+	meta, err := json.Marshal(errorMeta{Error: chunk.Error})
+	if err != nil {
+		return nil
+	}
+	return meta
+}
+
+func decodeBodyEndChunk(id string, meta []byte) *BodyChunk {
+	chunk := &BodyChunk{ID: id}
+	if len(meta) > 0 {
+		var em errorMeta
+		if err := json.Unmarshal(meta, &em); err == nil {
+			chunk.Error = em.Error
+		}
+	}
+	return chunk
 }
 
 // base64BufPool recycles byte slices used by [EncodeBody] so that hot-path
@@ -467,7 +496,7 @@ func encodeMessageFrame(msg Message) (encodedFrame, error) {
 		if msg.BodyChunk == nil {
 			return encodedFrame{}, errors.New("body chunk payload is required")
 		}
-		return newEncodedFrame(frameKindReqBodyEnd, msg.BodyChunk.ID, 0, nil, nil)
+		return newEncodedFrame(frameKindReqBodyEnd, msg.BodyChunk.ID, 0, bodyEndFrameMeta(msg.BodyChunk), nil)
 	case KindRespBody:
 		if msg.BodyChunk == nil {
 			return encodedFrame{}, errors.New("body chunk payload is required")
@@ -481,7 +510,7 @@ func encodeMessageFrame(msg Message) (encodedFrame, error) {
 		if msg.BodyChunk == nil {
 			return encodedFrame{}, errors.New("body chunk payload is required")
 		}
-		return newEncodedFrame(frameKindRespBodyEnd, msg.BodyChunk.ID, 0, nil, nil)
+		return newEncodedFrame(frameKindRespBodyEnd, msg.BodyChunk.ID, 0, bodyEndFrameMeta(msg.BodyChunk), nil)
 	case KindWSOpen:
 		if msg.WSOpen == nil {
 			return encodedFrame{}, errors.New("ws open payload is required")
@@ -655,11 +684,11 @@ func decodeFrameParts(frameKind byte, id string, wsMsgType int, meta, payload []
 	case frameKindReqBody:
 		return Message{Kind: KindReqBody, BodyChunk: &BodyChunk{ID: id, Data: payload}}, nil
 	case frameKindReqBodyEnd:
-		return Message{Kind: KindReqBodyEnd, BodyChunk: &BodyChunk{ID: id}}, nil
+		return Message{Kind: KindReqBodyEnd, BodyChunk: decodeBodyEndChunk(id, meta)}, nil
 	case frameKindRespBody:
 		return Message{Kind: KindRespBody, BodyChunk: &BodyChunk{ID: id, Data: payload}}, nil
 	case frameKindRespBodyEnd:
-		return Message{Kind: KindRespBodyEnd, BodyChunk: &BodyChunk{ID: id}}, nil
+		return Message{Kind: KindRespBodyEnd, BodyChunk: decodeBodyEndChunk(id, meta)}, nil
 	case frameKindWSOpen:
 		var open wsOpenMeta
 		if err := decodeFrameMeta(meta, &open); err != nil {

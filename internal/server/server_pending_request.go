@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -11,6 +12,7 @@ type pendingRequest struct {
 	headerCh chan *tunnelproto.HTTPResponse
 	bodyCh   chan []byte
 	doneCh   chan struct{}
+	aborted  atomic.Bool
 
 	bodyMu sync.Mutex
 }
@@ -43,6 +45,7 @@ func (p *pendingRequest) reset() {
 		return
 	}
 	drainPendingHeaders(p.headerCh)
+	p.aborted.Store(false)
 	p.bodyMu.Lock()
 	if p.bodyCh != nil {
 		drainPendingBodies(p.bodyCh)
@@ -114,7 +117,17 @@ func (p *pendingRequest) finish() {
 }
 
 func (p *pendingRequest) abort() {
+	if p == nil {
+		return
+	}
+	p.aborted.Store(true)
 	p.finish()
+}
+
+// wasAborted reports whether the stream ended via abort rather than a clean
+// finish, meaning any streamed body already written is truncated.
+func (p *pendingRequest) wasAborted() bool {
+	return p != nil && p.aborted.Load()
 }
 
 func drainPendingHeaders(ch chan *tunnelproto.HTTPResponse) {

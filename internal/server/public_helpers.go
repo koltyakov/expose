@@ -133,9 +133,14 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	}
 	w.WriteHeader(resp.Status)
 	if resp.Streamed {
-		bodyCh, doneCh := pending.bodyStream()
-		if !s.writeStreamedResponseBody(w, r, bodyCh, doneCh, s.cfg.RequestTimeout) {
+		if !s.writeStreamedResponseBody(w, r, pending, s.cfg.RequestTimeout) {
 			s.abortPendingRequest(sess, reqID)
+			if r.Context().Err() == nil {
+				// The body is truncated and the status line already went out.
+				// Abort the connection so the visitor sees a failed transfer
+				// instead of a silently incomplete response.
+				panic(http.ErrAbortHandler)
+			}
 		}
 	} else {
 		b, err := resp.Payload()

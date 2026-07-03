@@ -361,6 +361,12 @@ func (c *Client) forwardAndSend(
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
+				// Tell the server the stream failed so it aborts the public
+				// request immediately instead of waiting out the chunk timeout.
+				_ = writeMsg(tunnelproto.Message{
+					Kind:      tunnelproto.KindRespBodyEnd,
+					BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Error: "local upstream read failed"},
+				})
 				c.logForwardResult(req, http.StatusBadGateway, started)
 				return
 			}

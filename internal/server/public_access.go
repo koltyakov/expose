@@ -3,9 +3,10 @@ package server
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
+	_ "embed"
 	"encoding/base64"
-	"fmt"
-	"html"
+	"html/template"
 	"mime"
 	"net/http"
 	"net/url"
@@ -35,8 +36,17 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 	}
 	if publicAccessMode(route) == access.ModeBasic {
 		expectedUser := publicAccessExpectedUser(route)
-		if isAuthorizedBasicPassword(r, expectedUser, route.Tunnel.AccessPasswordHash) {
-			return true
+		user, password, hasCreds := r.BasicAuth()
+		if hasCreds {
+			limitKey := s.accessAuthLimitKey(route, r)
+			if s.accessLimiter.exhausted(limitKey) {
+				writeAccessAuthThrottled(w)
+				return false
+			}
+			if isAuthorizedBasicUser(user, expectedUser) && auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
+				return true
+			}
+			s.accessLimiter.allow(limitKey)
 		}
 		writeBasicAuthChallenge(w)
 		return false
@@ -168,8 +178,21 @@ func (s *Server) handlePublicAccessLogin(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	limitKey := s.accessAuthLimitKey(route, r)
+	if s.accessLimiter.exhausted(limitKey) {
+		clearPublicAccessCookie(w)
+		state.ErrorText = "Too many failed attempts. Try again in a moment."
+		if state.User == "" {
+			state.User = expectedUser
+		}
+		w.Header().Set("Retry-After", "5")
+		writePublicAccessForm(w, r, route, state, http.StatusTooManyRequests)
+		return
+	}
+
 	password := r.Form.Get(publicAccessFormPasswordField)
-	if state.User != expectedUser || !auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
+	if !isAuthorizedBasicUser(state.User, expectedUser) || !auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
+		s.accessLimiter.allow(limitKey)
 		clearPublicAccessCookie(w)
 		state.ErrorText = "Incorrect username or password."
 		if state.User == "" {
@@ -216,6 +239,23 @@ func writePublicAccessDenied(w http.ResponseWriter) {
 	http.Error(w, "protected route: sign in through the access form first", http.StatusUnauthorized)
 }
 
+//go:embed templates/public_access_form.html
+var publicAccessFormHTML string
+
+var publicAccessFormTemplate = template.Must(template.New("public_access_form").Parse(publicAccessFormHTML))
+
+type publicAccessFormData struct {
+	Host          string
+	ErrorText     string
+	Action        string
+	ActionField   string
+	NextField     string
+	Next          string
+	UserField     string
+	User          string
+	PasswordField string
+}
+
 func writePublicAccessForm(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, state publicAccessFormState, status int) {
 	if r.Method == http.MethodHead {
 		w.WriteHeader(status)
@@ -226,231 +266,17 @@ func writePublicAccessForm(w http.ResponseWriter, r *http.Request, route domain.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 
-	host := html.EscapeString(route.Domain.Hostname)
-	action := html.EscapeString(publicAccessFormAction(r))
-	next := html.EscapeString(state.Next)
-	user := html.EscapeString(state.User)
-	errorBanner := ""
-	if state.ErrorText != "" {
-		errorBanner = `<p class="error" role="alert">` + html.EscapeString(state.ErrorText) + `</p>`
-	}
-
-	_, _ = fmt.Fprintf(w, `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Protected route</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #f3efe7;
-      --bg-accent: #d6e6dc;
-      --panel: rgba(255,255,255,0.92);
-      --panel-border: rgba(24, 41, 33, 0.12);
-      --text: #17231c;
-      --muted: #5e6f64;
-      --accent: #1f7a5a;
-      --accent-dark: #14523d;
-      --danger: #9c2f2f;
-      --shadow: 0 24px 60px rgba(23, 35, 28, 0.16);
-      --radius: 24px;
-      --radius-sm: 16px;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "Avenir Next", "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(214, 230, 220, 0.9), transparent 38%%),
-        radial-gradient(circle at bottom right, rgba(248, 209, 172, 0.48), transparent 34%%),
-        linear-gradient(145deg, var(--bg), #fbf8f3 55%%, #e7efe7);
-      display: grid;
-      place-items: center;
-      padding: 24px;
-    }
-    .shell {
-      width: min(100%%, 920px);
-      display: grid;
-      gap: 18px;
-      grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
-      align-items: stretch;
-    }
-    .hero, .panel {
-      border-radius: var(--radius);
-      border: 1px solid var(--panel-border);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-      backdrop-filter: blur(12px);
-    }
-    .hero {
-      background:
-        linear-gradient(170deg, rgba(31, 122, 90, 0.94), rgba(20, 82, 61, 0.92)),
-        linear-gradient(125deg, rgba(255,255,255,0.12), transparent 42%%);
-      color: #f6fbf7;
-      padding: 32px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 24px;
-    }
-    .eyebrow {
-      margin: 0;
-      font-size: 12px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      opacity: 0.76;
-    }
-    h1 {
-      margin: 10px 0 14px;
-      font-size: clamp(2rem, 4vw, 3.2rem);
-      line-height: 0.95;
-      max-width: 10ch;
-    }
-    .hero p {
-      margin: 0;
-      max-width: 28rem;
-      font-size: 1rem;
-      line-height: 1.6;
-      color: rgba(246, 251, 247, 0.84);
-    }
-    .host {
-      display: inline-flex;
-      max-width: 100%%;
-      padding: 10px 14px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.12);
-      border: 1px solid rgba(255,255,255,0.16);
-      font-family: "SFMono-Regular", "Consolas", monospace;
-      font-size: 0.92rem;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .panel {
-      background: var(--panel);
-      padding: 28px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-    .panel h2 {
-      margin: 0 0 8px;
-      font-size: 1.45rem;
-    }
-    .panel-copy {
-      margin: 0 0 18px;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-    form {
-      display: grid;
-      gap: 14px;
-    }
-    label {
-      display: grid;
-      gap: 8px;
-      font-size: 0.92rem;
-      font-weight: 600;
-    }
-    input {
-      width: 100%%;
-      border: 1px solid rgba(23, 35, 28, 0.12);
-      border-radius: var(--radius-sm);
-      background: rgba(255,255,255,0.92);
-      color: var(--text);
-      font: inherit;
-      padding: 14px 16px;
-      transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
-    }
-    input:focus {
-      outline: none;
-      border-color: rgba(31, 122, 90, 0.56);
-      box-shadow: 0 0 0 4px rgba(31, 122, 90, 0.12);
-      transform: translateY(-1px);
-    }
-    button {
-      appearance: none;
-      border: 0;
-      border-radius: 999px;
-      background: linear-gradient(135deg, var(--accent), var(--accent-dark));
-      color: #f7fcf9;
-      font: inherit;
-      font-weight: 700;
-      padding: 14px 18px;
-      cursor: pointer;
-    }
-    .error {
-      margin: 0 0 2px;
-      padding: 12px 14px;
-      border-radius: var(--radius-sm);
-      background: rgba(156, 47, 47, 0.08);
-      color: var(--danger);
-      font-weight: 600;
-    }
-    .hint {
-      margin: 12px 0 0;
-      color: var(--muted);
-      font-size: 0.92rem;
-      line-height: 1.5;
-    }
-    @media (max-width: 860px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
-      .hero, .panel {
-        padding: 24px;
-      }
-      h1 {
-        max-width: none;
-      }
-    }
-  </style>
-</head>
-<body>
-  <main class="shell">
-    <section class="hero">
-      <div>
-        <p class="eyebrow">Expose protection</p>
-        <h1>Protected route</h1>
-        <p>This tunnel is gated before traffic reaches the upstream app. Sign in once to continue without using HTTP auth headers.</p>
-      </div>
-      <div class="host">%s</div>
-    </section>
-    <section class="panel">
-      <h2>Sign in to continue</h2>
-      <p class="panel-copy">The access session is stored in a dedicated host-scoped cookie and stays out of the upstream app's auth flow.</p>
-      %s
-      <form method="post" action="%s" novalidate>
-        <input type="hidden" name="%s" value="login">
-        <input type="hidden" name="%s" value="%s">
-        <label>
-          Username
-          <input type="text" name="%s" value="%s" autocomplete="username" autocapitalize="none" spellcheck="false" required>
-        </label>
-        <label>
-          Password
-          <input type="password" name="%s" value="" autocomplete="current-password" required autofocus>
-        </label>
-        <button type="submit">Continue</button>
-      </form>
-      <p class="hint">After access is granted, your app's own cookies, sessions, or OAuth flows continue independently.</p>
-    </section>
-  </main>
-</body>
-</html>`,
-		host,
-		errorBanner,
-		action,
-		publicAccessFormActionField,
-		publicAccessFormNextField,
-		next,
-		publicAccessFormUserField,
-		user,
-		publicAccessFormPasswordField,
-	)
+	_ = publicAccessFormTemplate.Execute(w, publicAccessFormData{
+		Host:          route.Domain.Hostname,
+		ErrorText:     state.ErrorText,
+		Action:        publicAccessFormAction(r),
+		ActionField:   publicAccessFormActionField,
+		NextField:     publicAccessFormNextField,
+		Next:          state.Next,
+		UserField:     publicAccessFormUserField,
+		User:          state.User,
+		PasswordField: publicAccessFormPasswordField,
+	})
 }
 
 func publicAccessCurrentTarget(r *http.Request) string {
@@ -562,18 +388,23 @@ func stripCookieValue(headerValue, cookieName string) string {
 	return strings.Join(kept, "; ")
 }
 
-func isAuthorizedBasicPassword(r *http.Request, expectedUser, hash string) bool {
-	user, password, ok := r.BasicAuth()
-	if !ok {
-		return false
-	}
-	if user != expectedUser {
-		return false
-	}
-	return auth.VerifyPasswordHash(hash, password)
+func isAuthorizedBasicUser(user, expectedUser string) bool {
+	return subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) == 1
 }
 
 func writeBasicAuthChallenge(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Basic realm="expose", charset="UTF-8"`)
 	http.Error(w, "authentication required", http.StatusUnauthorized)
+}
+
+// accessAuthLimitKey scopes failed-auth throttling per protected hostname and
+// client IP so one visitor cannot lock others out.
+func (s *Server) accessAuthLimitKey(route domain.TunnelRoute, r *http.Request) string {
+	return "access|" + publicRateLimitKey(route.Domain.Hostname, clientIPFromRemoteAddr(r.RemoteAddr))
+}
+
+func writeAccessAuthThrottled(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "too many failed sign-in attempts; try again shortly", http.StatusTooManyRequests)
 }

@@ -74,7 +74,7 @@ func TestSQLInjection(t *testing.T) {
 		{"comment close", "/page?id=1'%20;%20--"},
 		{"sleep timing", "/api?id=1;sleep(5)"},
 		{"benchmark timing", "/api?id=1;benchmark(1000000,md5('a'))"},
-		{"hex literal", "/api?val=0x414243"},
+		{"mysql hex string", "/api?val=x'414243'"},
 		{"inline comment", "/api?q=1/**/OR/**/1=1"},
 	}
 	for _, tt := range tests {

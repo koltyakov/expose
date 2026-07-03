@@ -1256,7 +1256,7 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 	}
 }
 
-func TestForwardAndSendLargeResponseReadErrorDoesNotEndStream(t *testing.T) {
+func TestForwardAndSendLargeResponseReadErrorSendsAbortEnd(t *testing.T) {
 	t.Parallel()
 
 	firstChunk := make([]byte, streamingThreshold+1)
@@ -1292,14 +1292,17 @@ func TestForwardAndSendLargeResponseReadErrorDoesNotEndStream(t *testing.T) {
 		return nil
 	}, nil)
 
-	if len(msgs) != 2 {
-		t.Fatalf("expected streamed response header and first chunk only, got %d messages", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("expected streamed header, first chunk, and abort end, got %d messages", len(msgs))
 	}
 	if msgs[0].Kind != tunnelproto.KindResponse || !msgs[0].Response.Streamed {
 		t.Fatalf("expected streamed response header, got %#v", msgs[0])
 	}
 	if msgs[1].Kind != tunnelproto.KindRespBody {
 		t.Fatalf("expected body chunk before read error, got %q", msgs[1].Kind)
+	}
+	if msgs[2].Kind != tunnelproto.KindRespBodyEnd || msgs[2].BodyChunk == nil || msgs[2].BodyChunk.Error == "" {
+		t.Fatalf("expected error-marked body end so the server aborts promptly, got %#v", msgs[2])
 	}
 }
 

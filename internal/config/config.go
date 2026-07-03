@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -92,18 +93,22 @@ const defaultServerCertCacheDir = "./cert"
 func ParseClientFlags(args []string) (ClientConfig, error) {
 	args = NormalizeProtectFlagArgs(args)
 
+	var envErrs []error
 	cfg := ClientConfig{
 		ServerURL:             EnvOrDefault("EXPOSE_DOMAIN", ""),
 		APIKey:                EnvOrDefault("EXPOSE_API_KEY", ""),
 		Transport:             normalizeClientTransport(EnvOrDefault("EXPOSE_TRANSPORT", "ws")),
 		User:                  EnvOrDefault("EXPOSE_USER", "admin"),
 		Password:              EnvOrDefault("EXPOSE_PASSWORD", ""),
-		LocalPort:             EnvIntOrDefault("EXPOSE_PORT", 0),
+		LocalPort:             envInt("EXPOSE_PORT", 0, &envErrs),
 		Name:                  EnvOrDefault("EXPOSE_SUBDOMAIN", ""),
 		Timeout:               30 * time.Second,
 		PingInterval:          defaultClientPingInterval,
-		MaxConcurrentForwards: EnvIntOrDefault("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		MaxConcurrentForwards: envInt("EXPOSE_MAX_CONCURRENT_FORWARDS", 32, &envErrs),
 		PprofListen:           strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
+	}
+	if err := errors.Join(envErrs...); err != nil {
+		return cfg, err
 	}
 
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
@@ -181,13 +186,14 @@ func NormalizeProtectFlagArgs(args []string) []string {
 
 // ParseServerFlags parses CLI flags and env vars into a [ServerConfig].
 func ParseServerFlags(args []string) (ServerConfig, error) {
+	var envErrs []error
 	cfg := ServerConfig{
 		ListenHTTPS:            EnvOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
 		ListenHTTP:             EnvOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
 		PprofListen:            strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
 		DBPath:                 EnvOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
-		DBMaxOpenConns:         EnvIntOrDefault("EXPOSE_DB_MAX_OPEN_CONNS", 10),
-		DBMaxIdleConns:         EnvIntOrDefault("EXPOSE_DB_MAX_IDLE_CONNS", 10),
+		DBMaxOpenConns:         envInt("EXPOSE_DB_MAX_OPEN_CONNS", 10, &envErrs),
+		DBMaxIdleConns:         envInt("EXPOSE_DB_MAX_IDLE_CONNS", 10, &envErrs),
 		BaseDomain:             EnvOrDefault("EXPOSE_DOMAIN", ""),
 		APIKeyPepper:           EnvOrDefault("EXPOSE_API_KEY_PEPPER", ""),
 		AccessCookieSecret:     EnvOrDefault("EXPOSE_ACCESS_COOKIE_SECRET", ""),
@@ -203,16 +209,19 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		HeartbeatCheckInterval: defaultServerHeartbeatCheckInterval,
 		CleanupInterval:        defaultServerCleanupInterval,
 		TempRetention:          defaultServerTempRetention,
-		WAFEnabled:             EnvBoolOrDefault("EXPOSE_WAF_ENABLE", true),
-		WAFAuditOnly:           EnvBoolOrDefault("EXPOSE_WAF_AUDIT_ONLY", false),
-		WAFBodyInspectLimit:    EnvInt64OrDefault("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024),
-		WAFMaxURILength:        EnvIntOrDefault("EXPOSE_WAF_MAX_URI_LENGTH", 0),
-		WAFMaxHeaderCount:      EnvIntOrDefault("EXPOSE_WAF_MAX_HEADER_COUNT", 0),
-		MaxPendingPerTunnel:    EnvIntOrDefault("EXPOSE_MAX_PENDING_PER_TUNNEL", 32),
-		PublicRateLimitRPS:     EnvIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0),
-		PublicRateLimitBurst:   EnvIntOrDefault("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0),
-		RouteCacheTTL:          EnvDurationOrDefault("EXPOSE_ROUTE_CACHE_TTL", time.Minute),
-		WAFCounterRetention:    EnvDurationOrDefault("EXPOSE_WAF_COUNTER_RETENTION", time.Hour),
+		WAFEnabled:             envBool("EXPOSE_WAF_ENABLE", true, &envErrs),
+		WAFAuditOnly:           envBool("EXPOSE_WAF_AUDIT_ONLY", false, &envErrs),
+		WAFBodyInspectLimit:    envInt64("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024, &envErrs),
+		WAFMaxURILength:        envInt("EXPOSE_WAF_MAX_URI_LENGTH", 0, &envErrs),
+		WAFMaxHeaderCount:      envInt("EXPOSE_WAF_MAX_HEADER_COUNT", 0, &envErrs),
+		MaxPendingPerTunnel:    envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 32, &envErrs),
+		PublicRateLimitRPS:     envInt("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0, &envErrs),
+		PublicRateLimitBurst:   envInt("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0, &envErrs),
+		RouteCacheTTL:          envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),
+		WAFCounterRetention:    envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
+	}
+	if err := errors.Join(envErrs...); err != nil {
+		return cfg, err
 	}
 
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -309,6 +318,65 @@ func EnvOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envInt, envInt64, envDuration, and envBool are the strict variants used by
+// flag parsing: a set-but-unparsable value records an error instead of being
+// silently replaced by the default (a typo in EXPOSE_PUBLIC_RATE_LIMIT_RPS
+// must not silently disable rate limiting).
+func envInt(key string, def int, errs *[]error) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("invalid %s=%q: expected an integer", key, v))
+		return def
+	}
+	return n
+}
+
+func envInt64(key string, def int64, errs *[]error) int64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("invalid %s=%q: expected an integer", key, v))
+		return def
+	}
+	return n
+}
+
+func envDuration(key string, def time.Duration, errs *[]error) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("invalid %s=%q: expected a duration like 30s or 5m", key, v))
+		return def
+	}
+	return d
+}
+
+func envBool(key string, def bool, errs *[]error) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		*errs = append(*errs, fmt.Errorf("invalid %s=%q: expected true or false", key, v))
+		return def
+	}
 }
 
 func EnvIntOrDefault(key string, def int) int {

@@ -307,3 +307,30 @@ func TestParseServerFlagsRejectsRemovedQUICFlags(t *testing.T) {
 		t.Fatal("expected removed --quic-advertise-authority flag to fail parsing")
 	}
 }
+
+func TestParseServerFlagsRejectsInvalidEnvValues(t *testing.T) {
+	t.Setenv("EXPOSE_DOMAIN", "example.com")
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_RPS", "1O0") // letter O typo
+	if _, err := ParseServerFlags(nil); err == nil || !strings.Contains(err.Error(), "EXPOSE_PUBLIC_RATE_LIMIT_RPS") {
+		t.Fatalf("ParseServerFlags(bad int) error = %v, want invalid env error", err)
+	}
+	t.Setenv("EXPOSE_PUBLIC_RATE_LIMIT_RPS", "")
+
+	t.Setenv("EXPOSE_WAF_ENABLE", "ture")
+	if _, err := ParseServerFlags(nil); err == nil || !strings.Contains(err.Error(), "EXPOSE_WAF_ENABLE") {
+		t.Fatalf("ParseServerFlags(bad bool) error = %v, want invalid env error", err)
+	}
+	t.Setenv("EXPOSE_WAF_ENABLE", "")
+
+	t.Setenv("EXPOSE_ROUTE_CACHE_TTL", "sixty")
+	if _, err := ParseServerFlags(nil); err == nil || !strings.Contains(err.Error(), "EXPOSE_ROUTE_CACHE_TTL") {
+		t.Fatalf("ParseServerFlags(bad duration) error = %v, want invalid env error", err)
+	}
+}
+
+func TestParseClientFlagsRejectsInvalidEnvValues(t *testing.T) {
+	t.Setenv("EXPOSE_PORT", "80eighty")
+	if _, err := ParseClientFlags(nil); err == nil || !strings.Contains(err.Error(), "EXPOSE_PORT") {
+		t.Fatalf("ParseClientFlags(bad port) error = %v, want invalid env error", err)
+	}
+}

@@ -2058,19 +2058,20 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
-	respCh := make(chan []byte, 8)
-	doneCh := make(chan struct{})
+	pending := acquirePendingRequest()
+	defer releasePendingRequest(pending)
+	respCh := pending.ensureBodyCh()
 
 	chunk1 := []byte("hello ")
 	chunk2 := []byte("world")
 	respCh <- chunk1
 	respCh <- chunk2
-	close(doneCh)
+	pending.finish()
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	if ok := s.writeStreamedResponseBody(w, req, respCh, doneCh, 5*time.Second); !ok {
+	if ok := s.writeStreamedResponseBody(w, req, pending, 5*time.Second); !ok {
 		t.Fatal("expected streamed response to complete")
 	}
 
@@ -2079,12 +2080,35 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 	}
 }
 
+func TestWriteStreamedResponseBodyAborted(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
+	pending := acquirePendingRequest()
+	defer releasePendingRequest(pending)
+	respCh := pending.ensureBodyCh()
+
+	respCh <- []byte("partial")
+	pending.abort()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	if ok := s.writeStreamedResponseBody(w, req, pending, 5*time.Second); ok {
+		t.Fatal("expected aborted stream to be reported as incomplete")
+	}
+	if got := w.Body.String(); got != "partial" {
+		t.Fatalf("expected partial body %q, got %q", "partial", got)
+	}
+}
+
 func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 100 * time.Millisecond}}
-	respCh := make(chan []byte, 8)
-	doneCh := make(chan struct{})
+	pending := acquirePendingRequest()
+	defer releasePendingRequest(pending)
+	respCh := pending.ensureBodyCh()
 
 	respCh <- []byte("partial")
 
@@ -2092,7 +2116,7 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 	start := time.Now()
-	if ok := s.writeStreamedResponseBody(w, req, respCh, doneCh, 100*time.Millisecond); ok {
+	if ok := s.writeStreamedResponseBody(w, req, pending, 100*time.Millisecond); ok {
 		t.Fatal("expected streamed response to time out")
 	}
 	elapsed := time.Since(start)

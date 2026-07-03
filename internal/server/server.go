@@ -77,6 +77,7 @@ type Server struct {
 	requestSeq       atomic.Uint64
 	regLimiter       *rateLimiter
 	publicLimiter    *rateLimiter
+	accessLimiter    *rateLimiter
 	routes           routeCache
 	liveRoutes       *liveRouteIndex
 	activeTunnels    *activeTunnelTracker
@@ -207,6 +208,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		version:       version,
 		regLimiter:    newRateLimiter(),
 		publicLimiter: publicLimiter,
+		accessLimiter: newConfiguredRateLimiter(accessAuthFailRate, accessAuthFailBurst, accessAuthCleanupAge),
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
 		liveRoutes:    newLiveRouteIndex(),
 		activeTunnels: newActiveTunnelTracker(),
@@ -220,9 +222,9 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 
 func newEphemeralAccessCookieSecret() string {
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return time.Now().UTC().Format(time.RFC3339Nano)
-	}
+	// crypto/rand.Read never fails (it panics internally on a broken
+	// entropy source since Go 1.24), so no predictable fallback is needed.
+	_, _ = rand.Read(buf)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 

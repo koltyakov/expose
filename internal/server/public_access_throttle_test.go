@@ -6,25 +6,32 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/koltyakov/expose/internal/auth"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 )
 
 func newThrottleTestServer(t *testing.T) (*Server, domain.TunnelRoute) {
 	t.Helper()
-	hash, err := auth.HashPassword("correct-pass")
+	// MinCost keeps the many deliberate bcrypt failures fast, and a
+	// zero-refill limiter makes exhaustion deterministic: the production
+	// refill rate would top the bucket back up while slow builds (-race)
+	// grind through the failed attempts.
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct-pass"), bcrypt.MinCost)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := New(config.ServerConfig{AccessCookieSecret: "throttle-test-secret"}, nil, nil, "test")
+	srv.accessLimiter = newConfiguredRateLimiter(0, accessAuthFailBurst, time.Minute)
 	route := domain.TunnelRoute{
 		Domain: domain.Domain{Hostname: "demo.example.com"},
 		Tunnel: domain.Tunnel{
 			AccessUser:         "admin",
 			AccessMode:         "basic",
-			AccessPasswordHash: hash,
+			AccessPasswordHash: string(hash),
 		},
 	}
 	return srv, route

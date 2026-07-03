@@ -48,16 +48,38 @@ function Invoke-Download {
   }
 }
 
-$arch   = Get-AssetArch
-$asset  = "${binary}_Windows_${arch}.zip"
-$url    = "https://github.com/$repo/releases/latest/download/$asset"
-$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+function Test-Checksum {
+  param([string]$Archive, [string]$AssetName, [string]$ChecksumsFile)
+  $entry = Get-Content $ChecksumsFile |
+    Where-Object { $_ -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $AssetName } |
+    Select-Object -First 1
+  if (-not $entry) {
+    Write-Error "No checksum entry for $AssetName in checksums.txt"
+    exit 1
+  }
+  $null = $entry -match '^\s*([0-9a-fA-F]{64})\s'
+  $expected = $Matches[1].ToLowerInvariant()
+  $actual = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $expected) {
+    Write-Error "Checksum mismatch for ${AssetName}: expected $expected, got $actual"
+    exit 1
+  }
+  Write-Host "Checksum verified for $AssetName"
+}
+
+$arch    = Get-AssetArch
+$asset   = "${binary}_Windows_${arch}.zip"
+$baseUrl = "https://github.com/$repo/releases/latest/download"
+$tmpDir  = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmpDir | Out-Null
 
 try {
-  $archive = "$tmpDir\$asset"
+  $archive   = "$tmpDir\$asset"
+  $checksums = "$tmpDir\checksums.txt"
   Write-Host "Downloading $asset from $repo..."
-  Invoke-Download -Url $url -Out $archive
+  Invoke-Download -Url "$baseUrl/$asset" -Out $archive
+  Invoke-Download -Url "$baseUrl/checksums.txt" -Out $checksums
+  Test-Checksum -Archive $archive -AssetName $asset -ChecksumsFile $checksums
 
   Expand-Archive -LiteralPath $archive -DestinationPath $tmpDir -Force
   $exeSrc = "$tmpDir\$binary.exe"

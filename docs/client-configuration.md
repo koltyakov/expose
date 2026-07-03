@@ -25,7 +25,7 @@ Complete reference for all client flags, environment variables, and credential m
 | `--server`       | `EXPOSE_DOMAIN`                  | Server URL (e.g. `example.com`)                                                      |
 | `--api-key`      | `EXPOSE_API_KEY`                 | API key for authentication                                                           |
 | `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `ws` (default), `quic`                                             |
-| `--pprof-listen` | `EXPOSE_PPROF_LISTEN`            | Optional pprof listen address for the client process                                 |
+| `--pprof-listen` | `EXPOSE_PPROF_LISTEN`            | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
 | `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
 | `--allow`        | -                                | Allow blocked static paths matching a glob pattern                                   |
 | -                | `EXPOSE_USER`                    | Access-form username (default: `admin`)                                              |

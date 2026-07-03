@@ -28,7 +28,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--domain`                | `EXPOSE_DOMAIN`                  | _(required)_  | Public base domain (e.g. `example.com`)                        |
 | `--listen`                | `EXPOSE_LISTEN_HTTPS`            | `:10443`      | HTTPS listen address                                           |
 | `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE`   | `:10080`      | ACME HTTP-01 challenge listener                                |
-| `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`            | -             | Optional pprof listen address (recommended on loopback only)   |
+| `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`            | -             | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
 | `--db`                    | `EXPOSE_DB_PATH`                 | `./expose.db` | SQLite database path                                           |
 | `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`       | `10`          | SQLite max open connections                                    |
 | `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`       | `10`          | SQLite max idle connections                                    |

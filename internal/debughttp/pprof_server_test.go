@@ -112,3 +112,32 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 	t.Fatal("condition not met before timeout")
 }
+
+func TestStartPprofServerRefusesNonLoopback(t *testing.T) {
+	if err := StartPprofServer(t.Context(), "0.0.0.0:0", nil, "client"); err == nil || !strings.Contains(err.Error(), "non-loopback") {
+		t.Fatalf("StartPprofServer(0.0.0.0) error = %v, want non-loopback refusal", err)
+	}
+	if err := StartPprofServer(t.Context(), ":0", nil, "client"); err == nil || !strings.Contains(err.Error(), "non-loopback") {
+		t.Fatalf("StartPprofServer(:port) error = %v, want non-loopback refusal (empty host binds all interfaces)", err)
+	}
+
+	t.Setenv("EXPOSE_PPROF_ALLOW_REMOTE", "true")
+	if err := StartPprofServer(t.Context(), "0.0.0.0:0", nil, "client"); err != nil {
+		t.Fatalf("StartPprofServer(0.0.0.0, opt-in) error = %v", err)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	loopback := []string{"127.0.0.1", "::1", "localhost", "LOCALHOST", "127.0.0.53"}
+	for _, h := range loopback {
+		if !isLoopbackHost(h) {
+			t.Errorf("isLoopbackHost(%q) = false, want true", h)
+		}
+	}
+	public := []string{"", "0.0.0.0", "::", "192.168.1.10", "example.com"}
+	for _, h := range public {
+		if isLoopbackHost(h) {
+			t.Errorf("isLoopbackHost(%q) = true, want false", h)
+		}
+	}
+}

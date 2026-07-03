@@ -125,7 +125,17 @@ func upsertEnvFile(path string, entries []envEntry) error {
 	}
 
 	content := strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(path, []byte(content), 0o644)
+	return writeSecretFile(path, []byte(content))
+}
+
+// writeSecretFile writes an owner-only file. Env and config files produced by
+// the init flows carry secrets (pepper, cookie secret, generated API keys),
+// so an existing world-readable file is tightened as well.
+func writeSecretFile(path string, content []byte) error {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func removeEnvKeys(path string, keys ...string) error {
@@ -178,7 +188,7 @@ func removeEnvKeys(path string, keys ...string) error {
 	if content != "" {
 		content += "\n"
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return writeSecretFile(path, []byte(content))
 }
 
 func parseEnvAssignment(line string) (string, string, bool) {

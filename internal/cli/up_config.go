@@ -54,7 +54,8 @@ func writeUpConfigFile(path string, cfg upConfig) error {
 	if err := cfg.normalizeAndValidate(); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(renderUpYAML(cfg)), 0o644)
+	// expose.yml may carry a plaintext tunnel password — keep it owner-only.
+	return writeSecretFile(path, []byte(renderUpYAML(cfg)))
 }
 
 func (c *upConfig) normalizeAndValidate() error {

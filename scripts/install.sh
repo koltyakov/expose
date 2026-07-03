@@ -65,21 +65,58 @@ download() {
   exit 1
 }
 
+sha256_of() {
+  file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+    return
+  fi
+  echo "error: missing required command: sha256sum or shasum" >&2
+  exit 1
+}
+
+verify_checksum() {
+  archive_path="$1"
+  asset_name="$2"
+  checksums_path="$3"
+  expected="$(awk -v asset="$asset_name" '$2 == asset || $2 == "*"asset {print tolower($1)}' "$checksums_path" | head -n1)"
+  if [ -z "$expected" ]; then
+    echo "error: no checksum entry for $asset_name in checksums.txt" >&2
+    exit 1
+  fi
+  actual="$(sha256_of "$archive_path")"
+  if [ "$actual" != "$expected" ]; then
+    echo "error: checksum mismatch for $asset_name" >&2
+    echo "  expected: $expected" >&2
+    echo "  actual:   $actual" >&2
+    exit 1
+  fi
+  echo "Checksum verified for $asset_name"
+}
+
 need_cmd tar
 need_cmd mktemp
 need_cmd install
+need_cmd awk
 
 os="$(asset_os)"
 arch="$(asset_arch)"
 asset="${binary}_${os}_${arch}.tar.gz"
-url="https://github.com/${repo}/releases/latest/download/${asset}"
+base_url="https://github.com/${repo}/releases/latest/download"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
 archive="$tmp_dir/$asset"
+checksums="$tmp_dir/checksums.txt"
 echo "Downloading $asset from $repo..."
-download "$url" "$archive"
+download "$base_url/$asset" "$archive"
+download "$base_url/checksums.txt" "$checksums"
+verify_checksum "$archive" "$asset" "$checksums"
 
 tar -xzf "$archive" -C "$tmp_dir"
 if [ ! -f "$tmp_dir/$binary" ]; then

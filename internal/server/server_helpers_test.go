@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,6 +182,103 @@ func TestLiveRouteIndexLifecycle(t *testing.T) {
 	cleared, ok := idx.clearSession("tun-1", sess)
 	if !ok || cleared.session != nil || cleared.route.Tunnel.State != domain.TunnelStateDisconnected {
 		t.Fatalf("clearSession() = %#v, %v", cleared, ok)
+	}
+}
+
+func TestLiveRouteIndexReplacesTunnelAcrossShards(t *testing.T) {
+	t.Parallel()
+
+	idx := newLiveRouteIndex()
+	oldTunnelID := "tun-old"
+	newTunnelID := "tun-new"
+	for liveRouteShardIndex(newTunnelID) == liveRouteShardIndex(oldTunnelID) {
+		newTunnelID += "x"
+	}
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{ID: "domain-1", APIKeyID: "key-1", Hostname: "app.example.com"},
+		Tunnel: domain.Tunnel{ID: oldTunnelID, State: domain.TunnelStateDisconnected},
+	}
+	idx.upsert(route)
+
+	route.Tunnel.ID = newTunnelID
+	idx.upsert(route)
+
+	if snap, ok := idx.lookupTunnel(oldTunnelID); ok {
+		t.Fatalf("lookupTunnel(old) = %#v, true; want no stale mapping", snap)
+	}
+	if snap, ok := idx.lookupTunnel(newTunnelID); !ok || snap.route.Tunnel.ID != newTunnelID {
+		t.Fatalf("lookupTunnel(new) = %#v, %v", snap, ok)
+	}
+	if snap, ok := idx.lookupHost("app.example.com"); !ok || snap.route.Tunnel.ID != newTunnelID {
+		t.Fatalf("lookupHost() = %#v, %v", snap, ok)
+	}
+}
+
+func TestLiveRouteIndexConcurrentLookupAndMutation(t *testing.T) {
+	idx := newLiveRouteIndex()
+	const tunnelID = "tun-race"
+	idx.upsert(domain.TunnelRoute{
+		Domain: domain.Domain{ID: "domain-1", APIKeyID: "key-1", Hostname: "race.example.com"},
+		Tunnel: domain.Tunnel{ID: tunnelID, IsTemporary: true, State: domain.TunnelStateDisconnected},
+	})
+	sess := &session{tunnelID: tunnelID}
+	start := make(chan struct{})
+	errs := make(chan string, 1)
+	report := func(message string) {
+		select {
+		case errs <- message:
+		default:
+		}
+	}
+
+	const iterations = 2000
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iterations {
+			idx.attachSession(tunnelID, sess)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iterations {
+			idx.clearSession(tunnelID, nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iterations {
+			idx.setAccess(tunnelID, "user", "basic", "hash")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iterations {
+			snap, ok := idx.lookupHost("RACE.EXAMPLE.COM")
+			if !ok || snap.route.Tunnel.ID != tunnelID {
+				report("lookupHost lost the live route")
+				continue
+			}
+			if snap.active != (snap.session == sess) {
+				report("lookupHost returned an inconsistent session snapshot")
+			}
+			user, mode, hash := snap.route.Tunnel.AccessUser, snap.route.Tunnel.AccessMode, snap.route.Tunnel.AccessPasswordHash
+			if (user != "" || mode != "" || hash != "") && (user != "user" || mode != "basic" || hash != "hash") {
+				report("lookupHost returned a partially updated access snapshot")
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+	select {
+	case message := <-errs:
+		t.Fatal(message)
+	default:
 	}
 }
 

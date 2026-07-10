@@ -308,13 +308,6 @@ func (rt *clientSessionRuntime) handleRequest(req *tunnelproto.HTTPRequest) {
 		return
 	}
 
-	select {
-	case rt.requestSem <- struct{}{}:
-	case <-rt.ctx.Done():
-		return
-	}
-
-	rt.requestWG.Add(1)
 	reqCopy := *req
 	var bodyCh <-chan []byte
 	if reqCopy.Streamed {
@@ -322,18 +315,33 @@ func (rt *clientSessionRuntime) handleRequest(req *tunnelproto.HTTPRequest) {
 	}
 	reqCtx, cancel := requestContext(rt.ctx, &reqCopy)
 	rt.storeRequestCancel(reqCopy.ID, cancel)
+	admitted := false
+	select {
+	case rt.requestSem <- struct{}{}:
+		admitted = true
+	default:
+	}
+	rt.requestWG.Add(1)
 
-	go func(forwardReq tunnelproto.HTTPRequest, streamedBody <-chan []byte) {
+	go func(forwardReq tunnelproto.HTTPRequest, streamedBody <-chan []byte, hasSlot bool) {
 		defer rt.requestWG.Done()
-		defer func() { <-rt.requestSem }()
 		defer rt.deleteRequestCancel(forwardReq.ID)
 		defer rt.closeAndRemoveStreamedRequest(forwardReq.ID)
 		defer cancel()
 
+		if !hasSlot {
+			select {
+			case rt.requestSem <- struct{}{}:
+			case <-reqCtx.Done():
+				return
+			}
+		}
+		defer func() { <-rt.requestSem }()
+
 		rt.client.forwardAndSend(reqCtx, rt.localBase, &forwardReq, streamedBody, rt.writeJSON, func(id string, payload []byte) error {
 			return rt.writeBinary(tunnelproto.BinaryFrameRespBody, id, 0, payload)
 		})
-	}(reqCopy, bodyCh)
+	}(reqCopy, bodyCh, admitted)
 }
 
 func (rt *clientSessionRuntime) handleReqBody(chunk *tunnelproto.BodyChunk) error {
@@ -348,6 +356,7 @@ func (rt *clientSessionRuntime) handleReqBody(chunk *tunnelproto.BodyChunk) erro
 
 	data, err := chunk.Payload()
 	if err != nil {
+		rt.cancelRequest(chunk.ID)
 		return nil
 	}
 
@@ -355,7 +364,7 @@ func (rt *clientSessionRuntime) handleReqBody(chunk *tunnelproto.BodyChunk) erro
 		return nil
 	}
 
-	rt.closeAndRemoveStreamedRequest(chunk.ID)
+	rt.cancelRequest(chunk.ID)
 	if rt.client.log != nil {
 		rt.client.log.Warn("dropping stalled streamed request body", "request_id", chunk.ID)
 	}
@@ -364,6 +373,10 @@ func (rt *clientSessionRuntime) handleReqBody(chunk *tunnelproto.BodyChunk) erro
 
 func (rt *clientSessionRuntime) handleReqBodyEnd(chunk *tunnelproto.BodyChunk) {
 	if chunk == nil {
+		return
+	}
+	if strings.TrimSpace(chunk.Error) != "" {
+		rt.cancelRequest(chunk.ID)
 		return
 	}
 	rt.closeAndRemoveStreamedRequest(chunk.ID)
@@ -454,7 +467,6 @@ func (rt *clientSessionRuntime) cancelRequest(id string) {
 	}
 	rt.requestMu.Unlock()
 
-	rt.closeAndRemoveStreamedRequest(id)
 	if ok {
 		cancel()
 	}

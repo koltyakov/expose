@@ -28,6 +28,7 @@ type liveTunnelShard struct {
 }
 
 type liveRouteEntry struct {
+	mu                 sync.RWMutex
 	host               string
 	domainID           string
 	tunnelID           string
@@ -72,17 +73,11 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 		return
 	}
 	hostShard := &i.hostShards[liveRouteShardIndex(host)]
-	tunnelShard := &i.tunnelShards[liveRouteShardIndex(tunnelID)]
-
-	// Lock ordering invariant: always acquire hostShard before tunnelShard.
-	// This order must be preserved by every code path that locks both to
-	// prevent deadlocks.
 	hostShard.mu.Lock()
 	defer hostShard.mu.Unlock()
-	tunnelShard.mu.Lock()
-	defer tunnelShard.mu.Unlock()
 
 	entry := hostShard.byHost[host]
+	oldTunnelID := ""
 	if entry == nil {
 		entry = &liveRouteEntry{
 			host:     host,
@@ -91,13 +86,44 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 			keyID:    route.Domain.APIKeyID,
 		}
 		hostShard.byHost[host] = entry
-		tunnelShard.byTunnel[tunnelID] = entry
 	} else {
-		if entry.tunnelID != "" && entry.tunnelID != tunnelID {
-			delete(tunnelShard.byTunnel, entry.tunnelID)
-		}
-		tunnelShard.byTunnel[tunnelID] = entry
+		entry.mu.RLock()
+		oldTunnelID = entry.tunnelID
+		entry.mu.RUnlock()
 	}
+
+	newShardIndex := liveRouteShardIndex(tunnelID)
+	oldShardIndex := newShardIndex
+	firstShardIndex, secondShardIndex := newShardIndex, -1
+	if oldTunnelID != "" {
+		oldShardIndex = liveRouteShardIndex(oldTunnelID)
+		if oldShardIndex != newShardIndex {
+			// Keep the global order host shard -> tunnel shards by index -> entry.
+			firstShardIndex, secondShardIndex = oldShardIndex, newShardIndex
+			if firstShardIndex > secondShardIndex {
+				firstShardIndex, secondShardIndex = secondShardIndex, firstShardIndex
+			}
+		}
+	}
+	firstShard := &i.tunnelShards[firstShardIndex]
+	firstShard.mu.Lock()
+	defer firstShard.mu.Unlock()
+	if secondShardIndex >= 0 {
+		secondShard := &i.tunnelShards[secondShardIndex]
+		secondShard.mu.Lock()
+		defer secondShard.mu.Unlock()
+	}
+
+	if oldTunnelID != "" && oldTunnelID != tunnelID {
+		oldShard := &i.tunnelShards[oldShardIndex]
+		if oldShard.byTunnel[oldTunnelID] == entry {
+			delete(oldShard.byTunnel, oldTunnelID)
+		}
+	}
+	i.tunnelShards[newShardIndex].byTunnel[tunnelID] = entry
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
 	i.untrackHostKeyLocked(hostShard, entry.keyID, host)
 	entry.host = host
 	entry.domainID = route.Domain.ID
@@ -159,7 +185,9 @@ func (i *liveRouteIndex) lookupHost(host string) (liveRouteSnapshot, bool) {
 		shard.mu.RUnlock()
 		return liveRouteSnapshot{}, false
 	}
-	snap := snapshotFromEntry(entry)
+	entry.mu.RLock()
+	snap := snapshotFromEntryLocked(entry)
+	entry.mu.RUnlock()
 	shard.mu.RUnlock()
 	return snap, true
 }
@@ -179,7 +207,9 @@ func (i *liveRouteIndex) lookupTunnel(tunnelID string) (liveRouteSnapshot, bool)
 		shard.mu.RUnlock()
 		return liveRouteSnapshot{}, false
 	}
-	snap := snapshotFromEntry(entry)
+	entry.mu.RLock()
+	snap := snapshotFromEntryLocked(entry)
+	entry.mu.RUnlock()
 	shard.mu.RUnlock()
 	return snap, true
 }
@@ -193,16 +223,18 @@ func (i *liveRouteIndex) attachSession(tunnelID string, sess *session) (liveRout
 		return liveRouteSnapshot{}, false
 	}
 	shard := &i.tunnelShards[liveRouteShardIndex(tunnelID)]
-	shard.mu.Lock()
+	shard.mu.RLock()
 	entry := shard.byTunnel[tunnelID]
 	if entry == nil {
-		shard.mu.Unlock()
+		shard.mu.RUnlock()
 		return liveRouteSnapshot{}, false
 	}
+	entry.mu.Lock()
 	entry.session = sess
 	entry.active = true
-	snap := snapshotFromEntry(entry)
-	shard.mu.Unlock()
+	snap := snapshotFromEntryLocked(entry)
+	entry.mu.Unlock()
+	shard.mu.RUnlock()
 	return snap, true
 }
 
@@ -215,23 +247,26 @@ func (i *liveRouteIndex) clearSession(tunnelID string, sess *session) (liveRoute
 		return liveRouteSnapshot{}, false
 	}
 	shard := &i.tunnelShards[liveRouteShardIndex(tunnelID)]
-	shard.mu.Lock()
+	shard.mu.RLock()
 	entry := shard.byTunnel[tunnelID]
 	if entry == nil {
-		shard.mu.Unlock()
+		shard.mu.RUnlock()
 		return liveRouteSnapshot{}, false
 	}
+	entry.mu.Lock()
 	if sess != nil && entry.session != sess {
-		snap := snapshotFromEntry(entry)
-		shard.mu.Unlock()
+		snap := snapshotFromEntryLocked(entry)
+		entry.mu.Unlock()
+		shard.mu.RUnlock()
 		return snap, false
 	}
 	entry.session = nil
 	if entry.isTemporary {
 		entry.active = false
 	}
-	snap := snapshotFromEntry(entry)
-	shard.mu.Unlock()
+	snap := snapshotFromEntryLocked(entry)
+	entry.mu.Unlock()
+	shard.mu.RUnlock()
 	return snap, true
 }
 
@@ -244,13 +279,15 @@ func (i *liveRouteIndex) setAccess(tunnelID, user, mode, hash string) {
 		return
 	}
 	shard := &i.tunnelShards[liveRouteShardIndex(tunnelID)]
-	shard.mu.Lock()
+	shard.mu.RLock()
 	if entry := shard.byTunnel[tunnelID]; entry != nil {
+		entry.mu.Lock()
 		entry.accessUser = strings.TrimSpace(user)
 		entry.accessMode = strings.TrimSpace(mode)
 		entry.accessPasswordHash = strings.TrimSpace(hash)
+		entry.mu.Unlock()
 	}
-	shard.mu.Unlock()
+	shard.mu.RUnlock()
 }
 
 func (i *liveRouteIndex) hostsForTunnel(tunnelID string) []string {
@@ -277,14 +314,20 @@ func (i *liveRouteIndex) snapshotSessions() []*session {
 		shard := &i.tunnelShards[idx]
 		shard.mu.RLock()
 		for _, entry := range shard.byTunnel {
-			if entry == nil || entry.session == nil {
+			if entry == nil {
 				continue
 			}
-			if _, ok := seen[entry.session]; ok {
+			entry.mu.RLock()
+			sess := entry.session
+			entry.mu.RUnlock()
+			if sess == nil {
 				continue
 			}
-			seen[entry.session] = struct{}{}
-			out = append(out, entry.session)
+			if _, ok := seen[sess]; ok {
+				continue
+			}
+			seen[sess] = struct{}{}
+			out = append(out, sess)
 		}
 		shard.mu.RUnlock()
 	}
@@ -333,6 +376,12 @@ func snapshotFromEntry(entry *liveRouteEntry) liveRouteSnapshot {
 	if entry == nil {
 		return liveRouteSnapshot{}
 	}
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+	return snapshotFromEntryLocked(entry)
+}
+
+func snapshotFromEntryLocked(entry *liveRouteEntry) liveRouteSnapshot {
 	return liveRouteSnapshot{
 		route: domain.TunnelRoute{
 			Domain: domain.Domain{
@@ -345,7 +394,7 @@ func snapshotFromEntry(entry *liveRouteEntry) liveRouteSnapshot {
 				APIKeyID:           entry.keyID,
 				DomainID:           entry.domainID,
 				IsTemporary:        entry.isTemporary,
-				State:              tunnelStateForEntry(entry),
+				State:              tunnelStateForEntryLocked(entry),
 				AccessUser:         entry.accessUser,
 				AccessMode:         entry.accessMode,
 				AccessPasswordHash: entry.accessPasswordHash,
@@ -360,6 +409,12 @@ func tunnelStateForEntry(entry *liveRouteEntry) string {
 	if entry == nil {
 		return ""
 	}
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+	return tunnelStateForEntryLocked(entry)
+}
+
+func tunnelStateForEntryLocked(entry *liveRouteEntry) string {
 	if entry.active {
 		return domain.TunnelStateConnected
 	}

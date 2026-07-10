@@ -112,6 +112,45 @@ func TestHandlePublicAccessLoginRejectsMissingSecret(t *testing.T) {
 	}
 }
 
+func TestStripPublicAccessCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		route    domain.TunnelRoute
+		wantAuth string
+	}{
+		{
+			name: "basic protection",
+			route: domain.TunnelRoute{Tunnel: domain.Tunnel{
+				AccessMode: "basic", AccessPasswordHash: "hash",
+			}},
+		},
+		{
+			name: "form protection",
+			route: domain.TunnelRoute{Tunnel: domain.Tunnel{
+				AccessMode: "form", AccessPasswordHash: "hash",
+			}},
+			wantAuth: "Bearer application-token",
+		},
+		{
+			name:     "unprotected",
+			route:    domain.TunnelRoute{},
+			wantAuth: "Bearer application-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{"Authorization": {"Bearer application-token"}}
+			stripPublicAccessCredentials(headers, tt.route)
+			if got := headers.Get("Authorization"); got != tt.wantAuth {
+				t.Fatalf("Authorization = %q, want %q", got, tt.wantAuth)
+			}
+		})
+	}
+}
+
 func TestAuthorizePublicRequestDeniesNonGETWithoutForm(t *testing.T) {
 	t.Parallel()
 

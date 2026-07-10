@@ -81,6 +81,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	requestHeaders := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
 	stripPublicAccessCookie(requestHeaders)
+	stripPublicAccessCredentials(requestHeaders, route)
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 

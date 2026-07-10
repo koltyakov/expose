@@ -64,7 +64,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("refused tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
 		return
 	}
-	if err := s.store.SetTunnelConnected(r.Context(), tunnelID); err != nil {
+	if err := s.store.TrySetTunnelConnected(r.Context(), tunnelID); err != nil {
 		if errors.Is(err, domain.ErrTunnelLimitReached) {
 			_ = conn.WriteControl(
 				websocket.CloseMessage,
@@ -123,7 +123,7 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(h3SessionHeader, opts.h3AuthToken)
 	}
 
-	if err := s.store.SetTunnelConnected(r.Context(), tunnelID); err != nil {
+	if err := s.store.TrySetTunnelConnected(r.Context(), tunnelID); err != nil {
 		if errors.Is(err, domain.ErrTunnelLimitReached) {
 			http.Error(w, domain.ErrTunnelLimitReached.Error(), http.StatusTooManyRequests)
 			s.log.Warn("refused http3 tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)

@@ -371,6 +371,12 @@ func stripPublicAccessCookie(h http.Header) {
 	}
 }
 
+func stripPublicAccessCredentials(h http.Header, route domain.TunnelRoute) {
+	if route.Tunnel.AccessPasswordHash != "" && publicAccessMode(route) == access.ModeBasic {
+		h.Del("Authorization")
+	}
+}
+
 func stripCookieValue(headerValue, cookieName string) string {
 	parts := strings.Split(headerValue, ";")
 	kept := make([]string, 0, len(parts))

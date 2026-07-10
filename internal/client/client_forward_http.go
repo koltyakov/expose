@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
 	localReq.Header = headers
 	localReq.Header.Del("Host")
+	setForwardedContentLength(localReq, headers, int64(len(body)))
 	if forwardedHost != "" {
 		localReq.Host = forwardedHost
 	} else {
@@ -159,6 +161,7 @@ func (c *Client) forwardAndSend(
 	// Build request body reader.
 	var body io.Reader
 	var pipeReader *io.PipeReader
+	contentLength := int64(-1)
 	if bodyCh != nil {
 		pr, pw := io.Pipe()
 		pipeReader = pr
@@ -200,6 +203,7 @@ func (c *Client) forwardAndSend(
 		body = newTrafficCountingReader(bytes.NewReader(data), func(n int) {
 			c.recordTraffic(traffic.DirectionInbound, int64(n))
 		})
+		contentLength = int64(len(data))
 	}
 	if pipeReader != nil {
 		// Ensure the body pump goroutine unblocks if forwarding fails before the
@@ -222,6 +226,7 @@ func (c *Client) forwardAndSend(
 	forwardedHost := strings.TrimSpace(firstHeaderValueCI(headers, "Host"))
 	localReq.Header = headers
 	localReq.Header.Del("Host")
+	setForwardedContentLength(localReq, headers, contentLength)
 	if forwardedHost != "" {
 		localReq.Host = forwardedHost
 	} else {
@@ -380,6 +385,22 @@ func (c *Client) forwardAndSend(
 		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID},
 	})
 	c.logForwardResult(req, resp.StatusCode, started)
+}
+
+func setForwardedContentLength(req *http.Request, headers map[string][]string, fallback int64) {
+	contentLength := fallback
+	if value := strings.TrimSpace(firstHeaderValueCI(headers, "Content-Length")); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil && parsed >= 0 {
+			contentLength = parsed
+		}
+	}
+	if contentLength < 0 {
+		return
+	}
+	req.ContentLength = contentLength
+	if contentLength == 0 {
+		req.Body = http.NoBody
+	}
 }
 
 type trafficCountingReader struct {

@@ -433,6 +433,111 @@ func TestSetTunnelDisconnectedKeepsClosedState(t *testing.T) {
 
 }
 
+func TestSetTunnelConnectedRejectsClosedAndMissingTunnels(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_connect_closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, tunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "closed-connect", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, closed, err := store.CloseTemporaryTunnel(ctx, tunnel.ID); err != nil {
+		t.Fatal(err)
+	} else if !closed {
+		t.Fatal("expected tunnel to close")
+	}
+
+	for name, connect := range map[string]func(context.Context, string) error{
+		"set":     store.SetTunnelConnected,
+		"try set": store.TrySetTunnelConnected,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := connect(ctx, tunnel.ID); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("expected closed tunnel rejection, got %v", err)
+			}
+			if err := connect(ctx, "missing-tunnel"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("expected missing tunnel rejection, got %v", err)
+			}
+		})
+	}
+
+	route, err := store.FindRouteByHost(ctx, d.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.State != domain.TunnelStateClosed || route.Domain.Status != domain.DomainStatusInactive {
+		t.Fatalf("expected terminal closed/inactive state, got tunnel=%s domain=%s", route.Tunnel.State, route.Domain.Status)
+	}
+}
+
+func TestSetTunnelDisconnectedKeepsReusedTemporaryDomainActive(t *testing.T) {
+	testDisconnectReusedTemporaryDomain(t, false)
+}
+
+func TestSetTunnelsDisconnectedKeepsReusedTemporaryDomainActive(t *testing.T) {
+	testDisconnectReusedTemporaryDomain(t, true)
+}
+
+func testDisconnectReusedTemporaryDomain(t *testing.T, batch bool) {
+	t.Helper()
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", fmt.Sprintf("hash_reused_disconnect_%t", batch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, oldTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "reused-disconnect", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, oldTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelDisconnected(ctx, oldTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	reused, activeTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "reused-disconnect", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.ID != d.ID {
+		t.Fatalf("expected domain %s to be reused, got %s", d.ID, reused.ID)
+	}
+	if err := store.SetTunnelConnected(ctx, activeTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if batch {
+		err = store.SetTunnelsDisconnected(ctx, []string{oldTunnel.ID})
+	} else {
+		err = store.SetTunnelDisconnected(ctx, oldTunnel.ID)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	route, err := store.FindRouteByHost(ctx, d.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Domain.Status != domain.DomainStatusActive || route.Tunnel.ID != activeTunnel.ID || route.Tunnel.State != domain.TunnelStateConnected {
+		t.Fatalf("expected reused domain and tunnel to remain active, got domain=%s tunnel=%s state=%s", route.Domain.Status, route.Tunnel.ID, route.Tunnel.State)
+	}
+}
+
 func TestSetTunnelsDisconnectedBatch(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {
@@ -537,7 +642,10 @@ func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 	}
 
 	staleTime := time.Now().Add(-48 * time.Hour).UTC()
-	if _, err := store.db.ExecContext(ctx, `UPDATE tunnels SET disconnected_at = ? WHERE id = ?`, staleTime, tunnel.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE domains SET created_at = ?, last_seen_at = ? WHERE id = ?`, staleTime, staleTime, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tunnels SET connected_at = ?, disconnected_at = ? WHERE id = ?`, staleTime, staleTime, tunnel.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -551,6 +659,67 @@ func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 
 	if _, err := store.FindRouteByHost(ctx, d.Hostname); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected host to be deleted, got err=%v", err)
+	}
+}
+
+func TestPurgeInactiveTemporaryDomainsPreservesConnectedAndRecentlyActiveDomains(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	k, err := store.CreateAPIKey(ctx, "test", "hash_purge_invariants")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-72 * time.Hour).UTC()
+	recent := time.Now().Add(-time.Hour).UTC()
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	connectedDomain, connectedTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "purge-connected", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, connectedTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE domains SET status = ?, created_at = ?, last_seen_at = ? WHERE id = ?`, domain.DomainStatusInactive, stale, stale, connectedDomain.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tunnels SET connected_at = ? WHERE id = ?`, stale, connectedTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	recentDomain, recentTunnel, err := store.AllocateDomainAndTunnel(ctx, k.ID, "temporary", "purge-recent", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelConnected(ctx, recentTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTunnelDisconnected(ctx, recentTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE domains SET created_at = ?, last_seen_at = ? WHERE id = ?`, stale, stale, recentDomain.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tunnels SET connected_at = ?, disconnected_at = ? WHERE id = ?`, recent, stale, recentTunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	hosts, err := store.PurgeInactiveTemporaryDomains(ctx, cutoff, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 0 {
+		t.Fatalf("expected protected domains not to be purged, got %v", hosts)
+	}
+	for _, host := range []string{connectedDomain.Hostname, recentDomain.Hostname} {
+		if _, err := store.FindRouteByHost(ctx, host); err != nil {
+			t.Fatalf("expected %s to remain: %v", host, err)
+		}
 	}
 }
 

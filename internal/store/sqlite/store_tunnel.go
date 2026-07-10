@@ -232,12 +232,22 @@ WHERE id = ?`, nullableString(clientMeta), t.ID); err != nil {
 }
 
 func (s *Store) SetTunnelConnected(ctx context.Context, tunnelID string) error {
-	_, err := s.execWithSQLiteBusyRetry(ctx, `
+	res, err := s.execWithSQLiteBusyRetry(ctx, `
 UPDATE tunnels
 SET state = ?, connected_at = ?, disconnected_at = NULL
-WHERE id = ?`,
-		domain.TunnelStateConnected, time.Now().UTC(), tunnelID)
-	return err
+WHERE id = ? AND state != ?`,
+		domain.TunnelStateConnected, time.Now().UTC(), tunnelID, domain.TunnelStateClosed)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) error {
@@ -257,6 +267,9 @@ func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) erro
 		}
 		if state == domain.TunnelStateConnected {
 			return tx.Commit()
+		}
+		if state == domain.TunnelStateClosed {
+			return sql.ErrNoRows
 		}
 
 		var limit int
@@ -323,7 +336,13 @@ func (s *Store) SetTunnelDisconnected(ctx context.Context, tunnelID string) erro
 		}
 
 		if isTemp {
-			if _, err = tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusInactive, domainID); err != nil {
+			if _, err = tx.ExecContext(ctx, `
+UPDATE domains
+SET status = ?
+WHERE id = ?
+	AND NOT EXISTS (
+		SELECT 1 FROM tunnels WHERE domain_id = ? AND state = ?
+	)`, domain.DomainStatusInactive, domainID, domainID, domain.TunnelStateConnected); err != nil {
 				return err
 			}
 		}
@@ -416,8 +435,14 @@ func (s *Store) SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) 
 			for _, domainID := range domainIDs {
 				domainArgs = append(domainArgs, domainID)
 			}
+			domainArgs = append(domainArgs, domain.TunnelStateConnected)
 			if _, err = tx.ExecContext(ctx,
-				`UPDATE domains SET status = ? WHERE id IN (`+domainPlaceholders+`)`,
+				`UPDATE domains
+SET status = ?
+WHERE id IN (`+domainPlaceholders+`)
+	AND NOT EXISTS (
+		SELECT 1 FROM tunnels WHERE tunnels.domain_id = domains.id AND tunnels.state = ?
+	)`,
 				domainArgs...); err != nil {
 				return err
 			}

@@ -47,6 +47,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	requestHeaders := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
 	stripPublicAccessCookie(requestHeaders)
+	stripPublicAccessCredentials(requestHeaders, route)
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 
@@ -119,6 +120,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	headers := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
 	stripPublicAccessCookie(headers)
+	stripPublicAccessCredentials(headers, route)
 	injectForwardedProxyHeaders(headers, r)
 	injectForwardedFor(headers, r.RemoteAddr)
 	openMsg := tunnelproto.Message{

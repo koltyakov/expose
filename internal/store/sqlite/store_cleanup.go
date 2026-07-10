@@ -29,10 +29,21 @@ FROM domains d
 LEFT JOIN tunnels t ON t.domain_id = d.id
 WHERE d.type = ? AND d.status = ?
 GROUP BY d.id, d.hostname, d.created_at, d.last_seen_at
-HAVING COALESCE(MAX(t.disconnected_at), MAX(t.connected_at), d.last_seen_at, d.created_at) < ?
-ORDER BY COALESCE(MAX(t.disconnected_at), MAX(t.connected_at), d.last_seen_at, d.created_at) ASC
+HAVING COUNT(CASE WHEN t.state = ? THEN 1 END) = 0
+	AND MAX(
+		d.created_at,
+		COALESCE(d.last_seen_at, d.created_at),
+		COALESCE(MAX(t.connected_at), d.created_at),
+		COALESCE(MAX(t.disconnected_at), d.created_at)
+	) < ?
+ORDER BY MAX(
+	d.created_at,
+	COALESCE(d.last_seen_at, d.created_at),
+	COALESCE(MAX(t.connected_at), d.created_at),
+	COALESCE(MAX(t.disconnected_at), d.created_at)
+) ASC
 LIMIT ?`,
-			domain.DomainTypeTemporarySubdomain, domain.DomainStatusInactive, olderThan.UTC(), limit)
+			domain.DomainTypeTemporarySubdomain, domain.DomainStatusInactive, domain.TunnelStateConnected, olderThan.UTC(), limit)
 		if err != nil {
 			return err
 		}
@@ -63,15 +74,21 @@ LIMIT ?`,
 		if len(ids) > 0 {
 			placeholders := strings.Repeat("?,", len(ids))
 			placeholders = placeholders[:len(placeholders)-1]
+			safeDomains := `SELECT d.id FROM domains d
+WHERE d.id IN (` + placeholders + `)
+	AND NOT EXISTS (
+		SELECT 1 FROM tunnels t WHERE t.domain_id = d.id AND t.state = ?
+	)`
+			safeArgs := append(append([]any{}, ids...), domain.TunnelStateConnected)
 			if _, err = tx.ExecContext(ctx,
-				`DELETE FROM connect_tokens WHERE tunnel_id IN (SELECT id FROM tunnels WHERE domain_id IN (`+placeholders+`))`,
-				ids...); err != nil {
+				`DELETE FROM connect_tokens WHERE tunnel_id IN (SELECT id FROM tunnels WHERE domain_id IN (`+safeDomains+`))`,
+				safeArgs...); err != nil {
 				return err
 			}
-			if _, err = tx.ExecContext(ctx, `DELETE FROM tunnels WHERE domain_id IN (`+placeholders+`)`, ids...); err != nil {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM tunnels WHERE domain_id IN (`+safeDomains+`)`, safeArgs...); err != nil {
 				return err
 			}
-			if _, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id IN (`+placeholders+`)`, ids...); err != nil {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id IN (`+safeDomains+`)`, safeArgs...); err != nil {
 				return err
 			}
 		}

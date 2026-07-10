@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -250,6 +251,77 @@ func TestForwardLocalRecordsTraffic(t *testing.T) {
 	if got := recorder.outbound.Load(); got != int64(len("response-data")) {
 		t.Fatalf("expected outbound bytes %d, got %d", len("response-data"), got)
 	}
+}
+
+func TestLocalForwardPreservesContentLength(t *testing.T) {
+	t.Parallel()
+
+	type receivedRequest struct {
+		contentLength int64
+		body          string
+	}
+	received := make(chan receivedRequest, 3)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- receivedRequest{contentLength: r.ContentLength, body: string(body)}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{fwdClient: srv.Client()}
+
+	assertReceived := func(wantBody string) {
+		t.Helper()
+		select {
+		case got := <-received:
+			if got.contentLength != int64(len(wantBody)) {
+				t.Fatalf("expected ContentLength %d, got %d", len(wantBody), got.contentLength)
+			}
+			if got.body != wantBody {
+				t.Fatalf("expected body %q, got %q", wantBody, got.body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("local handler did not receive request")
+		}
+	}
+
+	bufferedBody := "buffered-local"
+	resp := c.forwardLocal(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID: "content-length-local", Method: http.MethodPost, Path: "/",
+		Headers: map[string][]string{"Content-Length": {strconv.Itoa(len(bufferedBody))}},
+		Body:    []byte(bufferedBody),
+	})
+	if resp.Status != http.StatusNoContent {
+		t.Fatalf("forwardLocal returned status %d", resp.Status)
+	}
+	assertReceived(bufferedBody)
+
+	bufferedBody = "buffered-send"
+	c.forwardAndSend(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID: "content-length-send", Method: http.MethodPost, Path: "/",
+		Headers: map[string][]string{"content-length": {strconv.Itoa(len(bufferedBody))}},
+		Body:    []byte(bufferedBody),
+	}, nil, func(tunnelproto.Message) error { return nil }, nil)
+	assertReceived(bufferedBody)
+
+	streamedBody := "streamed-body"
+	bodyCh := make(chan []byte, 2)
+	bodyCh <- []byte("streamed-")
+	bodyCh <- []byte("body")
+	close(bodyCh)
+	c.forwardAndSend(context.Background(), base, &tunnelproto.HTTPRequest{
+		ID: "content-length-streamed", Method: http.MethodPost, Path: "/", Streamed: true,
+		Headers: map[string][]string{"Content-Length": {strconv.Itoa(len(streamedBody))}},
+	}, bodyCh, func(tunnelproto.Message) error { return nil }, nil)
+	assertReceived(streamedBody)
 }
 
 func TestForwardLocalPreservesWebSocketUpgradeHeaders(t *testing.T) {

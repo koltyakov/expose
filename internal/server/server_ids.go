@@ -46,7 +46,7 @@ func shutdownServer(server *http.Server, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+		return errors.Join(err, server.Close())
 	}
 	return nil
 }

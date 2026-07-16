@@ -127,7 +127,7 @@ func (d *Display) redraw() {
 		// pre-close value during a rapid refresh cycle.
 		d.wsDisplayMin, len(d.wsConns))
 	activeCount := d.activeClientCount()
-	clientCount := len(d.visitors)
+	clientCount := d.totalVisitors
 	d.writeField(&b, "Traffic", d.trafficCombinedSummaryText(trafficSnapshot))
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
 	httpSummary := fmt.Sprintf("%d total", d.totalHTTP)
@@ -238,17 +238,28 @@ func (d *Display) localTargetHealthy(raw string) bool {
 	if d.localHealth == nil {
 		d.localHealth = make(map[string]localHealthEntry)
 	}
+	if d.localHealthChecking == nil {
+		d.localHealthChecking = make(map[string]struct{})
+	}
 	now := d.now()
-	if e, ok := d.localHealth[cacheKey]; ok && now.Sub(e.checkedAt) < displayLocalHealthCacheTTL {
+	e, cached := d.localHealth[cacheKey]
+	if cached && now.Sub(e.checkedAt) < displayLocalHealthCacheTTL {
 		return e.ok
 	}
-	conn, err := net.DialTimeout("tcp", dialAddr, displayLocalHealthTimeout)
-	up := err == nil
-	if err == nil {
-		_ = conn.Close()
+	if _, checking := d.localHealthChecking[cacheKey]; !checking {
+		d.localHealthChecking[cacheKey] = struct{}{}
+		go func() {
+			conn, err := net.DialTimeout("tcp", dialAddr, displayLocalHealthTimeout)
+			if err == nil {
+				_ = conn.Close()
+			}
+			d.mu.Lock()
+			d.localHealth[cacheKey] = localHealthEntry{ok: err == nil, checkedAt: d.now()}
+			delete(d.localHealthChecking, cacheKey)
+			d.mu.Unlock()
+		}()
 	}
-	d.localHealth[cacheKey] = localHealthEntry{ok: up, checkedAt: now}
-	return up
+	return cached && e.ok
 }
 
 func localTargetDialAddr(raw string) (cacheKey string, dialAddr string, ok bool) {

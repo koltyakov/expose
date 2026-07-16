@@ -1571,7 +1571,7 @@ func TestPumpStreamedRequestBodyMessagesCancelsOnReadError(t *testing.T) {
 		step := steps[idx]
 		idx++
 		return step.msg, step.err
-	}, out)
+	}, out, nil)
 
 	var chunks [][]byte
 	for chunk := range out {

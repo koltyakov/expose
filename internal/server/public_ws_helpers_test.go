@@ -85,6 +85,22 @@ func TestPublicWSOpenFailure(t *testing.T) {
 	if status, message := publicWSOpenFailure(&tunnelproto.WSOpenAck{Status: http.StatusForbidden, Error: "forbidden"}); status != http.StatusForbidden || message != "forbidden" {
 		t.Fatalf("publicWSOpenFailure(custom) = (%d, %q)", status, message)
 	}
+	if status, _ := publicWSOpenFailure(&tunnelproto.WSOpenAck{Status: 999}); status != http.StatusBadGateway {
+		t.Fatalf("publicWSOpenFailure(invalid) status = %d, want %d", status, http.StatusBadGateway)
+	}
+}
+
+func TestNormalizeUpstreamStatus(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeUpstreamStatus(http.StatusCreated); got != http.StatusCreated {
+		t.Fatalf("normalizeUpstreamStatus(valid) = %d", got)
+	}
+	for _, status := range []int{0, 199, 600, 999} {
+		if got := normalizeUpstreamStatus(status); got != http.StatusBadGateway {
+			t.Fatalf("normalizeUpstreamStatus(%d) = %d, want %d", status, got, http.StatusBadGateway)
+		}
+	}
 }
 
 func TestStartPublicWSWriteRelayWritesDataAndClose(t *testing.T) {

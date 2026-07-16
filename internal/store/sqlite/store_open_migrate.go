@@ -17,6 +17,7 @@ import (
 // ErrHostnameInUse is returned when the requested hostname is already allocated
 // by another key or tunnel type and cannot be claimed by the caller.
 var ErrHostnameInUse = errors.New("hostname already in use")
+var ErrStoreClosed = errors.New("sqlite store closed")
 
 // Store wraps a SQLite database connection for all expose persistence operations.
 type Store struct {
@@ -32,6 +33,10 @@ type Store struct {
 	touchRequests        chan storeTouchRequest
 	writerStop           chan struct{}
 	writerDone           chan struct{}
+	writerGate           sync.RWMutex
+	closing              bool
+	closeOnce            sync.Once
+	closeErr             error
 	touchMu              sync.Mutex
 	lastDomainTouch      map[string]time.Time
 	touchMinInterval     time.Duration
@@ -150,9 +155,20 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
-	s.stopWriterLoop()
-	stmtErr := s.closePreparedStatements()
-	return errors.Join(stmtErr, s.db.Close())
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		s.writerGate.Lock()
+		s.closing = true
+		close(s.writerStop)
+		s.writerGate.Unlock()
+		<-s.writerDone
+
+		stmtErr := s.closePreparedStatements()
+		s.closeErr = errors.Join(stmtErr, s.db.Close())
+	})
+	return s.closeErr
 }
 
 func (s *Store) prepareStatements(ctx context.Context) error {
@@ -193,9 +209,7 @@ func closeStmt(stmt **sql.Stmt) error {
 	if stmt == nil || *stmt == nil {
 		return nil
 	}
-	err := (*stmt).Close()
-	*stmt = nil
-	return err
+	return (*stmt).Close()
 }
 
 type schemaMigration struct {

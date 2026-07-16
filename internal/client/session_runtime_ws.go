@@ -120,6 +120,7 @@ func (rt *clientSessionRuntime) handleWSData(data *tunnelproto.WSData) {
 	if err != nil {
 		return
 	}
+	_ = streamConn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout))
 	if err := streamConn.WriteMessage(data.MessageType, payload); err != nil {
 		rt.deleteWSConn(data.ID)
 		return

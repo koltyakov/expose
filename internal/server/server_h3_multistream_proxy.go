@@ -87,7 +87,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 			w.Header().Add(k, v)
 		}
 	}
-	w.WriteHeader(resp.Status)
+	w.WriteHeader(normalizeUpstreamStatus(resp.Status))
 
 	if resp.Streamed {
 		if !writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2()) {
@@ -108,6 +108,11 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
 		return
 	}
+	if !sess.tryAcquireWebSocket(maxPendingPerSessionFor(s.cfg)) {
+		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		return
+	}
+	defer sess.releaseWebSocket()
 
 	streamID := s.nextWSStreamID()
 	stream, err := sess.acquireH3Worker(r.Context(), s.cfg.RequestTimeout)
@@ -167,6 +172,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 		}, sess.usesH3StreamV2())
 		return
 	}
+	publicConn.SetReadLimit(webSocketReadLimitFor(s.cfg))
 	defer func() { _ = publicConn.Close() }()
 	s.queueDomainTouch(route.Domain.ID)
 
@@ -185,7 +191,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	readDone := make(chan struct{})
 	writeDone := make(chan struct{})
 
-	go func() {
+	s.hub.wg.Go(func() {
 		defer close(readDone)
 		for {
 			msgType, payload, err := publicConn.ReadMessage()
@@ -204,9 +210,9 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 				return
 			}
 		}
-	}()
+	})
 
-	go func() {
+	s.hub.wg.Go(func() {
 		defer close(writeDone)
 		for {
 			msg, err := readH3StreamMessage(stream, 0, sess.usesH3StreamV2())
@@ -222,6 +228,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 				if err != nil {
 					continue
 				}
+				_ = publicConn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 				if err := publicConn.WriteMessage(msg.WSData.MessageType, b); err != nil {
 					return
 				}
@@ -237,7 +244,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 				return
 			}
 		}
-	}()
+	})
 
 	select {
 	case <-r.Context().Done():

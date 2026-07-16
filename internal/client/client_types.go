@@ -128,6 +128,7 @@ const (
 	streamingReqBodyBufSize      = 64
 	wsWriteControlQueueSize      = 64
 	wsWriteDataQueueSize         = 128
+	visitorRetention             = 10 * time.Minute
 )
 
 // New creates a Client with the given configuration and logger.

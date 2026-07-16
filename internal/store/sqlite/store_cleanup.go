@@ -8,12 +8,12 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
-func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
+func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 
-	var hosts []string
+	var purged []domain.Domain
 	err := s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -64,11 +64,11 @@ LIMIT ?`,
 		if err = rows.Err(); err != nil {
 			return err
 		}
-		hosts = make([]string, 0, len(candidates))
+		purged = make([]domain.Domain, 0, len(candidates))
 		ids := make([]any, 0, len(candidates))
 		for _, c := range candidates {
 			ids = append(ids, c.id)
-			hosts = append(hosts, c.hostname)
+			purged = append(purged, domain.Domain{ID: c.id, Hostname: c.hostname})
 		}
 
 		if len(ids) > 0 {
@@ -98,5 +98,5 @@ WHERE d.id IN (` + placeholders + `)
 	if err != nil {
 		return nil, err
 	}
-	return hosts, nil
+	return purged, nil
 }

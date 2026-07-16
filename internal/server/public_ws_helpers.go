@@ -89,6 +89,7 @@ func (s *Server) startPublicWSWriteRelay(
 					if err != nil {
 						continue
 					}
+					_ = publicConn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 					if err := publicConn.WriteMessage(msg.WSData.MessageType, b); err != nil {
 						return
 					}
@@ -110,7 +111,7 @@ func (s *Server) startPublicWSWriteRelay(
 
 func publicWSOpenFailure(ack *tunnelproto.WSOpenAck) (status int, message string) {
 	status = ack.Status
-	if status == 0 {
+	if status < http.StatusBadRequest || status > 599 {
 		status = http.StatusBadGateway
 	}
 	if strings.TrimSpace(ack.Error) == "" {

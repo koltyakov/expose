@@ -270,6 +270,47 @@ func (i *liveRouteIndex) clearSession(tunnelID string, sess *session) (liveRoute
 	return snap, true
 }
 
+func (i *liveRouteIndex) deleteHost(host string) bool {
+	return i.deleteHostIfDomain(host, "")
+}
+
+func (i *liveRouteIndex) deleteHostIfDomain(host, domainID string) bool {
+	if i == nil {
+		return false
+	}
+	host = normalizeHost(host)
+	if host == "" {
+		return false
+	}
+
+	hostShard := &i.hostShards[liveRouteShardIndex(host)]
+	hostShard.mu.Lock()
+	defer hostShard.mu.Unlock()
+	entry := hostShard.byHost[host]
+	if entry == nil {
+		return false
+	}
+
+	entry.mu.RLock()
+	if domainID != "" && entry.domainID != domainID {
+		entry.mu.RUnlock()
+		return false
+	}
+	tunnelID := entry.tunnelID
+	keyID := entry.keyID
+	entry.mu.RUnlock()
+	tunnelShard := &i.tunnelShards[liveRouteShardIndex(tunnelID)]
+	tunnelShard.mu.Lock()
+	defer tunnelShard.mu.Unlock()
+
+	delete(hostShard.byHost, host)
+	i.untrackHostKeyLocked(hostShard, keyID, host)
+	if tunnelShard.byTunnel[tunnelID] == entry {
+		delete(tunnelShard.byTunnel, tunnelID)
+	}
+	return true
+}
+
 func (i *liveRouteIndex) setAccess(tunnelID, user, mode, hash string) {
 	if i == nil {
 		return

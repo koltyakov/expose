@@ -88,7 +88,7 @@ func (s *stubServerStore) TouchDomain(context.Context, string) error {
 	return nil
 }
 
-func (s *stubServerStore) PurgeInactiveTemporaryDomains(context.Context, time.Time, int) ([]string, error) {
+func (s *stubServerStore) PurgeInactiveTemporaryDomains(context.Context, time.Time, int) ([]domain.Domain, error) {
 	return nil, nil
 }
 
@@ -200,18 +200,15 @@ func TestExpireStaleSessionsUsesCallerContext(t *testing.T) {
 	}
 }
 
-func TestPendingRequestResetClearsBodyChannel(t *testing.T) {
+func TestPendingRequestsDoNotReuseBodyChannels(t *testing.T) {
 	t.Parallel()
 
 	req := acquirePendingRequest()
 	bodyCh := req.ensureBodyCh()
 	bodyCh <- []byte("chunk")
 
-	releasePendingRequest(req)
-
 	req = acquirePendingRequest()
 	if req.bodyCh != nil {
-		t.Fatal("expected pooled pending request to clear body channel on reset")
+		t.Fatal("expected a fresh pending request without a body channel")
 	}
-	releasePendingRequest(req)
 }

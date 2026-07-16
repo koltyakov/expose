@@ -124,7 +124,8 @@ type Display struct {
 	latency time.Duration
 
 	// unique visitor tracking (IP + User-Agent fingerprint → last seen)
-	visitors map[string]time.Time
+	visitors      map[string]time.Time
+	totalVisitors int
 
 	// nowFunc returns the current time; override in tests.
 	nowFunc func() time.Time
@@ -145,8 +146,9 @@ type Display struct {
 	wsDebounceTimer *time.Timer
 	wsDebounceGen   uint64
 
-	localHealth map[string]localHealthEntry
-	traffic     *traffic.Meter
+	localHealth         map[string]localHealthEntry
+	localHealthChecking map[string]struct{}
+	traffic             *traffic.Meter
 
 	refreshInterval time.Duration
 	refreshStop     chan struct{}
@@ -157,15 +159,16 @@ type Display struct {
 // When color is true, ANSI escape codes are used for styling.
 func NewDisplay(color bool) *Display {
 	return &Display{
-		out:             os.Stdout,
-		color:           color,
-		wsConns:         make(map[string]wsEntry),
-		visitors:        make(map[string]time.Time),
-		requests:        make([]requestEntry, 0, maxDisplayRequests),
-		latencySamples:  make([]time.Duration, 0, displayLatencySampleMax),
-		nowFunc:         time.Now,
-		localHealth:     make(map[string]localHealthEntry),
-		traffic:         traffic.NewMeter(traffic.DefaultWindow),
-		refreshInterval: displayAutoRefreshInterval,
+		out:                 os.Stdout,
+		color:               color,
+		wsConns:             make(map[string]wsEntry),
+		visitors:            make(map[string]time.Time),
+		requests:            make([]requestEntry, 0, maxDisplayRequests),
+		latencySamples:      make([]time.Duration, 0, displayLatencySampleMax),
+		nowFunc:             time.Now,
+		localHealth:         make(map[string]localHealthEntry),
+		localHealthChecking: make(map[string]struct{}),
+		traffic:             traffic.NewMeter(traffic.DefaultWindow),
+		refreshInterval:     displayAutoRefreshInterval,
 	}
 }

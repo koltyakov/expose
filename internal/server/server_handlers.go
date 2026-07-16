@@ -110,6 +110,12 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := normalizeHost(r.Host)
+	if !s.allowPublicRouteLookup(host, r) {
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 	snap, err := s.resolvePublicRoute(r.Context(), host)
 	if err != nil {
 		status, msg := publicRouteLookupErrorStatus(err)
@@ -156,6 +162,11 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
 		return
 	}
+	if !sess.tryAcquireWebSocket(maxPendingPerSessionFor(s.cfg)) {
+		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		return
+	}
+	defer sess.releaseWebSocket()
 
 	streamID := s.nextWSStreamID()
 	streamCh := make(chan tunnelproto.Message, 64)
@@ -223,6 +234,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 		_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: websocket.CloseGoingAway, Text: "public upgrade failed"}})
 		return
 	}
+	publicConn.SetReadLimit(webSocketReadLimitFor(s.cfg))
 	defer func() {
 		_ = sess.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindWSClose, WSClose: &tunnelproto.WSClose{ID: streamID, Code: websocket.CloseNormalClosure}})
 	}()

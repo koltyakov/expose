@@ -29,6 +29,8 @@ const (
 	h3WorkerOpenCountCeiling = 64
 )
 
+var errH3RequestBodyStillActive = errors.New("http3 request body still active after forwarding completed")
+
 func newSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL, reg domain.RegisterResponse) (sessionRuntime, error) {
 	conn, err := c.connectSessionTransport(parentCtx, reg)
 	if err != nil {
@@ -395,12 +397,14 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	defer cancel()
 
 	var bodyCh <-chan []byte
+	var bodyDone chan struct{}
 	if reqCopy.Streamed {
 		ch := make(chan []byte, streamingReqBodyBufSize)
 		bodyCh = ch
+		bodyDone = make(chan struct{})
 		go pumpStreamedRequestBodyMessages(reqCtx, reqCopy.ID, cancel, func() (tunnelproto.Message, error) {
 			return readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
-		}, ch)
+		}, ch, bodyDone)
 	}
 
 	rt.client.forwardAndSend(reqCtx, rt.localBase, &reqCopy, bodyCh, func(msg tunnelproto.Message) error {
@@ -408,6 +412,14 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	}, func(id string, payload []byte) error {
 		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameRespBody, id, 0, payload, rt.useStreamV2)
 	})
+	if bodyDone != nil {
+		cancel()
+		select {
+		case <-bodyDone:
+		default:
+			return errH3RequestBodyStillActive
+		}
+	}
 	return nil
 }
 
@@ -417,8 +429,12 @@ func pumpStreamedRequestBodyMessages(
 	cancel context.CancelFunc,
 	readNext func() (tunnelproto.Message, error),
 	out chan<- []byte,
+	done chan<- struct{},
 ) {
 	defer close(out)
+	if done != nil {
+		defer close(done)
+	}
 	for {
 		msg, err := readNext()
 		if err != nil {
@@ -548,6 +564,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			if err != nil {
 				continue
 			}
+			_ = upstreamConn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout))
 			if err := upstreamConn.WriteMessage(msg.WSData.MessageType, payload); err != nil {
 				return nil
 			}

@@ -251,8 +251,7 @@ func (s *Server) activateSession(
 	if sess.h3AuthToken != "" {
 		s.registerH3SessionToken(sess.h3AuthToken, sess)
 	}
-	wsReadLimit := max(s.cfg.MaxBodyBytes*2, minWSReadLimit)
-	sess.transport.SetReadLimit(wsReadLimit)
+	sess.transport.SetReadLimit(webSocketReadLimitFor(s.cfg))
 	sess.touch(time.Now())
 	s.liveRoutes.attachSession(tunnelID, sess)
 	prev := s.replaceSession(tunnelID, sess)
@@ -660,6 +659,22 @@ func (s *session) tryAcquirePending(limit int64) bool {
 
 func (s *session) releasePending() {
 	s.pendingCount.Add(-1)
+}
+
+func (s *session) tryAcquireWebSocket(limit int64) bool {
+	if limit <= 0 {
+		return true
+	}
+	next := s.webSocketCount.Add(1)
+	if next <= limit {
+		return true
+	}
+	s.webSocketCount.Add(-1)
+	return false
+}
+
+func (s *session) releaseWebSocket() {
+	s.webSocketCount.Add(-1)
 }
 
 func (s *Server) replaceSession(tunnelID string, next *session) *session {

@@ -108,6 +108,53 @@ func TestRouteCacheMissCaching(t *testing.T) {
 	}
 }
 
+func TestRouteCacheCapacityIsBounded(t *testing.T) {
+	t.Parallel()
+
+	c := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+		maxEntries:    2,
+	}
+	c.setMiss("one.example.com")
+	c.setMiss("two.example.com")
+	c.setMiss("three.example.com")
+
+	if got := len(c.entries); got != 2 {
+		t.Fatalf("cache size = %d, want 2", got)
+	}
+	if _, _, cached := c.lookup("three.example.com"); cached {
+		t.Fatal("expected entry beyond capacity not to be cached")
+	}
+}
+
+func TestLiveRouteIndexDeleteHost(t *testing.T) {
+	t.Parallel()
+
+	idx := newLiveRouteIndex()
+	idx.upsert(domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-1", APIKeyID: "k-1", Hostname: "gone.example.com"},
+		Tunnel: domain.Tunnel{ID: "t-1", APIKeyID: "k-1"},
+	})
+	if !idx.deleteHost("gone.example.com") {
+		t.Fatal("expected live route deletion")
+	}
+	if _, ok := idx.lookupHost("gone.example.com"); ok {
+		t.Fatal("expected host lookup to miss after deletion")
+	}
+	if _, ok := idx.lookupTunnel("t-1"); ok {
+		t.Fatal("expected tunnel lookup to miss after deletion")
+	}
+
+	idx.upsert(domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-2", Hostname: "reused.example.com"},
+		Tunnel: domain.Tunnel{ID: "t-2"},
+	})
+	if idx.deleteHostIfDomain("reused.example.com", "old-domain") {
+		t.Fatal("expected domain identity mismatch to preserve the route")
+	}
+}
+
 func TestRouteCacheConcurrent(t *testing.T) {
 	t.Parallel()
 

@@ -24,9 +24,22 @@ func (s *Server) resolvePublicRoute(ctx context.Context, host string) (liveRoute
 	}
 	snap, err := s.liveRoutes.upsertFromStore(ctx, s.store, host)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.routes.setMiss(host)
+		}
 		return liveRouteSnapshot{}, err
 	}
 	return snap, nil
+}
+
+func (s *Server) allowPublicRouteLookup(host string, r *http.Request) bool {
+	if _, ok := s.liveRoutes.lookupHost(host); ok {
+		return true
+	}
+	if _, _, cached := s.routes.lookup(host); cached {
+		return true
+	}
+	return s.lookupLimiter == nil || s.lookupLimiter.allow(clientIPFromRemoteAddr(r.RemoteAddr))
 }
 
 func (s *Server) resolvePublicSession(snap liveRouteSnapshot) (*session, int, string, bool) {
@@ -86,7 +99,6 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 
 	pending := acquirePendingRequest()
-	defer releasePendingRequest(pending)
 	sess.pendingStore(reqID, pending)
 
 	if _, err := s.sendRequestBody(sess, reqID, r, requestHeaders); err != nil {
@@ -132,7 +144,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 			w.Header().Add(k, v)
 		}
 	}
-	w.WriteHeader(resp.Status)
+	w.WriteHeader(normalizeUpstreamStatus(resp.Status))
 	if resp.Streamed {
 		if !s.writeStreamedResponseBody(w, r, pending, s.cfg.RequestTimeout) {
 			s.abortPendingRequest(sess, reqID)
@@ -150,6 +162,13 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		}
 	}
 	s.queueDomainTouch(route.Domain.ID)
+}
+
+func normalizeUpstreamStatus(status int) int {
+	if status < http.StatusOK || status > 599 {
+		return http.StatusBadGateway
+	}
+	return status
 }
 
 func (s *Server) abortPendingRequest(sess *session, reqID string) {

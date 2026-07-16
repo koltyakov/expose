@@ -17,6 +17,7 @@ type routeCache struct {
 	entries       map[string]routeCacheEntry
 	hostsByTunnel map[string]map[string]struct{}
 	ttl           time.Duration
+	maxEntries    int
 	// cachedNow is updated periodically to avoid calling time.Now() on every
 	// cache lookup in the hot path.
 	cachedNow atomic.Int64
@@ -29,6 +30,7 @@ type routeCacheEntry struct {
 }
 
 const defaultRouteCacheTTL = time.Minute
+const defaultRouteCacheMaxEntries = 10_000
 
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
 	route, found, cached := c.lookup(host)
@@ -88,6 +90,10 @@ func (c *routeCache) startClock(done <-chan struct{}) {
 
 func (c *routeCache) set(host string, route domain.TunnelRoute) {
 	c.mu.Lock()
+	if _, exists := c.entries[host]; !exists && len(c.entries) >= c.entryLimit() {
+		c.mu.Unlock()
+		return
+	}
 	if prev, exists := c.entries[host]; exists {
 		c.untrackHostLocked(prev.route.Tunnel.ID, host)
 	}
@@ -105,6 +111,10 @@ func (c *routeCache) setMiss(host string) {
 		return
 	}
 	c.mu.Lock()
+	if _, exists := c.entries[host]; !exists && len(c.entries) >= c.entryLimit() {
+		c.mu.Unlock()
+		return
+	}
 	if prev, exists := c.entries[host]; exists {
 		c.untrackHostLocked(prev.route.Tunnel.ID, host)
 	}
@@ -185,4 +195,11 @@ func (c *routeCache) cacheTTL() time.Duration {
 		return c.ttl
 	}
 	return defaultRouteCacheTTL
+}
+
+func (c *routeCache) entryLimit() int {
+	if c.maxEntries > 0 {
+		return c.maxEntries
+	}
+	return defaultRouteCacheMaxEntries
 }

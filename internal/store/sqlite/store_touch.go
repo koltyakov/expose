@@ -7,8 +7,14 @@ import (
 )
 
 func (s *Store) TouchDomain(ctx context.Context, domainID string) error {
+	s.writerGate.RLock()
+	if s.closing {
+		s.writerGate.RUnlock()
+		return ErrStoreClosed
+	}
 	now := time.Now().UTC()
 	if !s.reserveDomainTouch(domainID, now) {
+		s.writerGate.RUnlock()
 		return nil
 	}
 
@@ -19,7 +25,9 @@ func (s *Store) TouchDomain(ctx context.Context, domainID string) error {
 	}
 	select {
 	case s.touchRequests <- req:
+		s.writerGate.RUnlock()
 	case <-ctx.Done():
+		s.writerGate.RUnlock()
 		releaseStoreWriteCompletion(req.done)
 		return ctx.Err()
 	}

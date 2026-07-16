@@ -2028,7 +2028,6 @@ func TestAbortPendingRequestSendsCancel(t *testing.T) {
 
 	respPending := sess.pending["req_1"]
 	s := &Server{}
-	defer releasePendingRequest(respPending)
 	s.abortPendingRequest(sess, "req_1")
 
 	select {
@@ -2059,7 +2058,6 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
 	pending := acquirePendingRequest()
-	defer releasePendingRequest(pending)
 	respCh := pending.ensureBodyCh()
 
 	chunk1 := []byte("hello ")
@@ -2085,7 +2083,6 @@ func TestWriteStreamedResponseBodyAborted(t *testing.T) {
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
 	pending := acquirePendingRequest()
-	defer releasePendingRequest(pending)
 	respCh := pending.ensureBodyCh()
 
 	respCh <- []byte("partial")
@@ -2107,7 +2104,6 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 100 * time.Millisecond}}
 	pending := acquirePendingRequest()
-	defer releasePendingRequest(pending)
 	respCh := pending.ensureBodyCh()
 
 	respCh <- []byte("partial")
@@ -2161,7 +2157,6 @@ func TestSessionPendingLoad(t *testing.T) {
 	sess := &session{pending: make(map[string]*pendingRequest)}
 
 	req := acquirePendingRequest()
-	defer releasePendingRequest(req)
 	sess.pendingStore("req_1", req)
 
 	got, ok := sess.pendingLoad("req_1")

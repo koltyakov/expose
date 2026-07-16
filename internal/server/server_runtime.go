@@ -34,7 +34,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Info("reconciled stale connected tunnels", "count", resetCount)
 	}
 
-	disconnectCtx, disconnectCancel := context.WithCancel(ctx)
+	disconnectCtx, disconnectCancel := context.WithCancel(context.Background())
 	defer func() {
 		disconnectCancel()
 		s.disconnectWg.Wait()
@@ -74,6 +74,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}, s.log)(handler)
 		s.log.Info("WAF enabled")
 	}
+	handler = requestReadDeadlineMiddleware(handler, s.cfg.RequestTimeout)
 
 	var manager *autocert.Manager
 	useDynamicACME := s.cfg.TLSMode != tlsModeWildcard
@@ -200,6 +201,19 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) http.Handler {
+	if timeout <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		controller := http.NewResponseController(w)
+		if err := controller.SetReadDeadline(time.Now().Add(timeout)); err == nil {
+			defer func() { _ = controller.SetReadDeadline(time.Time{}) }()
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func shouldInspectWAFBody(r *http.Request) bool {
 	if r == nil || r.URL == nil {
 		return false
@@ -263,7 +277,10 @@ func (s *Server) drainServers(httpsServer *http.Server, challengeServer *http.Se
 				if errors.Is(err, http.ErrServerClosed) {
 					return nil
 				}
-				return err
+				if err != nil {
+					return errors.Join(err, h3Server.Close())
+				}
+				return nil
 			},
 		})
 	}

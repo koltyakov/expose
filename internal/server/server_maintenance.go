@@ -84,7 +84,9 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.logDroppedQueueEvents()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
+			s.lookupLimiter.cleanup()
 			s.accessLimiter.cleanup()
+			s.routes.cleanup()
 			if s.publicLimiter != nil {
 				s.publicLimiter.cleanup()
 			}
@@ -130,15 +132,27 @@ func (s *Server) expireStaleSessions(ctx context.Context) {
 }
 
 func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
-	hosts, err := s.store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-s.cfg.TempRetention), 100)
+	purgedDomains, err := s.store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-s.cfg.TempRetention), 100)
 	if err != nil {
 		s.log.Error("temporary domain cleanup failed", "err", err)
-	} else if len(hosts) > 0 {
+	} else if len(purgedDomains) > 0 {
+		hosts := make([]string, 0, len(purgedDomains))
+		for _, purged := range purgedDomains {
+			snap, cached := s.liveRoutes.lookupHost(purged.Hostname)
+			if cached && snap.route.Domain.ID != purged.ID {
+				continue
+			}
+			if cached && !s.liveRoutes.deleteHostIfDomain(purged.Hostname, purged.ID) {
+				continue
+			}
+			s.routes.deleteHost(purged.Hostname)
+			hosts = append(hosts, purged.Hostname)
+		}
 		removedFiles, failedFiles, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
 		if err != nil {
 			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
 		} else {
-			s.log.Info("stale temporary domains cleaned", "domains", len(hosts), "cert_files", removedFiles, "cert_failures", failedFiles)
+			s.log.Info("stale temporary domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
 		}
 	}
 

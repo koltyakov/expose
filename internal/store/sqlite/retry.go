@@ -81,9 +81,17 @@ func (s *Store) withSerializedWrite(ctx context.Context, op func() error) error 
 		op:   op,
 		done: acquireStoreWriteCompletion(),
 	}
+	s.writerGate.RLock()
+	if s.closing {
+		s.writerGate.RUnlock()
+		releaseStoreWriteCompletion(req.done)
+		return ErrStoreClosed
+	}
 	select {
 	case s.writeRequests <- req:
+		s.writerGate.RUnlock()
 	case <-ctx.Done():
+		s.writerGate.RUnlock()
 		releaseStoreWriteCompletion(req.done)
 		return ctx.Err()
 	}
@@ -170,19 +178,6 @@ func (s *Store) runWriterLoop() {
 			return
 		}
 	}
-}
-
-func (s *Store) stopWriterLoop() {
-	if s == nil || s.writerStop == nil || s.writerDone == nil {
-		return
-	}
-	select {
-	case <-s.writerDone:
-		return
-	default:
-	}
-	close(s.writerStop)
-	<-s.writerDone
 }
 
 // flushTouchBatchTimeout bounds how long a single domain-touch flush may take.

@@ -351,6 +351,9 @@ func (d *Display) trackVisitor(headers map[string][]string) {
 // fingerprint. Caller must hold d.mu.
 func (d *Display) touchVisitor(fp string) {
 	if fp != "" {
+		if _, exists := d.visitors[fp]; !exists {
+			d.totalVisitors++
+		}
 		d.visitors[fp] = d.now()
 	}
 }
@@ -369,10 +372,18 @@ func (d *Display) now() time.Time {
 func (d *Display) activeClientCount() int {
 	now := d.now()
 	cutoff := now.Add(-activeClientWindow)
+	retentionCutoff := now.Add(-visitorRetention)
+	if d.totalVisitors < len(d.visitors) {
+		d.totalVisitors = len(d.visitors)
+	}
 	active := make(map[string]struct{}, len(d.visitors)+len(d.wsConns))
 
 	// Count visitors seen within the window.
 	for fp, lastSeen := range d.visitors {
+		if lastSeen.Before(retentionCutoff) {
+			delete(d.visitors, fp)
+			continue
+		}
 		if lastSeen.After(cutoff) {
 			active[fp] = struct{}{}
 		}

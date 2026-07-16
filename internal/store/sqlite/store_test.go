@@ -7,11 +7,60 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
 )
+
+func TestStoreCloseIsIdempotentAndRejectsWrites(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if _, err := store.CreateAPIKey(context.Background(), "closed", "closed-hash"); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("write after Close() error = %v, want %v", err, ErrStoreClosed)
+	}
+	if err := store.TouchDomain(context.Background(), "d-closed"); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("touch after Close() error = %v, want %v", err, ErrStoreClosed)
+	}
+}
+
+func TestStoreCloseConcurrentWithReads(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAPIKey(context.Background(), "reader", "reader-hash"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			<-start
+			for range 100 {
+				if _, err := store.ResolveAPIKeyID(context.Background(), "reader-hash"); err != nil {
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	wg.Wait()
+}
 
 func TestAllocateTemporaryAndDisconnect(t *testing.T) {
 	store, err := openTestStore(t)
@@ -649,12 +698,12 @@ func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hosts, err := store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-24*time.Hour), 10)
+	purged, err := store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-24*time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hosts) != 1 || hosts[0] != d.Hostname {
-		t.Fatalf("expected stale hostname %s to be purged, got %v", d.Hostname, hosts)
+	if len(purged) != 1 || purged[0].ID != d.ID || purged[0].Hostname != d.Hostname {
+		t.Fatalf("expected stale domain %s to be purged, got %v", d.Hostname, purged)
 	}
 
 	if _, err := store.FindRouteByHost(ctx, d.Hostname); !errors.Is(err, sql.ErrNoRows) {
@@ -709,12 +758,12 @@ func TestPurgeInactiveTemporaryDomainsPreservesConnectedAndRecentlyActiveDomains
 		t.Fatal(err)
 	}
 
-	hosts, err := store.PurgeInactiveTemporaryDomains(ctx, cutoff, 10)
+	purged, err := store.PurgeInactiveTemporaryDomains(ctx, cutoff, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hosts) != 0 {
-		t.Fatalf("expected protected domains not to be purged, got %v", hosts)
+	if len(purged) != 0 {
+		t.Fatalf("expected protected domains not to be purged, got %v", purged)
 	}
 	for _, host := range []string{connectedDomain.Hostname, recentDomain.Hostname} {
 		if _, err := store.FindRouteByHost(ctx, host); err != nil {

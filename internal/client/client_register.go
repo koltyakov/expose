@@ -53,6 +53,7 @@ func (c *Client) openLocalWebSocket(ctx context.Context, base *url.URL, req *tun
 		}
 		return nil, status, "", err
 	}
+	upstreamConn.SetReadLimit(clientWSReadLimit)
 	return upstreamConn, http.StatusSwitchingProtocols, upstreamConn.Subprotocol(), nil
 }
 

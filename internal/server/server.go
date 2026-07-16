@@ -58,7 +58,7 @@ type serverStore interface {
 	routeResolver
 	tunnelLimiter
 	ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error)
-	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
+	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error)
 	PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error)
 }
 
@@ -75,6 +75,7 @@ type Server struct {
 	wildcardTLSOn    bool
 	requestSeq       atomic.Uint64
 	regLimiter       *rateLimiter
+	lookupLimiter    *rateLimiter
 	publicLimiter    *rateLimiter
 	accessLimiter    *rateLimiter
 	routes           routeCache
@@ -128,6 +129,7 @@ type session struct {
 	wsMu             sync.RWMutex
 	wsPending        map[string]chan tunnelproto.Message
 	pendingCount     atomic.Int64
+	webSocketCount   atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
 }
@@ -164,6 +166,8 @@ const (
 	disconnectFlushInterval     = 75 * time.Millisecond
 	disconnectTimeout           = 10 * time.Second
 	publicRateLimitCleanupAge   = 5 * time.Minute
+	lookupRateLimit             = 20.0
+	lookupBurstLimit            = 40.0
 	wafAuditQueueSize           = 2048
 	wafAuditLookupTimeout       = 250 * time.Millisecond
 	wsDataDispatchWait          = 250 * time.Millisecond
@@ -206,6 +210,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		hub:           &hub{sessions: map[string]*session{}},
 		version:       version,
 		regLimiter:    newRateLimiter(),
+		lookupLimiter: newConfiguredRateLimiter(lookupRateLimit, lookupBurstLimit, regCleanupAge),
 		publicLimiter: publicLimiter,
 		accessLimiter: newConfiguredRateLimiter(accessAuthFailRate, accessAuthFailBurst, accessAuthCleanupAge),
 		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
@@ -240,6 +245,10 @@ func maxPendingPerSessionFor(cfg config.ServerConfig) int64 {
 		return int64(cfg.MaxPendingPerTunnel)
 	}
 	return defaultMaxPendingPerSession
+}
+
+func webSocketReadLimitFor(cfg config.ServerConfig) int64 {
+	return max(cfg.MaxBodyBytes*2, int64(minWSReadLimit))
 }
 
 func wafCounterRetentionFor(cfg config.ServerConfig) time.Duration {

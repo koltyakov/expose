@@ -29,7 +29,6 @@ func TestPendingRequestLifecycle(t *testing.T) {
 	t.Parallel()
 
 	req := acquirePendingRequest()
-	defer releasePendingRequest(req)
 
 	resp := &tunnelproto.HTTPResponse{ID: "req-1", Status: 200}
 	if !req.deliverHeader(resp) {
@@ -57,12 +56,21 @@ func TestPendingRequestLifecycle(t *testing.T) {
 	if req.deliverHeader(resp) {
 		t.Fatal("deliverHeader() after finish = true, want false")
 	}
+}
 
-	req.reset()
-	select {
-	case <-req.doneCh:
-		t.Fatal("reset() should create a fresh open doneCh")
-	default:
+func TestPendingRequestReturnsDeliveredHeaderAfterFinish(t *testing.T) {
+	t.Parallel()
+
+	req := acquirePendingRequest()
+	resp := &tunnelproto.HTTPResponse{ID: "req-finished", Status: 200}
+	if !req.deliverHeader(resp) {
+		t.Fatal("deliverHeader() = false, want true")
+	}
+	req.finish()
+
+	got, ok := req.waitHeader(context.Background())
+	if !ok || got != resp {
+		t.Fatalf("waitHeader() = %#v, %v; want delivered response", got, ok)
 	}
 }
 
@@ -76,7 +84,6 @@ func TestPendingRequestWaitHeaderHandlesContextAndNil(t *testing.T) {
 	}
 
 	req := acquirePendingRequest()
-	defer releasePendingRequest(req)
 	if got, ok := req.waitHeader(ctx); ok || got != nil {
 		t.Fatalf("canceled waitHeader() = %#v, %v", got, ok)
 	}
@@ -360,7 +367,6 @@ func TestPendingRequestAbortAndBodyChannelReuse(t *testing.T) {
 	t.Parallel()
 
 	req := acquirePendingRequest()
-	defer releasePendingRequest(req)
 
 	bodyCh1 := req.ensureBodyCh()
 	bodyCh2 := req.ensureBodyCh()
@@ -373,5 +379,25 @@ func TestPendingRequestAbortAndBodyChannelReuse(t *testing.T) {
 	case <-req.doneCh:
 	case <-time.After(time.Second):
 		t.Fatal("abort() did not close doneCh")
+	}
+}
+
+func TestSessionHTTPAndWebSocketCapacityAreIndependent(t *testing.T) {
+	t.Parallel()
+
+	sess := &session{}
+	if !sess.tryAcquirePending(1) {
+		t.Fatal("expected HTTP capacity acquisition")
+	}
+	defer sess.releasePending()
+	if !sess.tryAcquireWebSocket(1) {
+		t.Fatal("expected WebSocket capacity acquisition independent of HTTP")
+	}
+	defer sess.releaseWebSocket()
+	if sess.tryAcquirePending(1) {
+		t.Fatal("expected HTTP capacity to remain bounded")
+	}
+	if sess.tryAcquireWebSocket(1) {
+		t.Fatal("expected WebSocket capacity to remain bounded")
 	}
 }

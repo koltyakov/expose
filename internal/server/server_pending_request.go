@@ -14,45 +14,15 @@ type pendingRequest struct {
 	doneCh   chan struct{}
 	aborted  atomic.Bool
 
-	bodyMu sync.Mutex
-}
-
-var pendingRequestPool = sync.Pool{
-	New: func() any {
-		return &pendingRequest{
-			headerCh: make(chan *tunnelproto.HTTPResponse, 1),
-			doneCh:   make(chan struct{}),
-		}
-	},
+	bodyMu   sync.Mutex
+	doneOnce sync.Once
 }
 
 func acquirePendingRequest() *pendingRequest {
-	req := pendingRequestPool.Get().(*pendingRequest)
-	req.reset()
-	return req
-}
-
-func releasePendingRequest(req *pendingRequest) {
-	if req == nil {
-		return
+	return &pendingRequest{
+		headerCh: make(chan *tunnelproto.HTTPResponse, 1),
+		doneCh:   make(chan struct{}),
 	}
-	req.reset()
-	pendingRequestPool.Put(req)
-}
-
-func (p *pendingRequest) reset() {
-	if p == nil {
-		return
-	}
-	drainPendingHeaders(p.headerCh)
-	p.aborted.Store(false)
-	p.bodyMu.Lock()
-	if p.bodyCh != nil {
-		drainPendingBodies(p.bodyCh)
-		p.bodyCh = nil
-	}
-	p.doneCh = make(chan struct{})
-	p.bodyMu.Unlock()
 }
 
 func (p *pendingRequest) waitHeader(ctx context.Context) (*tunnelproto.HTTPResponse, bool) {
@@ -63,7 +33,12 @@ func (p *pendingRequest) waitHeader(ctx context.Context) (*tunnelproto.HTTPRespo
 	case resp := <-p.headerCh:
 		return resp, resp != nil
 	case <-p.doneCh:
-		return nil, false
+		select {
+		case resp := <-p.headerCh:
+			return resp, resp != nil
+		default:
+			return nil, false
+		}
 	case <-ctx.Done():
 		return nil, false
 	}
@@ -109,11 +84,7 @@ func (p *pendingRequest) finish() {
 	if p == nil {
 		return
 	}
-	select {
-	case <-p.doneCh:
-	default:
-		close(p.doneCh)
-	}
+	p.doneOnce.Do(func() { close(p.doneCh) })
 }
 
 func (p *pendingRequest) abort() {
@@ -128,24 +99,4 @@ func (p *pendingRequest) abort() {
 // finish, meaning any streamed body already written is truncated.
 func (p *pendingRequest) wasAborted() bool {
 	return p != nil && p.aborted.Load()
-}
-
-func drainPendingHeaders(ch chan *tunnelproto.HTTPResponse) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
-		}
-	}
-}
-
-func drainPendingBodies(ch chan []byte) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
-		}
-	}
 }

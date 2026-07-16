@@ -42,6 +42,7 @@ const (
 	upLocalHealthCacheTTL = 2 * time.Second
 	upLocalHealthTimeout  = 200 * time.Millisecond
 	upLatencySampleMax    = 1024
+	upVisitorRetention    = 10 * time.Minute
 )
 
 type upDashboard struct {
@@ -60,23 +61,25 @@ type upDashboard struct {
 	reqs           []upDashboardRequest
 	latencySamples []time.Duration
 
-	serverVersions  map[string]string
-	tlsModes        map[string]string
-	latencies       map[string]string
-	wafEnabled      map[string]bool
-	wafBlocked      int64
-	visitors        map[string]time.Time
-	wsConns         map[string]upDashboardWS
-	localHealth     map[string]upDashboardLocalHealth
-	trafficMeters   map[string]*traffic.Meter
-	totalHTTP       int
-	wsDisplayMin    int
-	wsDebounceTimer *time.Timer
-	wsDebounceGen   uint64
-	statusText      string
-	statusChangedAt time.Time
-	noticeText      string
-	noticeLevel     string
+	serverVersions      map[string]string
+	tlsModes            map[string]string
+	latencies           map[string]string
+	wafEnabled          map[string]bool
+	wafBlocked          int64
+	visitors            map[string]time.Time
+	totalVisitors       int
+	wsConns             map[string]upDashboardWS
+	localHealth         map[string]upDashboardLocalHealth
+	localHealthChecking map[string]struct{}
+	trafficMeters       map[string]*traffic.Meter
+	totalHTTP           int
+	wsDisplayMin        int
+	wsDebounceTimer     *time.Timer
+	wsDebounceGen       uint64
+	statusText          string
+	statusChangedAt     time.Time
+	noticeText          string
+	noticeLevel         string
 
 	pendingDisconnectAt time.Time
 	sessionDowntime     time.Duration
@@ -132,23 +135,24 @@ type upDashboardRequest struct {
 
 func newUpDashboard(configPath, version string) *upDashboard {
 	return &upDashboard{
-		out:            os.Stdout,
-		color:          isInteractiveOutput(),
-		version:        version,
-		configPath:     configPath,
-		startedAt:      time.Now(),
-		groups:         make(map[string]*upDashboardGroup),
-		serverVersions: make(map[string]string),
-		tlsModes:       make(map[string]string),
-		latencies:      make(map[string]string),
-		wafEnabled:     make(map[string]bool),
-		visitors:       make(map[string]time.Time),
-		wsConns:        make(map[string]upDashboardWS),
-		localHealth:    make(map[string]upDashboardLocalHealth),
-		trafficMeters:  make(map[string]*traffic.Meter),
-		stopCh:         make(chan struct{}),
-		doneCh:         make(chan struct{}),
-		nowFunc:        time.Now,
+		out:                 os.Stdout,
+		color:               isInteractiveOutput(),
+		version:             version,
+		configPath:          configPath,
+		startedAt:           time.Now(),
+		groups:              make(map[string]*upDashboardGroup),
+		serverVersions:      make(map[string]string),
+		tlsModes:            make(map[string]string),
+		latencies:           make(map[string]string),
+		wafEnabled:          make(map[string]bool),
+		visitors:            make(map[string]time.Time),
+		wsConns:             make(map[string]upDashboardWS),
+		localHealth:         make(map[string]upDashboardLocalHealth),
+		localHealthChecking: make(map[string]struct{}),
+		trafficMeters:       make(map[string]*traffic.Meter),
+		stopCh:              make(chan struct{}),
+		doneCh:              make(chan struct{}),
+		nowFunc:             time.Now,
 	}
 }
 
@@ -592,7 +596,7 @@ func (d *upDashboard) redrawLocked() {
 
 	wsCount := max(d.wsDisplayMin, len(d.wsConns))
 	activeCount := d.activeClientCountLocked()
-	clientCount := len(d.visitors)
+	clientCount := d.totalVisitors
 	d.writeField(&b, "Traffic", d.trafficSummaryText(trafficSnapshot))
 	d.writeField(&b, "Clients", fmt.Sprintf("%d active, %d total", activeCount, clientCount))
 	if wsCount > 0 {
@@ -886,20 +890,28 @@ func (d *upDashboard) localRouteHealthyLocked(route upLocalRoute) bool {
 	if d.localHealth == nil {
 		d.localHealth = make(map[string]upDashboardLocalHealth)
 	}
+	if d.localHealthChecking == nil {
+		d.localHealthChecking = make(map[string]struct{})
+	}
 	now := d.now()
-	if e, ok := d.localHealth[cacheKey]; ok && now.Sub(e.CheckedAt) < upLocalHealthCacheTTL {
+	e, cached := d.localHealth[cacheKey]
+	if cached && now.Sub(e.CheckedAt) < upLocalHealthCacheTTL {
 		return e.OK
 	}
-	conn, err := net.DialTimeout("tcp", dialAddr, upLocalHealthTimeout)
-	healthy := err == nil
-	if err == nil {
-		_ = conn.Close()
+	if _, checking := d.localHealthChecking[cacheKey]; !checking {
+		d.localHealthChecking[cacheKey] = struct{}{}
+		go func() {
+			conn, err := net.DialTimeout("tcp", dialAddr, upLocalHealthTimeout)
+			if err == nil {
+				_ = conn.Close()
+			}
+			d.mu.Lock()
+			d.localHealth[cacheKey] = upDashboardLocalHealth{OK: err == nil, CheckedAt: d.now()}
+			delete(d.localHealthChecking, cacheKey)
+			d.mu.Unlock()
+		}()
 	}
-	d.localHealth[cacheKey] = upDashboardLocalHealth{
-		OK:        healthy,
-		CheckedAt: now,
-	}
-	return healthy
+	return cached && e.OK
 }
 
 func upLocalRouteDialAddr(route upLocalRoute) (cacheKey string, dialAddr string, ok bool) {
@@ -935,14 +947,25 @@ func (d *upDashboard) touchVisitorLocked(fp string) {
 	if fp == "" {
 		return
 	}
+	if _, exists := d.visitors[fp]; !exists {
+		d.totalVisitors++
+	}
 	d.visitors[fp] = d.now()
 }
 
 func (d *upDashboard) activeClientCountLocked() int {
 	now := d.now()
 	cutoff := now.Add(-upActiveClientWindow)
+	retentionCutoff := now.Add(-upVisitorRetention)
+	if d.totalVisitors < len(d.visitors) {
+		d.totalVisitors = len(d.visitors)
+	}
 	active := make(map[string]struct{}, len(d.visitors)+len(d.wsConns))
 	for fp, lastSeen := range d.visitors {
+		if lastSeen.Before(retentionCutoff) {
+			delete(d.visitors, fp)
+			continue
+		}
 		if lastSeen.After(cutoff) {
 			active[fp] = struct{}{}
 		}

@@ -2,10 +2,31 @@ package server
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestPreAuthLimiterRejectsBeforeStoreAccess(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{authLimiter: newConfiguredRateLimiter(0, 1, time.Minute)}
+	first := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	if !srv.allowPreAuthRequest(first, req) {
+		t.Fatal("first request should be allowed")
+	}
+	second := httptest.NewRecorder()
+	if srv.allowPreAuthRequest(second, req) {
+		t.Fatal("second request should be throttled")
+	}
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+}
 
 func TestRateLimiterAllow(t *testing.T) {
 	t.Parallel()

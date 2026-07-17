@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -37,10 +38,6 @@ func runServer(ctx context.Context, args []string) int {
 		return 2
 	}
 	logger := ilog.New(cfg.LogLevel)
-	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "server"); err != nil {
-		fmt.Fprintln(os.Stderr, "server config error: pprof:", err)
-		return 2
-	}
 
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
 	if isAutoUpdateEnabled() {
@@ -89,6 +86,12 @@ func runServer(ctx context.Context, args []string) int {
 	}
 
 	s := server.New(cfg, store, logger, Version)
+	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "server", map[string]http.HandlerFunc{
+		"/debug/metrics": s.MetricsHandler(),
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "server config error: pprof:", err)
+		return 2
+	}
 	if err := s.Run(serverCtx); err != nil {
 		if !needsRestart.Load() {
 			fmt.Fprintln(os.Stderr, "server error:", err)

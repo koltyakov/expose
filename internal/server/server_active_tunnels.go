@@ -120,3 +120,13 @@ func (t *activeTunnelTracker) markDisconnected(tunnelID string) {
 		delete(t.keyCounts, keyID)
 	}
 }
+
+func (t *activeTunnelTracker) isConnected(tunnelID string) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.tunnelToKey[strings.TrimSpace(tunnelID)]
+	return ok
+}

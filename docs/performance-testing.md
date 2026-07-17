@@ -8,7 +8,7 @@ Recent runtime changes shifted the hot path to a unified binary frame codec, a s
 - WebSocket versus HTTP/3 compatibility framing costs
 - store mutation latency under connect/disconnect churn
 
-For live diagnosis, you can also enable `pprof` on either process with `EXPOSE_PPROF_LISTEN=127.0.0.1:6060` and inspect `/debug/pprof/` while a load or soak run is active.
+For live diagnosis, you can enable `pprof` on either process with `EXPOSE_PPROF_LISTEN=127.0.0.1:6060` and inspect `/debug/pprof/` while a load or soak run is active. The server also exposes Prometheus text metrics at `/debug/metrics` on that same loopback-protected listener.
 
 ## Run Everything
 

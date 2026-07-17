@@ -91,9 +91,10 @@ WHERE hostname = ? AND api_key_id = ? AND type = ?`,
 			return domain.Domain{}, ErrHostnameInUse
 		}
 		d.ID = existingID
-		if _, err := tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE domains SET status = ?, last_seen_at = ? WHERE id = ?`, domain.DomainStatusActive, d.CreatedAt, existingID); err != nil {
 			return domain.Domain{}, err
 		}
+		d.LastSeenAt = &d.CreatedAt
 		return d, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -102,12 +103,13 @@ WHERE hostname = ? AND api_key_id = ? AND type = ?`,
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
+VALUES(?, ?, ?, ?, ?, ?, ?)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt, d.CreatedAt); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return domain.Domain{}, ErrHostnameInUse
 		}
 		return domain.Domain{}, err
 	}
+	d.LastSeenAt = &d.CreatedAt
 	return d, nil
 }
 
@@ -132,9 +134,10 @@ WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingT
 			return domain.Domain{}, ErrHostnameInUse
 		}
 		d.ID = existingID
-		if _, err := tx.ExecContext(ctx, `UPDATE domains SET status = ? WHERE id = ?`, domain.DomainStatusActive, existingID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE domains SET status = ?, last_seen_at = ? WHERE id = ?`, domain.DomainStatusActive, d.CreatedAt, existingID); err != nil {
 			return domain.Domain{}, err
 		}
+		d.LastSeenAt = &d.CreatedAt
 		return d, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -143,12 +146,13 @@ WHERE hostname = ?`, d.Hostname).Scan(&existingID, &existingAPIKeyID, &existingT
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
-VALUES(?, ?, ?, ?, ?, ?, NULL)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt); err != nil {
+VALUES(?, ?, ?, ?, ?, ?, ?)`, d.ID, d.APIKeyID, d.Type, d.Hostname, d.Status, d.CreatedAt, d.CreatedAt); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return domain.Domain{}, ErrHostnameInUse
 		}
 		return domain.Domain{}, err
 	}
+	d.LastSeenAt = &d.CreatedAt
 	return d, nil
 }
 

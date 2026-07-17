@@ -203,3 +203,9 @@ func (c *routeCache) entryLimit() int {
 	}
 	return defaultRouteCacheMaxEntries
 }
+
+func (c *routeCache) size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.entries)
+}

@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
@@ -84,6 +86,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.logDroppedQueueEvents()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
+			s.authLimiter.cleanup()
 			s.lookupLimiter.cleanup()
 			s.accessLimiter.cleanup()
 			s.routes.cleanup()
@@ -110,19 +113,26 @@ func (s *Server) expireStaleSessions(ctx context.Context) {
 
 		s.log.Warn("client heartbeat timeout", "tunnel_id", sess.tunnelID, "last_seen", lastSeen.UTC().Format(time.RFC3339))
 		closeCtx, closeCancel := context.WithTimeout(contextOrBackground(ctx), 10*time.Second)
+		s.routeLifecycleMu.Lock()
+		if !s.isSessionCurrent(sess) {
+			s.routeLifecycleMu.Unlock()
+			closeCancel()
+			continue
+		}
 		hostname, closed, err := s.store.CloseTemporaryTunnel(closeCtx, sess.tunnelID)
-		closeCancel()
 		if err != nil {
 			s.log.Error("failed to close stale temporary tunnel", "tunnel_id", sess.tunnelID, "err", err)
 		}
 		if closed {
-			removed, err := removeTunnelCertCache(s.cfg.CertCacheDir, hostname)
+			removed, err := s.removeInactiveTunnelCertCacheLocked(closeCtx, hostname, "", false)
 			if err != nil {
 				s.log.Error("failed to remove certificate cache", "hostname", hostname, "err", err)
 			} else if removed > 0 {
 				s.log.Info("temporary tunnel certificate cache removed", "hostname", hostname, "files", removed)
 			}
 		}
+		s.routeLifecycleMu.Unlock()
+		closeCancel()
 		if sess.transport != nil {
 			_ = sess.transport.Close()
 		} else if sess.conn != nil {
@@ -136,24 +146,17 @@ func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
 	if err != nil {
 		s.log.Error("temporary domain cleanup failed", "err", err)
 	} else if len(purgedDomains) > 0 {
-		hosts := make([]string, 0, len(purgedDomains))
+		removedFiles := 0
+		failedFiles := 0
 		for _, purged := range purgedDomains {
-			snap, cached := s.liveRoutes.lookupHost(purged.Hostname)
-			if cached && snap.route.Domain.ID != purged.ID {
-				continue
+			removed, removeErr := s.removeInactiveTunnelCertCache(ctx, purged.Hostname, purged.ID, true)
+			removedFiles += removed
+			if removeErr != nil {
+				failedFiles++
+				s.log.Error("failed to remove certificate cache during cleanup", "hostname", purged.Hostname, "err", removeErr)
 			}
-			if cached && !s.liveRoutes.deleteHostIfDomain(purged.Hostname, purged.ID) {
-				continue
-			}
-			s.routes.deleteHost(purged.Hostname)
-			hosts = append(hosts, purged.Hostname)
 		}
-		removedFiles, failedFiles, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
-		if err != nil {
-			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
-		} else {
-			s.log.Info("stale temporary domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
-		}
+		s.log.Info("stale temporary domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
 	}
 
 	now := time.Now().UTC()
@@ -163,6 +166,28 @@ func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
 	} else if purged > 0 {
 		s.log.Info("stale connect tokens cleaned", "tokens", purged)
 	}
+}
+
+func (s *Server) removeInactiveTunnelCertCache(ctx context.Context, hostname, domainID string, requireDeleted bool) (int, error) {
+	s.routeLifecycleMu.Lock()
+	defer s.routeLifecycleMu.Unlock()
+	return s.removeInactiveTunnelCertCacheLocked(ctx, hostname, domainID, requireDeleted)
+}
+
+func (s *Server) removeInactiveTunnelCertCacheLocked(ctx context.Context, hostname, domainID string, requireDeleted bool) (int, error) {
+	current, err := s.store.FindRouteByHost(ctx, hostname)
+	switch {
+	case err == nil:
+		if requireDeleted || current.Domain.Status == domain.DomainStatusActive || (domainID != "" && current.Domain.ID != domainID) {
+			return 0, nil
+		}
+		domainID = current.Domain.ID
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, err
+	}
+
+	s.removePublishedRoute(hostname, domainID)
+	return removeTunnelCertCache(s.cfg.CertCacheDir, hostname)
 }
 
 func removeTunnelCertCache(cacheDir, hostname string) (int, error) {

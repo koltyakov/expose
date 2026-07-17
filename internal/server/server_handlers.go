@@ -17,6 +17,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.allowPreAuthRequest(w, r) {
+		return
+	}
 	keyID, ok := s.authenticate(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -32,6 +35,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.routeLifecycleMu.Lock()
+	lifecycleLocked := true
+	defer func() {
+		if lifecycleLocked {
+			s.routeLifecycleMu.Unlock()
+		}
+	}()
 
 	domainRec, tunnelRec, resumed, err := s.tryResumeRegisterRoute(
 		r.Context(),
@@ -78,8 +88,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tunnelRec.AccessUser = prepared.accessUser
 	tunnelRec.AccessMode = prepared.accessMode
 	tunnelRec.AccessPasswordHash = prepared.passwordHash
-	s.liveRoutes.upsert(domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec})
+	registeredRoute := domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec}
+	s.publishRegisteredRoute(registeredRoute)
 	s.liveRoutes.setAccess(tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash)
+	s.routeLifecycleMu.Unlock()
+	lifecycleLocked = false
 
 	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
 	if err != nil {
@@ -101,6 +114,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		WAFEnabled:    s.cfg.WAFEnabled,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) allowPreAuthRequest(w http.ResponseWriter, r *http.Request) bool {
+	if s.authLimiter == nil || s.authLimiter.allow(clientIPFromRemoteAddr(r.RemoteAddr)) {
+		return true
+	}
+	w.Header().Set("Retry-After", "1")
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+	return false
 }
 
 func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {

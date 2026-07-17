@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/waf"
@@ -80,23 +82,9 @@ func (s *Server) Run(ctx context.Context) error {
 	useDynamicACME := s.cfg.TLSMode != tlsModeWildcard
 	if useDynamicACME {
 		manager = &autocert.Manager{
-			Cache:  autocert.DirCache(s.cfg.CertCacheDir),
-			Prompt: autocert.AcceptTOS,
-			HostPolicy: func(ctx context.Context, host string) error {
-				host = normalizeHost(host)
-				base := normalizeHost(s.cfg.BaseDomain)
-				if host == base {
-					return nil
-				}
-				ok, err := s.store.IsHostnameActive(ctx, host)
-				if err != nil {
-					return errors.New("failed to authorize host")
-				}
-				if ok {
-					return nil
-				}
-				return errors.New("host not allowed")
-			},
+			Cache:      autocert.DirCache(s.cfg.CertCacheDir),
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: s.authorizeACMEHost,
 		}
 	}
 
@@ -201,6 +189,24 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+func (s *Server) authorizeACMEHost(ctx context.Context, host string) error {
+	host = normalizeHost(host)
+	if host == normalizeHost(s.cfg.BaseDomain) {
+		return nil
+	}
+	snap, err := s.resolvePublicRoute(ctx, host)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("host not allowed")
+		}
+		return errors.New("failed to authorize host")
+	}
+	if snap.route.Domain.Status == domain.DomainStatusActive {
+		return nil
+	}
+	return errors.New("host not allowed")
+}
+
 func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) http.Handler {
 	if timeout <= 0 {
 		return next
@@ -230,6 +236,8 @@ func shouldInspectWAFBody(r *http.Request) bool {
 //  3. Close - terminate any sessions that didn't exit on their own.
 //  4. Wait  - allow read loops to finish within a timeout.
 func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *http.Server, h3Server *http3.Server) error {
+	started := time.Now()
+	defer func() { s.shutdownNanos.Store(time.Since(started).Nanoseconds()) }()
 	drainTimeout := durationOr(s.cfg.ShutdownDrainTime, 5*time.Second)
 	waitTimeout := durationOr(s.cfg.ShutdownWaitTime, 15*time.Second)
 

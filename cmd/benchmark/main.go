@@ -442,15 +442,48 @@ func renderMarkdown(input markdownInput) string {
 	}
 
 	buf.WriteString("\n")
+	var wsAllocsTotal, quicAllocsTotal, wsKiBTotal, quicKiBTotal float64
+	wsReqMin, quicReqMin := math.Inf(1), math.Inf(1)
+	var wsReqMax, quicReqMax float64
+	wsKiBMin, quicKiBMin := math.Inf(1), math.Inf(1)
+	var wsKiBMax, quicKiBMax float64
+	for _, row := range input.Rows {
+		wsAllocsTotal += row.WS.AllocsPerOpAvg / float64(row.TotalRequests)
+		quicAllocsTotal += row.QUIC.AllocsPerOpAvg / float64(row.TotalRequests)
+		wsReq := requestsPerSecond(row.TotalRequests, row.WS.NsPerOpAvg)
+		quicReq := requestsPerSecond(row.TotalRequests, row.QUIC.NsPerOpAvg)
+		wsReqMin, wsReqMax = min(wsReqMin, wsReq), max(wsReqMax, wsReq)
+		quicReqMin, quicReqMax = min(quicReqMin, quicReq), max(quicReqMax, quicReq)
+		wsKiB := row.WS.BytesPerOpAvg / float64(row.TotalRequests) / 1024
+		quicKiB := row.QUIC.BytesPerOpAvg / float64(row.TotalRequests) / 1024
+		wsKiBTotal += wsKiB
+		quicKiBTotal += quicKiB
+		wsKiBMin, wsKiBMax = min(wsKiBMin, wsKiB), max(wsKiBMax, wsKiB)
+		quicKiBMin, quicKiBMax = min(quicKiBMin, quicKiB), max(quicKiBMax, quicKiB)
+	}
+	rowCount := max(float64(len(input.Rows)), 1)
+	wsAllocsAvg := wsAllocsTotal / rowCount
+	quicAllocsAvg := quicAllocsTotal / rowCount
+	wsKiBAvg := wsKiBTotal / rowCount
+	quicKiBAvg := quicKiBTotal / rowCount
+
 	buf.WriteString("## Analysis\n\n")
 	buf.WriteString("### Why WebSocket Is Faster\n\n")
 	buf.WriteString("These benchmarks run on loopback (zero packet loss, zero RTT), which removes the network conditions where QUIC's design advantages apply. The key factors:\n\n")
 	buf.WriteString("1. **Per-stream overhead** — QUIC H3 multistream opens a new HTTP/3 POST stream per request, paying stream-setup, flow-control, and TLS bookkeeping costs each time. WebSocket multiplexes all traffic over a single persistent connection with minimal framing.\n")
-	buf.WriteString("2. **~3× more allocations** — QUIC averages ~680 allocs/request vs ~220 for WebSocket, driven by per-stream state in the QUIC stack.\n")
+	if quicAllocsAvg >= wsAllocsAvg {
+		fmt.Fprintf(&buf, "2. **%s× more allocations in QUIC** — QUIC averages ~%s allocs/request vs ~%s for WebSocket, driven mostly by per-stream state in the QUIC stack.\n", formatFloat(quicAllocsAvg/max(wsAllocsAvg, 1), 1), formatFloat(quicAllocsAvg, 0), formatFloat(wsAllocsAvg, 0))
+	} else {
+		fmt.Fprintf(&buf, "2. **%s× more allocations in WebSocket** — WebSocket averages ~%s allocs/request vs ~%s for QUIC.\n", formatFloat(wsAllocsAvg/max(quicAllocsAvg, 1), 1), formatFloat(wsAllocsAvg, 0), formatFloat(quicAllocsAvg, 0))
+	}
 	buf.WriteString("3. **Worker-pool contention** — The server-side `h3StreamPool` and client-side `h3WorkerManager` add acquire/release overhead and contention under load.\n")
-	buf.WriteString("4. **Throughput ceiling** — QUIC plateaus around 8K req/s regardless of concurrency, while WebSocket scales from ~13K to ~28K req/s with increasing load.\n\n")
+	fmt.Fprintf(&buf, "4. **Throughput ceiling** — QUIC ranges from ~%sK to ~%sK req/s, while WebSocket ranges from ~%sK to ~%sK req/s across this matrix.\n\n", formatFloat(quicReqMin/1000, 1), formatFloat(quicReqMax/1000, 1), formatFloat(wsReqMin/1000, 1), formatFloat(wsReqMax/1000, 1))
 	buf.WriteString("### Where QUIC Wins\n\n")
-	buf.WriteString("- **Memory per request**: QUIC uses ~30% less heap memory per request (70–78 KiB vs 101–108 KiB).\n")
+	if quicKiBAvg <= wsKiBAvg {
+		fmt.Fprintf(&buf, "- **Memory per request**: QUIC uses less heap memory on average (%s–%s KiB vs %s–%s KiB for WebSocket).\n", formatFloat(quicKiBMin, 0), formatFloat(quicKiBMax, 0), formatFloat(wsKiBMin, 0), formatFloat(wsKiBMax, 0))
+	} else {
+		fmt.Fprintf(&buf, "- **Memory per request**: WebSocket uses less heap memory on average (%s–%s KiB vs %s–%s KiB for QUIC).\n", formatFloat(wsKiBMin, 0), formatFloat(wsKiBMax, 0), formatFloat(quicKiBMin, 0), formatFloat(quicKiBMax, 0))
+	}
 	buf.WriteString("- **Lossy / high-latency networks**: QUIC's per-stream loss recovery avoids head-of-line blocking that degrades WebSocket (single TCP stream) on poor connections.\n")
 	buf.WriteString("- **Mobile / roaming clients**: QUIC connection migration survives network changes without a full reconnect.\n")
 	buf.WriteString("- **Firewall-restricted environments**: Some middleboxes interfere with long-lived WebSocket connections but pass UDP/QUIC cleanly.\n\n")

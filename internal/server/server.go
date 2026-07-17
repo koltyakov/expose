@@ -60,6 +60,7 @@ type serverStore interface {
 	ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error)
 	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error)
 	PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error)
+	OperationalStats() sqlite.OperationalStats
 }
 
 var _ serverStore = (*sqlite.Store)(nil)
@@ -75,16 +76,20 @@ type Server struct {
 	wildcardTLSOn    bool
 	requestSeq       atomic.Uint64
 	regLimiter       *rateLimiter
+	authLimiter      *rateLimiter
 	lookupLimiter    *rateLimiter
 	publicLimiter    *rateLimiter
 	accessLimiter    *rateLimiter
 	routes           routeCache
+	routeLookups     lookupGroup[liveRouteSnapshot]
+	routeVersions    routeVersions
 	liveRoutes       *liveRouteIndex
 	activeTunnels    *activeTunnelTracker
 	runtimeCtx       atomic.Value // context.Context
 	domainTouches    chan string
 	domainTouchMu    sync.Mutex
 	domainTouched    map[string]struct{}
+	routeLifecycleMu sync.Mutex
 	disconnects      chan string
 	disconnectMu     sync.Mutex
 	disconnectQ      map[string]struct{}
@@ -95,6 +100,11 @@ type Server struct {
 	wafAuditDrops    atomic.Int64
 	domainTouchDrops atomic.Int64
 	disconnectDrops  atomic.Int64
+	routeCacheHits   atomic.Int64
+	routeCacheMisses atomic.Int64
+	routeStoreLoads  atomic.Int64
+	connectionsTotal atomic.Int64
+	shutdownNanos    atomic.Int64
 }
 
 type wafAuditEvent struct {
@@ -150,7 +160,7 @@ const (
 	streamingThreshold          = 256 * 1024
 	streamingChunkSize          = 256 * 1024
 	streamingChanSize           = 16
-	streamBodySendTimeout       = 5 * time.Second
+	streamBodySendTimeout       = 0
 	wsWriteTimeout              = 15 * time.Second
 	httpsReadTimeout            = 30 * time.Second
 	httpsWriteTimeout           = 60 * time.Second
@@ -168,9 +178,11 @@ const (
 	publicRateLimitCleanupAge   = 5 * time.Minute
 	lookupRateLimit             = 20.0
 	lookupBurstLimit            = 40.0
+	preAuthRateLimit            = 10.0
+	preAuthBurstLimit           = 30.0
 	wafAuditQueueSize           = 2048
 	wafAuditLookupTimeout       = 250 * time.Millisecond
-	wsDataDispatchWait          = 250 * time.Millisecond
+	wsDataDispatchWait          = 0
 	wsControlDispatchWait       = 2 * time.Second
 	defaultWAFCounterRetention  = time.Hour
 	wsWriteControlQueueSize     = 64
@@ -210,6 +222,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		hub:           &hub{sessions: map[string]*session{}},
 		version:       version,
 		regLimiter:    newRateLimiter(),
+		authLimiter:   newConfiguredRateLimiter(preAuthRateLimit, preAuthBurstLimit, regCleanupAge),
 		lookupLimiter: newConfiguredRateLimiter(lookupRateLimit, lookupBurstLimit, regCleanupAge),
 		publicLimiter: publicLimiter,
 		accessLimiter: newConfiguredRateLimiter(accessAuthFailRate, accessAuthFailBurst, accessAuthCleanupAge),

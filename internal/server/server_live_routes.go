@@ -33,6 +33,7 @@ type liveRouteEntry struct {
 	domainID           string
 	tunnelID           string
 	keyID              string
+	status             string
 	isTemporary        bool
 	accessUser         string
 	accessMode         string
@@ -129,6 +130,7 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 	entry.domainID = route.Domain.ID
 	entry.tunnelID = tunnelID
 	entry.keyID = route.Domain.APIKeyID
+	entry.status = route.Domain.Status
 	entry.isTemporary = route.Tunnel.IsTemporary
 	entry.accessUser = route.Tunnel.AccessUser
 	entry.accessMode = route.Tunnel.AccessMode
@@ -138,21 +140,6 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 		entry.session = nil
 	}
 	i.trackHostKeyLocked(hostShard, entry.keyID, host)
-}
-
-func (i *liveRouteIndex) upsertFromStore(ctx context.Context, store routeResolver, host string) (liveRouteSnapshot, error) {
-	if i == nil || store == nil {
-		return liveRouteSnapshot{}, sql.ErrNoRows
-	}
-	route, err := store.FindRouteByHost(ctx, host)
-	if err != nil {
-		return liveRouteSnapshot{}, err
-	}
-	i.upsert(route)
-	if snap, ok := i.lookupHost(host); ok {
-		return snap, nil
-	}
-	return liveRouteSnapshot{route: route}, nil
 }
 
 func (i *liveRouteIndex) upsertTunnelFromStore(ctx context.Context, store routeResolver, tunnelID string) (liveRouteSnapshot, error) {
@@ -232,6 +219,7 @@ func (i *liveRouteIndex) attachSession(tunnelID string, sess *session) (liveRout
 	entry.mu.Lock()
 	entry.session = sess
 	entry.active = true
+	entry.status = domain.DomainStatusActive
 	snap := snapshotFromEntryLocked(entry)
 	entry.mu.Unlock()
 	shard.mu.RUnlock()
@@ -263,6 +251,7 @@ func (i *liveRouteIndex) clearSession(tunnelID string, sess *session) (liveRoute
 	entry.session = nil
 	if entry.isTemporary {
 		entry.active = false
+		entry.status = domain.DomainStatusInactive
 	}
 	snap := snapshotFromEntryLocked(entry)
 	entry.mu.Unlock()
@@ -375,6 +364,20 @@ func (i *liveRouteIndex) snapshotSessions() []*session {
 	return out
 }
 
+func (i *liveRouteIndex) size() int {
+	if i == nil {
+		return 0
+	}
+	total := 0
+	for idx := range i.hostShards {
+		shard := &i.hostShards[idx]
+		shard.mu.RLock()
+		total += len(shard.byHost)
+		shard.mu.RUnlock()
+	}
+	return total
+}
+
 func (i *liveRouteIndex) trackHostKeyLocked(shard *liveRouteShard, keyID, host string) {
 	keyID = strings.TrimSpace(keyID)
 	if shard == nil || keyID == "" || host == "" {
@@ -429,6 +432,7 @@ func snapshotFromEntryLocked(entry *liveRouteEntry) liveRouteSnapshot {
 				ID:       entry.domainID,
 				APIKeyID: entry.keyID,
 				Hostname: entry.host,
+				Status:   entry.status,
 			},
 			Tunnel: domain.Tunnel{
 				ID:                 entry.tunnelID,

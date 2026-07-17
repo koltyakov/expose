@@ -248,16 +248,16 @@ func (d *Display) localTargetHealthy(raw string) bool {
 	}
 	if _, checking := d.localHealthChecking[cacheKey]; !checking {
 		d.localHealthChecking[cacheKey] = struct{}{}
-		go func() {
+		go func(checkedAt time.Time) {
 			conn, err := net.DialTimeout("tcp", dialAddr, displayLocalHealthTimeout)
 			if err == nil {
 				_ = conn.Close()
 			}
 			d.mu.Lock()
-			d.localHealth[cacheKey] = localHealthEntry{ok: err == nil, checkedAt: d.now()}
+			d.localHealth[cacheKey] = localHealthEntry{ok: err == nil, checkedAt: checkedAt}
 			delete(d.localHealthChecking, cacheKey)
 			d.mu.Unlock()
-		}()
+		}(now)
 	}
 	return cached && e.ok
 }

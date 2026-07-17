@@ -30,10 +30,15 @@ type sessionActivateOptions struct {
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if !s.allowPreAuthRequest(w, r) {
+		return
+	}
 	tunnelID, ok := s.consumeConnectToken(w, r)
 	if !ok {
 		return
 	}
+	s.routeLifecycleMu.Lock()
+	defer s.routeLifecycleMu.Unlock()
 	snap, err := s.ensureLiveRouteForTunnel(r.Context(), tunnelID)
 	if err != nil {
 		http.Error(w, "invalid tunnel", http.StatusUnauthorized)
@@ -88,10 +93,15 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.allowPreAuthRequest(w, r) {
+		return
+	}
 	tunnelID, ok := s.consumeConnectToken(w, r)
 	if !ok {
 		return
 	}
+	s.routeLifecycleMu.Lock()
+	defer s.routeLifecycleMu.Unlock()
 	snap, err := s.ensureLiveRouteForTunnel(r.Context(), tunnelID)
 	if err != nil {
 		http.Error(w, "invalid tunnel", http.StatusUnauthorized)
@@ -232,6 +242,7 @@ func (s *Server) activateSession(
 	writer *tunneltransport.WritePump,
 	opts sessionActivateOptions,
 ) {
+	s.connectionsTotal.Add(1)
 	transportName := tunneltransport.NameOf(transport)
 	if strings.TrimSpace(opts.transportName) != "" {
 		transportName = strings.TrimSpace(opts.transportName)
@@ -253,7 +264,7 @@ func (s *Server) activateSession(
 	}
 	sess.transport.SetReadLimit(webSocketReadLimitFor(s.cfg))
 	sess.touch(time.Now())
-	s.liveRoutes.attachSession(tunnelID, sess)
+	s.attachPublishedSession(tunnelID, sess)
 	prev := s.replaceSession(tunnelID, sess)
 	if prev != nil && prev != sess {
 		s.log.Warn("replacing existing tunnel session", "tunnel_id", tunnelID, "transport", prev.transportName)
@@ -288,9 +299,14 @@ func (s *Server) readLoop(sess *session) {
 		sess.closeH3StreamPool()
 		sess.closePending()
 		sess.closeWSPending()
-		if s.removeSessionIfCurrent(sess) {
-			s.liveRoutes.clearSession(sess.tunnelID, sess)
+		s.routeLifecycleMu.Lock()
+		removedCurrent := s.removeSessionIfCurrent(sess)
+		if removedCurrent {
+			s.clearPublishedSession(sess.tunnelID, sess)
 			s.activeTunnels.markDisconnected(sess.tunnelID)
+		}
+		s.routeLifecycleMu.Unlock()
+		if removedCurrent {
 			s.queueTunnelDisconnect(sess.tunnelID)
 			s.log.Info("tunnel disconnected", "tunnel_id", sess.tunnelID, "transport", sess.transportName)
 		} else {
@@ -374,8 +390,16 @@ func (s *Server) readLoop(sess *session) {
 				continue
 			}
 			if !sess.wsPendingSend(msg.WSData.ID, msg, wsDataDispatchWait) {
-				s.log.Warn("closing tunnel due websocket stream backpressure", "tunnel_id", sess.tunnelID, "stream_id", msg.WSData.ID)
-				return
+				s.log.Warn("closing websocket due stream backpressure", "tunnel_id", sess.tunnelID, "stream_id", msg.WSData.ID)
+				sess.wsPendingAbort(msg.WSData.ID)
+				_ = sess.writeJSON(tunnelproto.Message{
+					Kind: tunnelproto.KindWSClose,
+					WSClose: &tunnelproto.WSClose{
+						ID:   msg.WSData.ID,
+						Code: websocket.ClosePolicyViolation,
+						Text: "stream consumer too slow",
+					},
+				})
 			}
 		case tunnelproto.KindWSClose:
 			if msg.WSClose == nil {
@@ -509,15 +533,10 @@ func (s *session) wsPendingStore(id string, ch chan tunnelproto.Message) {
 	s.wsMu.Unlock()
 }
 
-func (s *session) wsPendingLoad(id string) (chan tunnelproto.Message, bool) {
+func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Duration) bool {
 	s.wsMu.RLock()
 	ch, ok := s.wsPending[id]
-	s.wsMu.RUnlock()
-	return ch, ok
-}
-
-func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Duration) bool {
-	ch, ok := s.wsPendingLoad(id)
+	defer s.wsMu.RUnlock()
 	if !ok {
 		return true
 	}
@@ -540,6 +559,15 @@ func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Du
 	case <-timer.C:
 		return false
 	}
+}
+
+func (s *session) wsPendingAbort(id string) {
+	s.wsMu.Lock()
+	if ch, ok := s.wsPending[id]; ok {
+		delete(s.wsPending, id)
+		close(ch)
+	}
+	s.wsMu.Unlock()
 }
 
 func (s *session) wsPendingDelete(id string) {
@@ -604,7 +632,7 @@ func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent
 	snap, ok := s.liveRoutes.lookupHost(audit.event.Host)
 	if !ok && s.store != nil {
 		lookupCtx, cancel := context.WithTimeout(parentCtx, wafAuditLookupTimeout)
-		next, err := s.liveRoutes.upsertFromStore(lookupCtx, s.store, audit.event.Host)
+		next, err := s.resolvePublicRoute(lookupCtx, audit.event.Host)
 		cancel()
 		if err == nil {
 			snap = next
@@ -695,6 +723,16 @@ func (s *Server) removeSessionIfCurrent(sess *session) bool {
 	delete(s.hub.sessions, sess.tunnelID)
 	s.hub.mu.Unlock()
 	return true
+}
+
+func (s *Server) isSessionCurrent(sess *session) bool {
+	if s == nil || s.hub == nil || sess == nil {
+		return false
+	}
+	s.hub.mu.RLock()
+	current := s.hub.sessions[sess.tunnelID]
+	s.hub.mu.RUnlock()
+	return current == sess
 }
 
 func (s *Server) ensureLiveRouteForTunnel(ctx context.Context, tunnelID string) (liveRouteSnapshot, error) {

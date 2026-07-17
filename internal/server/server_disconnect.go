@@ -71,18 +71,30 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 		copy(toFlush, batch)
 		batch = batch[:0]
 
-		disconnectCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
-		err := s.store.SetTunnelsDisconnected(disconnectCtx, toFlush)
-		cancel()
-		if err != nil {
-			s.log.Error("failed to mark tunnel batch disconnected", "count", len(toFlush), "err", err)
-			for _, tunnelID := range toFlush {
-				s.markTunnelDisconnectedNow(ctx, tunnelID)
+		s.routeLifecycleMu.Lock()
+		candidates := make([]string, 0, len(toFlush))
+		for _, tunnelID := range toFlush {
+			if !s.activeTunnels.isConnected(tunnelID) {
+				candidates = append(candidates, tunnelID)
 			}
+		}
+		if len(candidates) == 0 {
 			s.completeDisconnectBatch(toFlush)
+			s.routeLifecycleMu.Unlock()
 			return
 		}
+
+		disconnectCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
+		err := s.store.SetTunnelsDisconnected(disconnectCtx, candidates)
+		cancel()
+		if err != nil {
+			s.log.Error("failed to mark tunnel batch disconnected", "count", len(candidates), "err", err)
+			for _, tunnelID := range candidates {
+				s.markTunnelDisconnectedNowLocked(ctx, tunnelID)
+			}
+		}
 		s.completeDisconnectBatch(toFlush)
+		s.routeLifecycleMu.Unlock()
 	}
 
 	for {
@@ -114,6 +126,15 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 }
 
 func (s *Server) markTunnelDisconnectedNow(ctx context.Context, tunnelID string) {
+	s.routeLifecycleMu.Lock()
+	defer s.routeLifecycleMu.Unlock()
+	if s.activeTunnels.isConnected(tunnelID) {
+		return
+	}
+	s.markTunnelDisconnectedNowLocked(ctx, tunnelID)
+}
+
+func (s *Server) markTunnelDisconnectedNowLocked(ctx context.Context, tunnelID string) {
 	s.activeTunnels.markDisconnected(tunnelID)
 	disconnectCtx, cancel := context.WithTimeout(contextOrBackground(ctx), disconnectTimeout)
 	err := s.store.SetTunnelDisconnected(disconnectCtx, tunnelID)

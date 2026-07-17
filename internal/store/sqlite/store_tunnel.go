@@ -207,13 +207,15 @@ WHERE t.id = ?`, tunnelID).Scan(
 			return ErrHostnameInUse
 		}
 
+		now := time.Now().UTC()
 		if _, err = tx.ExecContext(ctx, `
 UPDATE domains
-SET status = ?
-WHERE id = ?`, domain.DomainStatusActive, d.ID); err != nil {
+SET status = ?, last_seen_at = ?
+WHERE id = ?`, domain.DomainStatusActive, now, d.ID); err != nil {
 			return err
 		}
 		d.Status = domain.DomainStatusActive
+		d.LastSeenAt = &now
 		if clientMeta != "" && clientMeta != strings.TrimSpace(t.ClientMeta) {
 			if _, err = tx.ExecContext(ctx, `
 UPDATE tunnels

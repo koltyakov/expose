@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
@@ -15,6 +16,58 @@ import (
 
 func (s *Server) resolvePublicRoute(ctx context.Context, host string) (liveRouteSnapshot, error) {
 	if snap, ok := s.liveRoutes.lookupHost(host); ok {
+		s.routeCacheHits.Add(1)
+		return snap, nil
+	}
+	if route, found, cached := s.routes.lookup(host); cached && found {
+		s.routeCacheHits.Add(1)
+		return liveRouteSnapshot{route: route}, nil
+	} else if cached {
+		s.routeCacheHits.Add(1)
+		return liveRouteSnapshot{}, sql.ErrNoRows
+	}
+	s.routeCacheMisses.Add(1)
+	return s.routeLookups.do(ctx, host, func() (liveRouteSnapshot, error) {
+		if snap, ok := s.liveRoutes.lookupHost(host); ok {
+			return snap, nil
+		}
+		if route, found, cached := s.routes.lookup(host); cached && found {
+			return liveRouteSnapshot{route: route}, nil
+		} else if cached {
+			return liveRouteSnapshot{}, sql.ErrNoRows
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			version := s.routeVersions.current(host)
+			s.routeStoreLoads.Add(1)
+			lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), durationOr(s.cfg.RequestTimeout, 30*time.Second))
+			route, err := s.store.FindRouteByHost(lookupCtx, host)
+			cancel()
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					if s.publishRouteMiss(host, version) {
+						return liveRouteSnapshot{}, err
+					}
+					if snap, ok := s.liveRoutes.lookupHost(host); ok {
+						return snap, nil
+					}
+					continue
+				}
+				return liveRouteSnapshot{}, err
+			}
+			snap, published := s.publishResolvedRoute(host, version, route)
+			if published || snap.route.Domain.ID != "" {
+				return snap, nil
+			}
+		}
+		return s.resolvePublicRouteStable(ctx, host)
+	})
+}
+
+func (s *Server) resolvePublicRouteStable(ctx context.Context, host string) (liveRouteSnapshot, error) {
+	shard := s.routeVersions.shard(normalizeHost(host))
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if snap, ok := s.liveRoutes.lookupHost(host); ok {
 		return snap, nil
 	}
 	if route, found, cached := s.routes.lookup(host); cached && found {
@@ -22,14 +75,22 @@ func (s *Server) resolvePublicRoute(ctx context.Context, host string) (liveRoute
 	} else if cached {
 		return liveRouteSnapshot{}, sql.ErrNoRows
 	}
-	snap, err := s.liveRoutes.upsertFromStore(ctx, s.store, host)
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), durationOr(s.cfg.RequestTimeout, 30*time.Second))
+	defer cancel()
+	s.routeStoreLoads.Add(1)
+	route, err := s.store.FindRouteByHost(lookupCtx, host)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			s.routes.setMiss(host)
 		}
 		return liveRouteSnapshot{}, err
 	}
-	return snap, nil
+	s.liveRoutes.upsert(route)
+	s.routes.set(host, route)
+	if snap, ok := s.liveRoutes.lookupHost(host); ok {
+		return snap, nil
+	}
+	return liveRouteSnapshot{route: route}, nil
 }
 
 func (s *Server) allowPublicRouteLookup(host string, r *http.Request) bool {

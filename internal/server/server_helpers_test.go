@@ -401,3 +401,21 @@ func TestSessionHTTPAndWebSocketCapacityAreIndependent(t *testing.T) {
 		t.Fatal("expected WebSocket capacity to remain bounded")
 	}
 }
+
+func TestSessionWSPendingAbortOnlyClosesTarget(t *testing.T) {
+	t.Parallel()
+
+	sess := &session{wsPending: make(map[string]chan tunnelproto.Message)}
+	first := make(chan tunnelproto.Message, 1)
+	second := make(chan tunnelproto.Message, 1)
+	sess.wsPendingStore("first", first)
+	sess.wsPendingStore("second", second)
+	sess.wsPendingAbort("first")
+
+	if _, open := <-first; open {
+		t.Fatal("aborted websocket channel remains open")
+	}
+	if !sess.wsPendingSend("second", tunnelproto.Message{Kind: tunnelproto.KindPing}, 0) {
+		t.Fatal("unrelated websocket channel was affected")
+	}
+}

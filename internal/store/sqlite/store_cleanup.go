@@ -8,6 +8,20 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
+const purgeInactiveTemporaryDomainsQuery = `
+SELECT d.id, d.hostname
+FROM domains d
+WHERE d.type = 'temporary_subdomain'
+	AND d.status = 'inactive'
+	AND d.last_seen_at < ?
+	AND NOT EXISTS (
+		SELECT 1
+		FROM tunnels t
+		WHERE t.domain_id = d.id AND t.state = 'connected'
+	)
+ORDER BY d.last_seen_at ASC
+LIMIT ?`
+
 func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error) {
 	if limit <= 0 {
 		limit = 100
@@ -21,29 +35,7 @@ func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan tim
 		}
 		defer func() { _ = tx.Rollback() }()
 
-		rows, err := tx.QueryContext(ctx, `
-SELECT
-	d.id,
-	d.hostname
-FROM domains d
-LEFT JOIN tunnels t ON t.domain_id = d.id
-WHERE d.type = ? AND d.status = ?
-GROUP BY d.id, d.hostname, d.created_at, d.last_seen_at
-HAVING COUNT(CASE WHEN t.state = ? THEN 1 END) = 0
-	AND MAX(
-		d.created_at,
-		COALESCE(d.last_seen_at, d.created_at),
-		COALESCE(MAX(t.connected_at), d.created_at),
-		COALESCE(MAX(t.disconnected_at), d.created_at)
-	) < ?
-ORDER BY MAX(
-	d.created_at,
-	COALESCE(d.last_seen_at, d.created_at),
-	COALESCE(MAX(t.connected_at), d.created_at),
-	COALESCE(MAX(t.disconnected_at), d.created_at)
-) ASC
-LIMIT ?`,
-			domain.DomainTypeTemporarySubdomain, domain.DomainStatusInactive, domain.TunnelStateConnected, olderThan.UTC(), limit)
+		rows, err := tx.QueryContext(ctx, purgeInactiveTemporaryDomainsQuery, olderThan.UTC(), limit)
 		if err != nil {
 			return err
 		}

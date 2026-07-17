@@ -900,16 +900,16 @@ func (d *upDashboard) localRouteHealthyLocked(route upLocalRoute) bool {
 	}
 	if _, checking := d.localHealthChecking[cacheKey]; !checking {
 		d.localHealthChecking[cacheKey] = struct{}{}
-		go func() {
+		go func(checkedAt time.Time) {
 			conn, err := net.DialTimeout("tcp", dialAddr, upLocalHealthTimeout)
 			if err == nil {
 				_ = conn.Close()
 			}
 			d.mu.Lock()
-			d.localHealth[cacheKey] = upDashboardLocalHealth{OK: err == nil, CheckedAt: d.now()}
+			d.localHealth[cacheKey] = upDashboardLocalHealth{OK: err == nil, CheckedAt: checkedAt}
 			delete(d.localHealthChecking, cacheKey)
 			d.mu.Unlock()
-		}()
+		}(now)
 	}
 	return cached && e.OK
 }

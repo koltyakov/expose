@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1197,6 +1198,20 @@ CREATE TABLE server_settings (
 	if err != nil {
 		t.Fatal(err)
 	}
+	createdAt := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Second)
+	connectedAt := createdAt.Add(24 * time.Hour)
+	disconnectedAt := connectedAt.Add(24 * time.Hour)
+	if _, err := db.Exec(`INSERT INTO api_keys(id, name, key_hash, created_at) VALUES('legacy-key', 'legacy', 'legacy-hash', ?)`, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
+VALUES('legacy-domain', 'legacy-key', 'temporary_subdomain', 'legacy.example.com', 'inactive', ?, NULL)`, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, connected_at, disconnected_at)
+VALUES('legacy-tunnel', 'legacy-key', 'legacy-domain', 'disconnected', 1, ?, ?)`, connectedAt, disconnectedAt); err != nil {
+		t.Fatal(err)
+	}
 
 	store := &Store{db: db}
 	ctx := context.Background()
@@ -1231,6 +1246,84 @@ CREATE TABLE server_settings (
 	}
 	if applied != len(schemaMigrations) {
 		t.Fatalf("expected %d recorded migrations, got %d", len(schemaMigrations), applied)
+	}
+	for _, name := range []string{"idx_domains_temp_inactive_last_seen", "trg_tunnels_update_domain_activity"} {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE name = ?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("expected schema object %s", name)
+		}
+	}
+	var backfilled time.Time
+	if err := db.QueryRowContext(ctx, `SELECT last_seen_at FROM domains WHERE id = 'legacy-domain'`).Scan(&backfilled); err != nil {
+		t.Fatal(err)
+	}
+	if !backfilled.Equal(disconnectedAt) {
+		t.Fatalf("backfilled activity = %s, want %s", backfilled, disconnectedAt)
+	}
+}
+
+func TestTunnelActivityTriggerNeverMovesBackward(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	key, err := store.CreateAPIKey(ctx, "activity", "activity-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, tunnel, err := store.AllocateDomainAndTunnel(ctx, key.ID, "temporary", "activity", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	earlier := later.Add(-time.Hour)
+	if _, err := store.db.ExecContext(ctx, `UPDATE tunnels SET connected_at = ? WHERE id = ?`, later, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tunnels SET disconnected_at = ? WHERE id = ?`, earlier, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	var activity time.Time
+	if err := store.db.QueryRowContext(ctx, `SELECT last_seen_at FROM domains WHERE id = ?`, d.ID).Scan(&activity); err != nil {
+		t.Fatal(err)
+	}
+	if !activity.Equal(later) {
+		t.Fatalf("activity moved backward to %s, want %s", activity, later)
+	}
+}
+
+func TestPurgeInactiveTemporaryDomainsQueryUsesActivityIndex(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	rows, err := store.db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+purgeInactiveTemporaryDomainsQuery, time.Now().UTC(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var details []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	plan := strings.Join(details, "\n")
+	if !strings.Contains(plan, "idx_domains_temp_inactive_last_seen") {
+		t.Fatalf("cleanup query does not use activity index:\n%s", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("cleanup query uses temporary sort:\n%s", plan)
 	}
 }
 

@@ -2,20 +2,25 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
 type stubServerStore struct {
 	setTunnelDisconnectedFn  func(context.Context, string) error
 	closeTemporaryTunnelFn   func(context.Context, string) (string, bool, error)
 	setTunnelsDisconnectedFn func(context.Context, []string) error
+	findRouteByHostFn        func(context.Context, string) (domain.TunnelRoute, error)
 }
 
 func (s *stubServerStore) ResetConnectedTunnels(context.Context) (int64, error) {
@@ -76,7 +81,10 @@ func (s *stubServerStore) SetTunnelsDisconnected(ctx context.Context, tunnelIDs 
 	return nil
 }
 
-func (s *stubServerStore) FindRouteByHost(context.Context, string) (domain.TunnelRoute, error) {
+func (s *stubServerStore) FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error) {
+	if s.findRouteByHostFn != nil {
+		return s.findRouteByHostFn(ctx, host)
+	}
 	return domain.TunnelRoute{}, nil
 }
 
@@ -94,6 +102,10 @@ func (s *stubServerStore) PurgeInactiveTemporaryDomains(context.Context, time.Ti
 
 func (s *stubServerStore) PurgeStaleConnectTokens(context.Context, time.Time, time.Time, int) (int64, error) {
 	return 0, nil
+}
+
+func (s *stubServerStore) OperationalStats() sqlite.OperationalStats {
+	return sqlite.OperationalStats{}
 }
 
 func (s *stubServerStore) CloseTemporaryTunnel(ctx context.Context, tunnelID string) (string, bool, error) {
@@ -183,6 +195,7 @@ func TestExpireStaleSessionsUsesCallerContext(t *testing.T) {
 		},
 		store:         store,
 		log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		hub:           &hub{sessions: map[string]*session{"tun_stale": sess}},
 		liveRoutes:    idx,
 		activeTunnels: newActiveTunnelTracker(),
 	}
@@ -210,5 +223,59 @@ func TestPendingRequestsDoNotReuseBodyChannels(t *testing.T) {
 	req = acquirePendingRequest()
 	if req.bodyCh != nil {
 		t.Fatal("expected a fresh pending request without a body channel")
+	}
+}
+
+func TestCertificateCleanupPreservesReassignedHostname(t *testing.T) {
+	t.Parallel()
+
+	host := "reused.example.com"
+	cacheDir := t.TempDir()
+	certPath := filepath.Join(cacheDir, host)
+	if err := os.WriteFile(certPath, []byte("cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &stubServerStore{
+		findRouteByHostFn: func(context.Context, string) (domain.TunnelRoute, error) {
+			return domain.TunnelRoute{Domain: domain.Domain{ID: "new-domain", Hostname: host, Status: domain.DomainStatusActive}}, nil
+		},
+	}
+	srv := &Server{store: store, liveRoutes: newLiveRouteIndex(), cfg: config.ServerConfig{CertCacheDir: cacheDir}}
+	removed, err := srv.removeInactiveTunnelCertCache(context.Background(), host, "old-domain", true)
+	if err != nil || removed != 0 {
+		t.Fatalf("cleanup = (%d, %v), want no removal", removed, err)
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		t.Fatalf("reassigned certificate was removed: %v", err)
+	}
+
+	store.findRouteByHostFn = func(context.Context, string) (domain.TunnelRoute, error) {
+		return domain.TunnelRoute{}, sql.ErrNoRows
+	}
+	removed, err = srv.removeInactiveTunnelCertCache(context.Background(), host, "old-domain", true)
+	if err != nil || removed != 1 {
+		t.Fatalf("cleanup deleted domain = (%d, %v), want one removal", removed, err)
+	}
+}
+
+func TestImmediateDisconnectDoesNotOverwriteReconnect(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	store := &stubServerStore{setTunnelDisconnectedFn: func(context.Context, string) error {
+		calls++
+		return nil
+	}}
+	srv := &Server{store: store, activeTunnels: newActiveTunnelTracker()}
+	srv.activeTunnels.markConnected("key-1", "tunnel-1")
+	srv.markTunnelDisconnectedNow(context.Background(), "tunnel-1")
+	if calls != 0 {
+		t.Fatalf("disconnect writes = %d, want 0 for reconnected tunnel", calls)
+	}
+
+	srv.activeTunnels.markDisconnected("tunnel-1")
+	srv.markTunnelDisconnectedNow(context.Background(), "tunnel-1")
+	if calls != 1 {
+		t.Fatalf("disconnect writes = %d, want 1 for inactive tunnel", calls)
 	}
 }

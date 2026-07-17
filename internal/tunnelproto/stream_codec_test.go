@@ -2,8 +2,35 @@ package tunnelproto
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 )
+
+func TestStreamV2WireCompatibility(t *testing.T) {
+	t.Parallel()
+
+	const goldenHex = "03010000001002060000000100000000000000017278"
+	var buf bytes.Buffer
+	if err := WriteStreamBinaryFrameV2(&buf, BinaryFrameRespBody, "r", 0, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(buf.Bytes()); got != goldenHex {
+		t.Fatalf("wire frame = %s, want %s", got, goldenHex)
+	}
+
+	wire, err := hex.DecodeString(goldenHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg Message
+	if err := ReadStreamMessageV2(bytes.NewReader(wire), 1024, &msg); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := msg.BodyChunk.Payload()
+	if err != nil || msg.Kind != KindRespBody || msg.BodyChunk.ID != "r" || string(payload) != "x" {
+		t.Fatalf("decoded golden frame = %+v payload=%q err=%v", msg, payload, err)
+	}
+}
 
 func TestStreamCodecRoundTripJSON(t *testing.T) {
 	t.Parallel()

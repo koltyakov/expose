@@ -24,7 +24,7 @@ const allowRemoteEnv = "EXPOSE_PPROF_ALLOW_REMOTE"
 // down when ctx is canceled. It returns immediately after the listener is
 // bound so address conflicts fail fast. Non-loopback addresses are refused
 // unless EXPOSE_PPROF_ALLOW_REMOTE=true.
-func StartPprofServer(ctx context.Context, addr string, log *slog.Logger, component string) error {
+func StartPprofServer(ctx context.Context, addr string, log *slog.Logger, component string, extraHandlers ...map[string]http.HandlerFunc) error {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return nil
@@ -39,7 +39,7 @@ func StartPprofServer(ctx context.Context, addr string, log *slog.Logger, compon
 	}
 
 	srv := &http.Server{
-		Handler:           newPprofMux(),
+		Handler:           newPprofMux(extraHandlers...),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -103,12 +103,19 @@ func allowRemotePprof() bool {
 	}
 }
 
-func newPprofMux() *http.ServeMux {
+func newPprofMux(extraHandlers ...map[string]http.HandlerFunc) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", httppprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", httppprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", httppprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", httppprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", httppprof.Trace)
+	for _, handlers := range extraHandlers {
+		for pattern, handler := range handlers {
+			if strings.TrimSpace(pattern) != "" && handler != nil {
+				mux.HandleFunc(pattern, handler)
+			}
+		}
+	}
 	return mux
 }

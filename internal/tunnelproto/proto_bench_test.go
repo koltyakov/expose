@@ -86,6 +86,24 @@ func BenchmarkCompatibilityModeWSVsH3Stream(b *testing.B) {
 			}
 		}
 	})
+
+	b.Run("h3_v2_stream_roundtrip", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(len(payload)))
+		for b.Loop() {
+			var buf bytes.Buffer
+			if err := WriteStreamBinaryFrameV2(&buf, BinaryFrameRespBody, "req_1", 0, payload); err != nil {
+				b.Fatal(err)
+			}
+			var msg Message
+			if err := ReadStreamMessageV2(&buf, 2<<20, &msg); err != nil {
+				b.Fatal(err)
+			}
+			if msg.Kind != KindRespBody {
+				b.Fatalf("unexpected kind %q", msg.Kind)
+			}
+		}
+	})
 }
 
 func BenchmarkPhase1VsPhase2PacketLossMixedLoad(b *testing.B) {

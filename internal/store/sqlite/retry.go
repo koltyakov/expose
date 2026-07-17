@@ -76,6 +76,8 @@ func (s *Store) withSerializedWrite(ctx context.Context, op func() error) error 
 	if op == nil {
 		return nil
 	}
+	started := time.Now()
+	defer s.observeOperation(started)
 	req := storeWriteRequest{
 		ctx:  ctx,
 		op:   op,

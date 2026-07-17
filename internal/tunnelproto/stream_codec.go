@@ -27,14 +27,15 @@ func ReadStreamMessageV2(r io.Reader, maxPayloadBytes int64, dst *Message) error
 }
 
 func readStreamMessageVersion(r io.Reader, maxPayloadBytes int64, dst *Message, recordVersion byte) error {
-	var header [streamRecordHeader]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
+	var headers [streamRecordHeader + binaryFrameHeader]byte
+	recordHeader := headers[:streamRecordHeader]
+	if _, err := io.ReadFull(r, recordHeader); err != nil {
 		return err
 	}
-	if header[0] != recordVersion {
-		return fmt.Errorf("unsupported stream record version: %d", header[0])
+	if recordHeader[0] != recordVersion {
+		return fmt.Errorf("unsupported stream record version: %d", recordHeader[0])
 	}
-	payloadLen := int64(binary.BigEndian.Uint32(header[2:6]))
+	payloadLen := int64(binary.BigEndian.Uint32(recordHeader[2:6]))
 	if maxPayloadBytes > 0 && payloadLen > maxPayloadBytes {
 		return fmt.Errorf("stream payload exceeds read limit: %d > %d", payloadLen, maxPayloadBytes)
 	}
@@ -44,12 +45,12 @@ func readStreamMessageVersion(r io.Reader, maxPayloadBytes int64, dst *Message, 
 	if payloadLen > int64(math.MaxInt) {
 		return fmt.Errorf("stream payload exceeds int limit: %d > %d", payloadLen, math.MaxInt)
 	}
-	if header[1] != streamRecordFrame {
-		return fmt.Errorf("unsupported stream record type: %d", header[1])
+	if recordHeader[1] != streamRecordFrame {
+		return fmt.Errorf("unsupported stream record type: %d", recordHeader[1])
 	}
 
-	var frameHeader [binaryFrameHeader]byte
-	if _, err := io.ReadFull(r, frameHeader[:]); err != nil {
+	frameHeader := headers[streamRecordHeader:]
+	if _, err := io.ReadFull(r, frameHeader); err != nil {
 		return err
 	}
 	if frameHeader[0] != binaryFrameVersion {
@@ -137,14 +138,15 @@ func writeStreamBinaryFrameVersion(w io.Writer, frameKind byte, id string, wsMes
 }
 
 func writeStreamRecord(w io.Writer, enc encodedFrame, recordVersion byte) error {
-	var header [streamRecordHeader]byte
-	header[0] = recordVersion
-	header[1] = streamRecordFrame
-	binary.BigEndian.PutUint32(header[2:6], uint32(encodedFrameLen(enc)))
-	if _, err := w.Write(header[:]); err != nil {
+	var headers [streamRecordHeader + binaryFrameHeader]byte
+	headers[0] = recordVersion
+	headers[1] = streamRecordFrame
+	binary.BigEndian.PutUint32(headers[2:6], uint32(encodedFrameLen(enc)))
+	putEncodedFrameHeader(headers[streamRecordHeader:], enc)
+	if _, err := w.Write(headers[:]); err != nil {
 		return err
 	}
-	return writeEncodedFrame(w, enc)
+	return writeEncodedFrameSections(w, enc)
 }
 
 func streamFrameKind(frameKind byte) byte {

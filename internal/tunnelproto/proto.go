@@ -613,15 +613,23 @@ func newEncodedFrame(kind byte, id string, wsMessageType int, meta, payload []by
 
 func writeEncodedFrame(w io.Writer, enc encodedFrame) error {
 	var header [binaryFrameHeader]byte
+	putEncodedFrameHeader(header[:], enc)
+	if _, err := w.Write(header[:]); err != nil {
+		return err
+	}
+	return writeEncodedFrameSections(w, enc)
+}
+
+func putEncodedFrameHeader(header []byte, enc encodedFrame) {
 	header[0] = binaryFrameVersion
 	header[1] = enc.kind
 	header[2] = byte(enc.wsMessageType)
 	binary.BigEndian.PutUint16(header[4:6], uint16(len(enc.id)))
 	binary.BigEndian.PutUint32(header[6:10], uint32(len(enc.meta)))
 	binary.BigEndian.PutUint32(header[10:14], uint32(len(enc.payload)))
-	if _, err := w.Write(header[:]); err != nil {
-		return err
-	}
+}
+
+func writeEncodedFrameSections(w io.Writer, enc encodedFrame) error {
 	if enc.id != "" {
 		if _, err := io.WriteString(w, enc.id); err != nil {
 			return err

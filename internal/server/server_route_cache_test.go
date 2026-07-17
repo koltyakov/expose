@@ -1,13 +1,63 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 )
+
+func TestLookupGroupCoalescesConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	var group lookupGroup[int]
+	var calls atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	lookup := func() (int, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return 42, nil
+	}
+
+	const workers = 16
+	results := make(chan int, workers)
+	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	for range workers {
+		wg.Go(func() {
+			ready.Done()
+			value, err := group.do(context.Background(), "host", lookup)
+			if err != nil {
+				t.Errorf("lookup error = %v", err)
+				return
+			}
+			results <- value
+		})
+	}
+	ready.Wait()
+	<-started
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(results)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("lookup calls = %d, want 1", got)
+	}
+	for value := range results {
+		if value != 42 {
+			t.Fatalf("lookup value = %d", value)
+		}
+	}
+}
 
 func TestRouteCacheSetGetDelete(t *testing.T) {
 	t.Parallel()
@@ -152,6 +202,80 @@ func TestLiveRouteIndexDeleteHost(t *testing.T) {
 	})
 	if idx.deleteHostIfDomain("reused.example.com", "old-domain") {
 		t.Fatal("expected domain identity mismatch to preserve the route")
+	}
+}
+
+func TestACMEAuthorizationRejectsDisconnectedTemporaryRoute(t *testing.T) {
+	t.Parallel()
+
+	idx := newLiveRouteIndex()
+	route := domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-acme", Hostname: "temp.example.com", Status: domain.DomainStatusActive},
+		Tunnel: domain.Tunnel{ID: "t-acme", IsTemporary: true},
+	}
+	idx.upsert(route)
+	sess := &session{tunnelID: route.Tunnel.ID}
+	idx.attachSession(route.Tunnel.ID, sess)
+	idx.clearSession(route.Tunnel.ID, sess)
+	srv := &Server{cfg: config.ServerConfig{BaseDomain: "example.com"}, liveRoutes: idx}
+	if err := srv.authorizeACMEHost(context.Background(), route.Domain.Hostname); err == nil {
+		t.Fatal("expected disconnected temporary route to be rejected")
+	}
+}
+
+func TestRoutePublicationSerializesWithRegistration(t *testing.T) {
+	t.Parallel()
+
+	host := "serialized.example.com"
+	storeRead := make(chan struct{})
+	releaseStore := make(chan struct{})
+	oldRoute := domain.TunnelRoute{
+		Domain: domain.Domain{ID: "old-domain", Hostname: host, Status: domain.DomainStatusActive},
+		Tunnel: domain.Tunnel{ID: "old-tunnel"},
+	}
+	store := &stubServerStore{findRouteByHostFn: func(context.Context, string) (domain.TunnelRoute, error) {
+		close(storeRead)
+		<-releaseStore
+		return oldRoute, nil
+	}}
+	srv := &Server{
+		cfg:        config.ServerConfig{RequestTimeout: time.Second},
+		store:      store,
+		liveRoutes: newLiveRouteIndex(),
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+	}
+	lookupDone := make(chan struct{})
+	go func() {
+		defer close(lookupDone)
+		_, _ = srv.resolvePublicRoute(context.Background(), host)
+	}()
+	<-storeRead
+
+	newRoute := domain.TunnelRoute{
+		Domain: domain.Domain{ID: "new-domain", Hostname: host, Status: domain.DomainStatusActive},
+		Tunnel: domain.Tunnel{ID: "new-tunnel"},
+	}
+	registrationDone := make(chan struct{})
+	go func() {
+		defer close(registrationDone)
+		srv.routeLifecycleMu.Lock()
+		srv.publishRegisteredRoute(newRoute)
+		srv.routeLifecycleMu.Unlock()
+	}()
+	close(releaseStore)
+	<-lookupDone
+	<-registrationDone
+
+	snap, ok := srv.liveRoutes.lookupHost(host)
+	if !ok || snap.route.Domain.ID != newRoute.Domain.ID || snap.route.Tunnel.ID != newRoute.Tunnel.ID {
+		t.Fatalf("final live route = %+v, want new registration", snap.route)
+	}
+	cached, ok := srv.routes.get(host)
+	if !ok || cached.Domain.ID != newRoute.Domain.ID {
+		t.Fatalf("final cached route = %+v, want new registration", cached)
 	}
 }
 

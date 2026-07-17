@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -37,12 +38,57 @@ type Store struct {
 	closing              bool
 	closeOnce            sync.Once
 	closeErr             error
+	operationCount       atomic.Int64
+	operationNanos       atomic.Int64
+	operationMaxNanos    atomic.Int64
 	touchMu              sync.Mutex
 	lastDomainTouch      map[string]time.Time
 	touchMinInterval     time.Duration
 	touchCleanupInterval time.Duration
 	nextTouchCleanupAt   time.Time
 	touchFlushInterval   time.Duration
+}
+
+type OperationalStats struct {
+	OpenConnections   int
+	InUseConnections  int
+	IdleConnections   int
+	WriteQueueDepth   int
+	TouchQueueDepth   int
+	OperationCount    int64
+	OperationNanos    int64
+	OperationMaxNanos int64
+}
+
+func (s *Store) OperationalStats() OperationalStats {
+	if s == nil || s.db == nil {
+		return OperationalStats{}
+	}
+	dbStats := s.db.Stats()
+	return OperationalStats{
+		OpenConnections:   dbStats.OpenConnections,
+		InUseConnections:  dbStats.InUse,
+		IdleConnections:   dbStats.Idle,
+		WriteQueueDepth:   len(s.writeRequests),
+		TouchQueueDepth:   len(s.touchRequests),
+		OperationCount:    s.operationCount.Load(),
+		OperationNanos:    s.operationNanos.Load(),
+		OperationMaxNanos: s.operationMaxNanos.Load(),
+	}
+}
+
+func (s *Store) observeOperation(start time.Time) {
+	if s == nil {
+		return
+	}
+	nanos := time.Since(start).Nanoseconds()
+	s.operationCount.Add(1)
+	s.operationNanos.Add(nanos)
+	for current := s.operationMaxNanos.Load(); nanos > current; current = s.operationMaxNanos.Load() {
+		if s.operationMaxNanos.CompareAndSwap(current, nanos) {
+			break
+		}
+	}
 }
 
 const defaultTouchMinInterval = 30 * time.Second
@@ -232,6 +278,37 @@ var schemaMigrations = []schemaMigration{
 	{version: 5, name: "api_keys_tunnel_limit", apply: func(ctx context.Context, tx *sql.Tx) error {
 		return ensureColumn(ctx, tx, "api_keys", "tunnel_limit", `ALTER TABLE api_keys ADD COLUMN tunnel_limit INTEGER NOT NULL DEFAULT -1`)
 	}},
+	{version: 6, name: "temporary_domain_activity_index", apply: applyTemporaryDomainActivityMigration},
+}
+
+func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE domains AS d
+SET last_seen_at = MAX(
+	d.created_at,
+	COALESCE(d.last_seen_at, d.created_at),
+	COALESCE((SELECT MAX(t.connected_at) FROM tunnels t WHERE t.domain_id = d.id), d.created_at),
+	COALESCE((SELECT MAX(t.disconnected_at) FROM tunnels t WHERE t.domain_id = d.id), d.created_at)
+)
+WHERE d.type = 'temporary_subdomain';
+
+CREATE INDEX IF NOT EXISTS idx_domains_temp_inactive_last_seen
+ON domains(type, status, last_seen_at);
+
+CREATE TRIGGER IF NOT EXISTS trg_tunnels_update_domain_activity
+AFTER UPDATE OF state, connected_at, disconnected_at ON tunnels
+WHEN NEW.is_temporary = 1
+BEGIN
+	UPDATE domains
+	SET last_seen_at = MAX(
+		created_at,
+		COALESCE(last_seen_at, created_at),
+		COALESCE(NEW.connected_at, created_at),
+		COALESCE(NEW.disconnected_at, created_at)
+	)
+	WHERE id = NEW.domain_id;
+END;`)
+	return err
 }
 
 // Migrate creates all required tables and indexes if they do not already exist.

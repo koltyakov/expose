@@ -17,6 +17,7 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
+	"github.com/koltyakov/expose/internal/waf"
 )
 
 func BenchmarkRouteCacheGetHit(b *testing.B) {
@@ -140,6 +141,25 @@ func BenchmarkPublicHTTPRoundTripStreamedResponse(b *testing.B) {
 	}
 }
 
+func BenchmarkPublicHTTPRoundTripWAF(b *testing.B) {
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		b.Run(name, func(b *testing.B) {
+			h := newPublicTunnelBenchHarnessWithWAF(b, 8*1024, 0, enabled)
+			h.doRequest(b)
+
+			b.ReportAllocs()
+			b.SetBytes(8 * 1024)
+			for b.Loop() {
+				h.doRequest(b)
+			}
+		})
+	}
+}
+
 type publicTunnelBenchHarness struct {
 	publicURL string
 	host      string
@@ -147,6 +167,10 @@ type publicTunnelBenchHarness struct {
 }
 
 func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay time.Duration) *publicTunnelBenchHarness {
+	return newPublicTunnelBenchHarnessWithWAF(b, responseSize, responseDelay, false)
+}
+
+func newPublicTunnelBenchHarnessWithWAF(b *testing.B, responseSize int, responseDelay time.Duration, wafEnabled bool) *publicTunnelBenchHarness {
 	b.Helper()
 
 	const (
@@ -312,7 +336,15 @@ func newPublicTunnelBenchHarness(b *testing.B, responseSize int, responseDelay t
 	})
 	srv.liveRoutes.attachSession(tunnelID, sess)
 
-	publicSrv := httptest.NewServer(http.HandlerFunc(srv.handlePublic))
+	var publicHandler http.Handler = http.HandlerFunc(srv.handlePublic)
+	if wafEnabled {
+		publicHandler = waf.NewMiddleware(waf.Config{
+			Enabled:           true,
+			BodyInspectLimit:  16 * 1024,
+			ShouldInspectBody: shouldInspectWAFBody,
+		}, logger)(publicHandler)
+	}
+	publicSrv := httptest.NewServer(publicHandler)
 	b.Cleanup(publicSrv.Close)
 
 	transport := &http.Transport{

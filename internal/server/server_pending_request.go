@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -78,6 +79,39 @@ func (p *pendingRequest) bodyStream() (<-chan []byte, <-chan struct{}) {
 		return nil, nil
 	}
 	return p.ensureBodyCh(), p.doneCh
+}
+
+func (p *pendingRequest) sendBody(sess *session, payload []byte, wait time.Duration) bool {
+	if p == nil || sess == nil {
+		return false
+	}
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
+	select {
+	case <-p.doneCh:
+		return false
+	default:
+	}
+	if p.bodyCh == nil {
+		p.bodyCh = make(chan []byte, streamingChanSize)
+	}
+	return sess.streamSend(p.bodyCh, payload, wait)
+}
+
+func (p *pendingRequest) discardBody() {
+	if p == nil {
+		return
+	}
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
+	for p.bodyCh != nil {
+		select {
+		case chunk := <-p.bodyCh:
+			tunnelproto.ReleaseBodyChunk(chunk)
+		default:
+			return
+		}
+	}
 }
 
 func (p *pendingRequest) finish() {

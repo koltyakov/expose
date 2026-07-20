@@ -44,6 +44,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tunnel", http.StatusUnauthorized)
 		return
 	}
+	keepLiveRoute := snap.session != nil
+	defer func() {
+		if !keepLiveRoute {
+			s.liveRoutes.deleteHostIfDomain(snap.route.Domain.Hostname, snap.route.Domain.ID)
+		}
+	}()
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -85,6 +91,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
+	keepLiveRoute = true
 	s.activateSession(tunnelID, conn, transport, writer, sessionActivateOptions{})
 }
 
@@ -107,6 +114,12 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tunnel", http.StatusUnauthorized)
 		return
 	}
+	keepLiveRoute := snap.session != nil
+	defer func() {
+		if !keepLiveRoute {
+			s.liveRoutes.deleteHostIfDomain(snap.route.Domain.Hostname, snap.route.Domain.ID)
+		}
+	}()
 	httpStreamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
 		http.Error(w, "http3 stream takeover unavailable", http.StatusInternalServerError)
@@ -144,6 +157,7 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
+	keepLiveRoute = true
 	w.WriteHeader(http.StatusOK)
 	stream := httpStreamer.HTTPStream()
 	var conn *quic.Conn
@@ -349,18 +363,19 @@ func (s *Server) readLoop(sess *session) {
 				continue
 			}
 			if pending, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
-				bodyCh := pending.ensureBodyCh()
 				payload, err := msg.BodyChunk.Payload()
 				if err != nil {
+					tunnelproto.ReleaseBodyChunk(msg.BodyChunk.Data)
 					continue
 				}
-				if !sess.streamSend(bodyCh, payload, streamBodySendTimeout) {
+				if !pending.sendBody(sess, payload, streamBodySendTimeout) {
 					tunnelproto.ReleaseBodyChunk(payload)
 					s.log.Warn("stream consumer too slow, aborting",
 						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID)
 					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {
 						sess.releasePending()
 						pending.abort()
+						pending.discardBody()
 						_ = sess.cancelRequest(msg.BodyChunk.ID)
 					}
 				}
@@ -493,6 +508,7 @@ func (s *session) closePending() {
 		delete(s.pending, k)
 		s.pendingCount.Add(-1)
 		pending.abort()
+		pending.discardBody()
 	}
 	s.pendingMu.Unlock()
 }

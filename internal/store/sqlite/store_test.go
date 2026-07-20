@@ -35,6 +35,44 @@ func TestStoreCloseIsIdempotentAndRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestSerializedWriteWaitsForEnqueuedOperationAfterCancellation(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- store.withSerializedWrite(ctx, func() error {
+			close(started)
+			<-release
+			return ctx.Err()
+		})
+	}()
+
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("serialized write returned before its operation completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("serialized write error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serialized write did not return after its operation completed")
+	}
+}
+
 func TestStoreCloseConcurrentWithReads(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {

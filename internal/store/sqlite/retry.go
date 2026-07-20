@@ -97,13 +97,9 @@ func (s *Store) withSerializedWrite(ctx context.Context, op func() error) error 
 		releaseStoreWriteCompletion(req.done)
 		return ctx.Err()
 	}
-	select {
-	case err := <-req.done.ch:
-		releaseStoreWriteCompletion(req.done)
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	err := <-req.done.ch
+	releaseStoreWriteCompletion(req.done)
+	return err
 }
 
 func (s *Store) runWriterLoop() {

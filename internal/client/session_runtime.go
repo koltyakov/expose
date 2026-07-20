@@ -351,11 +351,13 @@ func (rt *clientSessionRuntime) handleReqBody(chunk *tunnelproto.BodyChunk) erro
 
 	state, ok := rt.getStreamedRequestState(chunk.ID)
 	if !ok {
+		tunnelproto.ReleaseBodyChunk(chunk.Data)
 		return nil
 	}
 
 	data, err := chunk.Payload()
 	if err != nil {
+		tunnelproto.ReleaseBodyChunk(chunk.Data)
 		rt.cancelRequest(chunk.ID)
 		return nil
 	}
@@ -364,6 +366,7 @@ func (rt *clientSessionRuntime) handleReqBody(chunk *tunnelproto.BodyChunk) erro
 		return nil
 	}
 
+	tunnelproto.ReleaseBodyChunk(data)
 	rt.cancelRequest(chunk.ID)
 	if rt.client.log != nil {
 		rt.client.log.Warn("dropping stalled streamed request body", "request_id", chunk.ID)

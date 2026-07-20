@@ -85,11 +85,7 @@ func (s *Server) resolvePublicRouteStable(ctx context.Context, host string) (liv
 		}
 		return liveRouteSnapshot{}, err
 	}
-	s.liveRoutes.upsert(route)
 	s.routes.set(host, route)
-	if snap, ok := s.liveRoutes.lookupHost(host); ok {
-		return snap, nil
-	}
 	return liveRouteSnapshot{route: route}, nil
 }
 
@@ -239,6 +235,7 @@ func (s *Server) abortPendingRequest(sess *session, reqID string) {
 	if pending, ok := sess.pendingDelete(reqID); ok {
 		sess.releasePending()
 		pending.abort()
+		pending.discardBody()
 	}
 	_ = sess.cancelRequest(reqID)
 }

@@ -269,9 +269,8 @@ func TestRoutePublicationSerializesWithRegistration(t *testing.T) {
 	<-lookupDone
 	<-registrationDone
 
-	snap, ok := srv.liveRoutes.lookupHost(host)
-	if !ok || snap.route.Domain.ID != newRoute.Domain.ID || snap.route.Tunnel.ID != newRoute.Tunnel.ID {
-		t.Fatalf("final live route = %+v, want new registration", snap.route)
+	if _, ok := srv.liveRoutes.lookupHost(host); ok {
+		t.Fatal("offline registration should not be retained in live routes")
 	}
 	cached, ok := srv.routes.get(host)
 	if !ok || cached.Domain.ID != newRoute.Domain.ID {

@@ -161,6 +161,20 @@ func (c *routeCache) deleteByTunnelID(tunnelID string) {
 	delete(c.hostsByTunnel, tunnelID)
 }
 
+func (c *routeCache) getByTunnelID(tunnelID string) (domain.TunnelRoute, bool) {
+	c.mu.RLock()
+	hosts := c.hostsByTunnel[tunnelID]
+	for host := range hosts {
+		entry, ok := c.entries[host]
+		if ok && entry.found {
+			c.mu.RUnlock()
+			return entry.route, true
+		}
+	}
+	c.mu.RUnlock()
+	return domain.TunnelRoute{}, false
+}
+
 func (c *routeCache) trackHostLocked(tunnelID, host string) {
 	if tunnelID == "" || host == "" {
 		return

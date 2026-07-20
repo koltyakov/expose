@@ -27,7 +27,7 @@ func reuseStableAccessPasswordHash(prepared *preparedRegisterRequest, existing d
 	if prepared == nil {
 		return
 	}
-	if prepared.request.Password == "" || prepared.passwordHash == "" {
+	if prepared.request.Password == "" {
 		return
 	}
 	if strings.TrimSpace(existing.Domain.APIKeyID) != strings.TrimSpace(keyID) {
@@ -105,16 +105,9 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 
 	accessUser := ""
 	accessMode := ""
-	passwordHash := ""
 	if req.Password != "" {
 		accessUser = req.User
 		accessMode = req.AccessMode
-		hashed, hashErr := auth.HashPassword(req.Password)
-		if hashErr != nil {
-			http.Error(w, "failed to hash password", http.StatusInternalServerError)
-			return preparedRegisterRequest{}, false
-		}
-		passwordHash = hashed
 	}
 
 	autoStableSubdomain := false
@@ -134,10 +127,36 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 		request:             req,
 		accessUser:          accessUser,
 		accessMode:          accessMode,
-		passwordHash:        passwordHash,
 		autoStableSubdomain: autoStableSubdomain,
 		clientMachineID:     normalizedClientMachineID(req.ClientMachineID, req.ClientHostname),
 	}, true
+}
+
+func (s *Server) prepareRegisterPasswordHash(ctx context.Context, keyID, resumeTunnelID string, prepared *preparedRegisterRequest) error {
+	if prepared == nil || prepared.request.Password == "" {
+		return nil
+	}
+
+	var existing domain.TunnelRoute
+	resumeTunnelID = strings.TrimSpace(resumeTunnelID)
+	if resumeTunnelID != "" {
+		existing, _ = s.store.FindRouteByTunnelID(ctx, resumeTunnelID)
+	}
+	if existing.Tunnel.ID == "" && prepared.request.Subdomain != "" {
+		host := prepared.request.Subdomain + "." + normalizeHost(s.cfg.BaseDomain)
+		existing, _ = s.store.FindRouteByHost(ctx, host)
+	}
+	reuseStableAccessPasswordHash(prepared, existing, keyID)
+	if prepared.passwordHash != "" {
+		return nil
+	}
+
+	hash, err := auth.HashPassword(prepared.request.Password)
+	if err != nil {
+		return err
+	}
+	prepared.passwordHash = hash
+	return nil
 }
 
 func (s *Server) allocateRegisterRoute(ctx context.Context, keyID string, prepared preparedRegisterRequest) (domain.Domain, domain.Tunnel, error) {
@@ -182,7 +201,6 @@ func (s *Server) tryResumeRegisterRoute(
 	if resumeTunnelID != "" {
 		domainRec, tunnelRec, err := s.store.ResumeTunnelSession(ctx, resumeTunnelID, keyID, prepared.clientMachineID)
 		if err == nil {
-			s.liveRoutes.upsert(domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec})
 			if s.log != nil {
 				s.log.Info("tunnel session resumed", "tunnel_id", tunnelRec.ID, "hostname", domainRec.Hostname, "source", "header")
 			}
@@ -222,7 +240,6 @@ func (s *Server) tryResumeRegisterRoute(
 		}
 		return domain.Domain{}, domain.Tunnel{}, false, err
 	}
-	s.liveRoutes.upsert(domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec})
 	if s.log != nil {
 		s.log.Info("tunnel session resumed", "tunnel_id", tunnelRec.ID, "hostname", domainRec.Hostname, "source", "hostname")
 	}

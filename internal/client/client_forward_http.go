@@ -167,6 +167,11 @@ func (c *Client) forwardAndSend(
 		pipeReader = pr
 		go func() {
 			defer func() { _ = pw.Close() }()
+			defer func() {
+				for chunk := range bodyCh {
+					tunnelproto.ReleaseBodyChunk(chunk)
+				}
+			}()
 			for {
 				select {
 				case chunk, ok := <-bodyCh:

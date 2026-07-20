@@ -159,8 +159,10 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		sessionStartedAt := time.Now()
-		err = rt.run()
-		rt.close()
+		err = runSessionUntilInterrupt(ctx, rt, autoUpdateCh)
+		if err == ErrAutoUpdated {
+			return err
+		}
 		if shouldResetReconnectSchedule(sessionStartedAt, time.Now()) {
 			retry.reset()
 		}
@@ -188,6 +190,27 @@ func (c *Client) Run(ctx context.Context) error {
 			return ErrAutoUpdated
 		case <-time.After(delay):
 		}
+	}
+}
+
+func runSessionUntilInterrupt(ctx context.Context, rt sessionRuntime, autoUpdateCh <-chan struct{}) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- rt.run()
+	}()
+
+	select {
+	case err := <-done:
+		rt.close()
+		return err
+	case <-ctx.Done():
+		rt.close()
+		<-done
+		return ctx.Err()
+	case <-autoUpdateCh:
+		rt.close()
+		<-done
+		return ErrAutoUpdated
 	}
 }
 

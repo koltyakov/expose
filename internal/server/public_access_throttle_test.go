@@ -92,6 +92,30 @@ func TestBasicAuthFailedAttemptsThrottled(t *testing.T) {
 	}
 }
 
+func TestBasicAuthSuccessCacheIsBoundToPasswordHash(t *testing.T) {
+	srv, route := newThrottleTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/", nil)
+	req.RemoteAddr = "198.51.100.10:4321"
+	req.SetBasicAuth("admin", "correct-pass")
+
+	if !srv.authorizePublicRequest(httptest.NewRecorder(), req, route) {
+		t.Fatal("valid credentials were not authorized")
+	}
+	key := srv.basicAuthSuccessKey(route, "admin", "correct-pass")
+	if !srv.basicAuthCache.valid(key, time.Now()) {
+		t.Fatal("successful credentials were not cached")
+	}
+
+	changedHash, err := bcrypt.GenerateFromPassword([]byte("new-pass"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route.Tunnel.AccessPasswordHash = string(changedHash)
+	if srv.authorizePublicRequest(httptest.NewRecorder(), req, route) {
+		t.Fatal("cached credentials remained valid after the password hash changed")
+	}
+}
+
 func TestFormLoginFailedAttemptsThrottled(t *testing.T) {
 	srv, route := newThrottleTestServer(t)
 	route.Tunnel.AccessMode = "form"

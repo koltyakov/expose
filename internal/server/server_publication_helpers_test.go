@@ -210,6 +210,9 @@ func TestAttachAndClearPublishedSession(t *testing.T) {
 		Tunnel: domain.Tunnel{ID: "t-1"},
 	}
 	srv.publishRegisteredRoute(route)
+	if _, ok := srv.liveRoutes.lookupHost(host); ok {
+		t.Fatal("registered route should remain cached until a session is attached")
+	}
 
 	sess := &session{tunnelID: route.Tunnel.ID}
 	srv.attachPublishedSession(route.Tunnel.ID, sess)
@@ -221,9 +224,8 @@ func TestAttachAndClearPublishedSession(t *testing.T) {
 	if !srv.clearPublishedSession(route.Tunnel.ID, sess) {
 		t.Fatal("expected clearPublishedSession to report success")
 	}
-	snap, ok = srv.liveRoutes.lookupHost(host)
-	if !ok || snap.session != nil {
-		t.Fatal("expected session to be cleared from live route")
+	if _, ok = srv.liveRoutes.lookupHost(host); ok {
+		t.Fatal("expected disconnected session to be evicted from live routes")
 	}
 
 	// Unknown tunnels are a no-op for attach and report failure for clear.

@@ -1,17 +1,39 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/expose/internal/traffic"
 )
+
+type blockingSessionRuntime struct {
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newBlockingSessionRuntime() *blockingSessionRuntime {
+	return &blockingSessionRuntime{closed: make(chan struct{})}
+}
+
+func (r *blockingSessionRuntime) run() error {
+	<-r.closed
+	return context.Canceled
+}
+
+func (r *blockingSessionRuntime) close() {
+	r.closeOnce.Do(func() { close(r.closed) })
+}
+
+func (r *blockingSessionRuntime) transportKind() string { return "test" }
 
 func TestRegisterErrorError(t *testing.T) {
 	t.Parallel()
@@ -85,6 +107,24 @@ func TestClientSetters(t *testing.T) {
 	}
 	if client.display != display {
 		t.Fatal("SetDisplay() did not update client display")
+	}
+}
+
+func TestRunSessionUntilInterruptStopsActiveSessionForUpdate(t *testing.T) {
+	t.Parallel()
+
+	rt := newBlockingSessionRuntime()
+	updated := make(chan struct{}, 1)
+	updated <- struct{}{}
+
+	err := runSessionUntilInterrupt(context.Background(), rt, updated)
+	if !errors.Is(err, ErrAutoUpdated) {
+		t.Fatalf("runSessionUntilInterrupt() error = %v, want ErrAutoUpdated", err)
+	}
+	select {
+	case <-rt.closed:
+	default:
+		t.Fatal("active session was not closed after update")
 	}
 }
 

@@ -80,6 +80,7 @@ type Server struct {
 	lookupLimiter    *rateLimiter
 	publicLimiter    *rateLimiter
 	accessLimiter    *rateLimiter
+	basicAuthCache   basicAuthSuccessCache
 	routes           routeCache
 	routeLookups     lookupGroup[liveRouteSnapshot]
 	routeVersions    routeVersions

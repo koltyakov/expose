@@ -457,11 +457,13 @@ func pumpStreamedRequestBodyMessages(
 		}
 		payload, err := msg.BodyChunk.Payload()
 		if err != nil {
+			tunnelproto.ReleaseBodyChunk(msg.BodyChunk.Data)
 			continue
 		}
 		select {
 		case out <- payload:
 		case <-ctx.Done():
+			tunnelproto.ReleaseBodyChunk(payload)
 			return
 		}
 	}

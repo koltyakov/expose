@@ -249,8 +249,8 @@ func (i *liveRouteIndex) clearSession(tunnelID string, sess *session) (liveRoute
 		return snap, false
 	}
 	entry.session = nil
+	entry.active = false
 	if entry.isTemporary {
-		entry.active = false
 		entry.status = domain.DomainStatusInactive
 	}
 	snap := snapshotFromEntryLocked(entry)

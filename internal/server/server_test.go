@@ -95,8 +95,8 @@ func TestParseAndValidateRegisterRequestDefaults(t *testing.T) {
 	if prepared.accessMode != "form" {
 		t.Fatalf("expected default access mode form when password is set, got %q", prepared.accessMode)
 	}
-	if prepared.passwordHash == "" {
-		t.Fatal("expected password hash to be generated")
+	if prepared.passwordHash != "" {
+		t.Fatal("password hashing should be deferred until after request validation")
 	}
 	if prepared.clientMachineID != "host-a" {
 		t.Fatalf("expected fallback machine id from host, got %q", prepared.clientMachineID)

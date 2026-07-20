@@ -42,7 +42,6 @@ func (s *Server) publishRegisteredRoute(route domain.TunnelRoute) {
 	shard := s.routeVersions.shard(host)
 	shard.mu.Lock()
 	shard.version++
-	s.liveRoutes.upsert(route)
 	s.routes.set(host, route)
 	shard.mu.Unlock()
 }
@@ -61,11 +60,7 @@ func (s *Server) publishResolvedRoute(host string, version uint64, route domain.
 		}
 		return liveRouteSnapshot{}, false
 	}
-	s.liveRoutes.upsert(route)
 	s.routes.set(host, route)
-	if snap, ok := s.liveRoutes.lookupHost(host); ok {
-		return snap, true
-	}
 	return liveRouteSnapshot{route: route}, true
 }
 
@@ -99,7 +94,13 @@ func (s *Server) removePublishedRoute(host, domainID string) {
 func (s *Server) attachPublishedSession(tunnelID string, sess *session) {
 	snap, ok := s.liveRoutes.lookupTunnel(tunnelID)
 	if !ok {
-		return
+		if route, cached := s.routes.getByTunnelID(tunnelID); cached {
+			s.liveRoutes.upsert(route)
+			snap, ok = s.liveRoutes.lookupTunnel(tunnelID)
+		}
+		if !ok {
+			return
+		}
 	}
 	host := normalizeHost(snap.route.Domain.Hostname)
 	shard := s.routeVersions.shard(host)
@@ -123,6 +124,7 @@ func (s *Server) clearPublishedSession(tunnelID string, sess *session) bool {
 	cleared, ok := s.liveRoutes.clearSession(tunnelID, sess)
 	if ok {
 		s.routes.set(host, cleared.route)
+		s.liveRoutes.deleteHostIfDomain(host, cleared.route.Domain.ID)
 	}
 	shard.mu.Unlock()
 	return ok

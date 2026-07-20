@@ -226,6 +226,21 @@ func TestPendingRequestsDoNotReuseBodyChannels(t *testing.T) {
 	}
 }
 
+func TestPendingRequestDiscardBodyDrainsBufferedChunks(t *testing.T) {
+	t.Parallel()
+
+	pending := acquirePendingRequest()
+	bodyCh := pending.ensureBodyCh()
+	bodyCh <- []byte("one")
+	bodyCh <- []byte("two")
+	pending.abort()
+	pending.discardBody()
+
+	if got := len(bodyCh); got != 0 {
+		t.Fatalf("buffered body chunks after discard = %d, want 0", got)
+	}
+}
+
 func TestCertificateCleanupPreservesReassignedHostname(t *testing.T) {
 	t.Parallel()
 

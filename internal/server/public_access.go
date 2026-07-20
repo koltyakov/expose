@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/expose/internal/access"
@@ -28,7 +29,48 @@ const (
 	publicAccessFormPasswordField = access.FormPasswordField
 	publicAccessFormNextField     = access.FormNextField
 	maxPublicAccessFormBytes      = 8 * 1024
+	basicAuthSuccessTTL           = 30 * time.Second
+	basicAuthSuccessMaxEntries    = 4096
 )
+
+type basicAuthSuccessCache struct {
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]int64
+}
+
+func (c *basicAuthSuccessCache) valid(key [sha256.Size]byte, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	expiresAt, ok := c.entries[key]
+	if !ok {
+		return false
+	}
+	if now.UnixNano() >= expiresAt {
+		delete(c.entries, key)
+		return false
+	}
+	return true
+}
+
+func (c *basicAuthSuccessCache) remember(key [sha256.Size]byte, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[[sha256.Size]byte]int64)
+	}
+	if len(c.entries) >= basicAuthSuccessMaxEntries {
+		cutoff := now.UnixNano()
+		for cachedKey, expiresAt := range c.entries {
+			if expiresAt <= cutoff {
+				delete(c.entries, cachedKey)
+			}
+		}
+		if len(c.entries) >= basicAuthSuccessMaxEntries {
+			clear(c.entries)
+		}
+	}
+	c.entries[key] = now.Add(basicAuthSuccessTTL).UnixNano()
+}
 
 func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute) bool {
 	if route.Tunnel.AccessPasswordHash == "" {
@@ -43,8 +85,16 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 				writeAccessAuthThrottled(w)
 				return false
 			}
-			if isAuthorizedBasicUser(user, expectedUser) && auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
-				return true
+			if isAuthorizedBasicUser(user, expectedUser) {
+				now := time.Now()
+				cacheKey := s.basicAuthSuccessKey(route, user, password)
+				if s.basicAuthCache.valid(cacheKey, now) {
+					return true
+				}
+				if auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
+					s.basicAuthCache.remember(cacheKey, now)
+					return true
+				}
 			}
 			s.accessLimiter.allow(limitKey)
 		}
@@ -74,6 +124,24 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 
 	writePublicAccessDenied(w)
 	return false
+}
+
+func (s *Server) basicAuthSuccessKey(route domain.TunnelRoute, user, password string) [sha256.Size]byte {
+	secret := strings.TrimSpace(s.cfg.AccessCookieSecret)
+	if secret == "" {
+		secret = route.Tunnel.AccessPasswordHash
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(route.Domain.Hostname))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(user))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(route.Tunnel.AccessPasswordHash))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(password))
+	var key [sha256.Size]byte
+	copy(key[:], mac.Sum(nil))
+	return key
 }
 
 func publicAccessMode(route domain.TunnelRoute) string {

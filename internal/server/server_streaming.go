@@ -68,7 +68,9 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	n, readErr := io.ReadFull(r.Body, firstBuf)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		// The entire body fits within the threshold - send inline.
+		// The entire body fits within the threshold - send inline. Passing the
+		// pooled buffer without a copy is safe: writeJSON blocks until the
+		// write pump has fully written (or failed) the message.
 		return false, sess.writeJSON(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{
@@ -78,7 +80,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 				RawPath:   r.URL.RawPath,
 				Query:     r.URL.RawQuery,
 				Headers:   headers,
-				Body:      append([]byte(nil), firstBuf[:n]...),
+				Body:      firstBuf[:n],
 				TimeoutMs: requestTimeoutMs,
 			},
 		})
@@ -175,7 +177,9 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 			}
 			timer.Reset(chunkTimeout)
 			if len(chunk) > 0 {
-				if _, wErr := w.Write(chunk); wErr != nil {
+				_, wErr := w.Write(chunk)
+				tunnelproto.ReleaseBodyChunk(chunk)
+				if wErr != nil {
 					return false
 				}
 				if canFlush {
@@ -189,7 +193,9 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 					if len(chunk) == 0 {
 						continue
 					}
-					if _, wErr := w.Write(chunk); wErr != nil {
+					_, wErr := w.Write(chunk)
+					tunnelproto.ReleaseBodyChunk(chunk)
+					if wErr != nil {
 						return false
 					}
 					if canFlush {

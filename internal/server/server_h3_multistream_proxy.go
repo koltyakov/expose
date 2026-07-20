@@ -432,12 +432,16 @@ func writeH3StreamedResponseBody(
 			}
 			b, err := msg.BodyChunk.Payload()
 			if err == nil && len(b) > 0 {
-				if _, wErr := w.Write(b); wErr != nil {
+				_, wErr := w.Write(b)
+				tunnelproto.ReleaseBodyChunk(b)
+				if wErr != nil {
 					return false
 				}
 				if canFlush {
 					flusher.Flush()
 				}
+			} else {
+				tunnelproto.ReleaseBodyChunk(b)
 			}
 		case tunnelproto.KindRespBodyEnd:
 			if msg.BodyChunk != nil && msg.BodyChunk.Error != "" {

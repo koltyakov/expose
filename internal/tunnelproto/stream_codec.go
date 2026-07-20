@@ -65,6 +65,25 @@ func readStreamMessageVersion(r io.Reader, maxPayloadBytes int64, dst *Message, 
 		return fmt.Errorf("stream payload/frame length mismatch: stream=%d frame=%d", payloadLen, total)
 	}
 
+	if metaLen == 0 {
+		switch frameHeader[1] {
+		case frameKindReqBody:
+			chunk, err := readPooledBodyChunk(r, idLen, bodyLen)
+			if err != nil {
+				return err
+			}
+			*dst = Message{Kind: KindReqBody, BodyChunk: chunk}
+			return nil
+		case frameKindRespBody:
+			chunk, err := readPooledBodyChunk(r, idLen, bodyLen)
+			if err != nil {
+				return err
+			}
+			*dst = Message{Kind: KindRespBody, BodyChunk: chunk}
+			return nil
+		}
+	}
+
 	id, meta, payload, err := readStreamFrameSections(r, idLen, metaLen, bodyLen)
 	if err != nil {
 		return err

@@ -377,6 +377,80 @@ func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
 // exact-size allocation.
 const maxFramePrealloc = 1 << 20
 
+// bodyChunkBufSize fits the largest streamed body chunk the runtime sends: the
+// 256KB streaming chunk plus the one-byte inline/streamed probe overhang. If
+// the streaming constants ever grow past this, oversized chunks fall back to
+// plain allocation.
+const bodyChunkBufSize = 256*1024 + 1
+
+// bodyChunkPool recycles payload buffers for req_body/resp_body frames, the
+// dominant allocation on high-throughput transfers. Buffers are handed back by
+// the single consumer of each chunk via [ReleaseBodyChunk]; chunks that never
+// reach their consumer are simply collected by the GC.
+var bodyChunkPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, bodyChunkBufSize)
+		return &b
+	},
+}
+
+func getBodyChunkBuf(n int) []byte {
+	if n <= 0 {
+		return nil
+	}
+	if n > bodyChunkBufSize {
+		return make([]byte, n)
+	}
+	return (*bodyChunkPool.Get().(*[]byte))[:n]
+}
+
+// ReleaseBodyChunk returns a req_body/resp_body payload to the internal buffer
+// pool. Call it only after the chunk's bytes have been fully consumed (written
+// out or copied); the slice must not be used afterwards. Slices that did not
+// come from the pool are ignored, so callers do not need to track provenance.
+func ReleaseBodyChunk(b []byte) {
+	if cap(b) != bodyChunkBufSize {
+		return
+	}
+	buf := b[:bodyChunkBufSize]
+	bodyChunkPool.Put(&buf)
+}
+
+// readFrameID reads the frame id section, keeping typical short ids off the
+// heap until the string conversion.
+func readFrameID(r io.Reader, n int) (string, error) {
+	if n <= 0 {
+		return "", nil
+	}
+	var stack [64]byte
+	buf := stack[:]
+	if n > len(stack) {
+		buf = make([]byte, n)
+	}
+	buf = buf[:n]
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return "", fmt.Errorf("binary frame truncated: %w", err)
+	}
+	return string(buf), nil
+}
+
+// readPooledBodyChunk reads a req_body/resp_body frame's id and payload,
+// placing the payload in a pooled buffer.
+func readPooledBodyChunk(r io.Reader, idLen, payloadLen int) (*BodyChunk, error) {
+	id, err := readFrameID(r, idLen)
+	if err != nil {
+		return nil, err
+	}
+	payload := getBodyChunkBuf(payloadLen)
+	if payloadLen > 0 {
+		if _, err := io.ReadFull(r, payload); err != nil {
+			ReleaseBodyChunk(payload)
+			return nil, fmt.Errorf("binary frame truncated: %w", err)
+		}
+	}
+	return &BodyChunk{ID: id, Data: payload}, nil
+}
+
 // readBinaryFrame decodes a binary tunnel frame from r without buffering the
 // whole websocket message first: the fixed header declares the section sizes,
 // so the sections are read into an exactly sized buffer.
@@ -395,6 +469,31 @@ func readBinaryFrame(r io.Reader) (Message, error) {
 	idLen := int(binary.BigEndian.Uint16(header[4:6]))
 	metaLen := int(binary.BigEndian.Uint32(header[6:10]))
 	payloadLen := int(binary.BigEndian.Uint32(header[10:14]))
+
+	if metaLen == 0 {
+		switch header[1] {
+		case frameKindReqBody:
+			chunk, err := readPooledBodyChunk(r, idLen, payloadLen)
+			if err != nil {
+				return Message{}, err
+			}
+			if n, _ := r.Read(header[:1]); n != 0 {
+				ReleaseBodyChunk(chunk.Data)
+				return Message{}, errors.New("binary frame length mismatch: trailing data")
+			}
+			return Message{Kind: KindReqBody, BodyChunk: chunk}, nil
+		case frameKindRespBody:
+			chunk, err := readPooledBodyChunk(r, idLen, payloadLen)
+			if err != nil {
+				return Message{}, err
+			}
+			if n, _ := r.Read(header[:1]); n != 0 {
+				ReleaseBodyChunk(chunk.Data)
+				return Message{}, errors.New("binary frame length mismatch: trailing data")
+			}
+			return Message{Kind: KindRespBody, BodyChunk: chunk}, nil
+		}
+	}
 
 	buf, err := readFrameSections(r, idLen+metaLen+payloadLen)
 	if err != nil {

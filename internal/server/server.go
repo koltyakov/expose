@@ -187,11 +187,20 @@ const (
 	defaultWAFCounterRetention  = time.Hour
 	wsWriteControlQueueSize     = 64
 	wsWriteDataQueueSize        = 128
-	// tunnelWSBufferSize sizes the tunnel websocket read/write buffers. Tunnel
+	// tunnelWSBufferSize sizes the tunnel websocket read buffers. Tunnel
 	// frames carry up to streamingChunkSize payloads; the gorilla default of
-	// 4KB fragments each chunk into dozens of small writes and syscalls.
+	// 4KB fragments each chunk into dozens of small reads and syscalls.
 	tunnelWSBufferSize = 64 * 1024
+	// tunnelWSWriteBufferSize fits a full streaming chunk plus frame overhead
+	// so each chunk flushes to the socket in a single write. The buffers are
+	// shared across tunnel connections via wsWriteBufferPool rather than held
+	// per connection.
+	tunnelWSWriteBufferSize = 264 * 1024
 )
+
+// wsWriteBufferPool shares tunnel websocket write buffers across connections;
+// gorilla acquires a buffer per message write and returns it afterwards.
+var wsWriteBufferPool = &sync.Pool{}
 
 const (
 	errCodeHostnameInUse = "hostname_in_use"
@@ -201,7 +210,8 @@ const (
 
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  tunnelWSBufferSize,
-	WriteBufferSize: tunnelWSBufferSize,
+	WriteBufferSize: tunnelWSWriteBufferSize,
+	WriteBufferPool: wsWriteBufferPool,
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 

@@ -173,16 +173,21 @@ func (c *Client) forwardAndSend(
 					if !ok {
 						return
 					}
-					for len(chunk) > 0 {
-						written, err := pw.Write(chunk)
+					data := chunk
+					for len(data) > 0 {
+						written, err := pw.Write(data)
 						if written > 0 {
 							c.recordTraffic(traffic.DirectionInbound, int64(written))
-							chunk = chunk[written:]
+							data = data[written:]
 						}
 						if err != nil {
+							tunnelproto.ReleaseBodyChunk(chunk)
 							return
 						}
 					}
+					// The pipe reader has copied every byte once Write returns,
+					// so the chunk's pooled buffer can be recycled.
+					tunnelproto.ReleaseBodyChunk(chunk)
 				case <-ctx.Done():
 					pw.CloseWithError(ctx.Err())
 					return
@@ -280,15 +285,16 @@ func (c *Client) forwardAndSend(
 	}
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		// Small response - send inline.
-		body := append([]byte(nil), firstBuf[:n]...)
+		// Small response - send inline. Passing the pooled buffer without a
+		// copy is safe: writeMsg blocks until the message has been fully
+		// written (or failed).
 		_ = writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindResponse,
 			Response: &tunnelproto.HTTPResponse{
 				ID:      req.ID,
 				Status:  resp.StatusCode,
 				Headers: respHeaders,
-				Body:    body,
+				Body:    firstBuf[:n],
 			},
 		})
 		c.logForwardResult(req, resp.StatusCode, started)
@@ -331,7 +337,7 @@ func (c *Client) forwardAndSend(
 		}
 	} else if err := writeMsg(tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: append([]byte(nil), firstBuf[:n]...)},
+		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: firstBuf[:n]},
 	}); err != nil {
 		c.logForwardResult(req, resp.StatusCode, started)
 		return

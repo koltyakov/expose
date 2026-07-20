@@ -355,6 +355,7 @@ func (s *Server) readLoop(sess *session) {
 					continue
 				}
 				if !sess.streamSend(bodyCh, payload, streamBodySendTimeout) {
+					tunnelproto.ReleaseBodyChunk(payload)
 					s.log.Warn("stream consumer too slow, aborting",
 						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID)
 					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {
@@ -363,6 +364,8 @@ func (s *Server) readLoop(sess *session) {
 						_ = sess.cancelRequest(msg.BodyChunk.ID)
 					}
 				}
+			} else {
+				tunnelproto.ReleaseBodyChunk(msg.BodyChunk.Data)
 			}
 		case tunnelproto.KindRespBodyEnd:
 			if msg.BodyChunk == nil {

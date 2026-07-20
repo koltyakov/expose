@@ -187,6 +187,10 @@ const (
 	defaultWAFCounterRetention  = time.Hour
 	wsWriteControlQueueSize     = 64
 	wsWriteDataQueueSize        = 128
+	// tunnelWSBufferSize sizes the tunnel websocket read/write buffers. Tunnel
+	// frames carry up to streamingChunkSize payloads; the gorilla default of
+	// 4KB fragments each chunk into dozens of small writes and syscalls.
+	tunnelWSBufferSize = 64 * 1024
 )
 
 const (
@@ -196,7 +200,9 @@ const (
 )
 
 var wsUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	ReadBufferSize:  tunnelWSBufferSize,
+	WriteBufferSize: tunnelWSBufferSize,
+	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
 // New creates a Server with the given configuration, store, and logger.

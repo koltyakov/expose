@@ -343,13 +343,17 @@ func (d *WSData) Payload() ([]byte, error) {
 // fallback for older tests and ad hoc peers.
 func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
 	for {
-		msgType, data, err := conn.ReadMessage()
+		msgType, r, err := conn.NextReader()
 		if err != nil {
 			return err
 		}
 
 		switch msgType {
 		case websocket.TextMessage:
+			data, err := io.ReadAll(r)
+			if err != nil {
+				return err
+			}
 			var msg Message
 			if err := json.Unmarshal(data, &msg); err != nil {
 				return err
@@ -357,7 +361,7 @@ func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
 			*dst = msg
 			return nil
 		case websocket.BinaryMessage:
-			msg, err := decodeBinaryFrame(data)
+			msg, err := readBinaryFrame(r)
 			if err != nil {
 				return err
 			}
@@ -365,6 +369,70 @@ func ReadWSMessage(conn *websocket.Conn, dst *Message) error {
 			return nil
 		}
 	}
+}
+
+// maxFramePrealloc caps the upfront allocation for a declared frame size so a
+// peer cannot force huge allocations by claiming a length it never sends.
+// Frames at or below the cap (all hot-path body chunks) are read with a single
+// exact-size allocation.
+const maxFramePrealloc = 1 << 20
+
+// readBinaryFrame decodes a binary tunnel frame from r without buffering the
+// whole websocket message first: the fixed header declares the section sizes,
+// so the sections are read into an exactly sized buffer.
+func readBinaryFrame(r io.Reader) (Message, error) {
+	var header [binaryFrameHeader]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return Message{}, errors.New("binary frame is too short")
+		}
+		return Message{}, err
+	}
+	if header[0] != binaryFrameVersion {
+		return Message{}, fmt.Errorf("unsupported binary frame version: %d", header[0])
+	}
+
+	idLen := int(binary.BigEndian.Uint16(header[4:6]))
+	metaLen := int(binary.BigEndian.Uint32(header[6:10]))
+	payloadLen := int(binary.BigEndian.Uint32(header[10:14]))
+
+	buf, err := readFrameSections(r, idLen+metaLen+payloadLen)
+	if err != nil {
+		return Message{}, err
+	}
+	if n, _ := r.Read(header[:1]); n != 0 {
+		return Message{}, errors.New("binary frame length mismatch: trailing data")
+	}
+
+	id := ""
+	if idLen > 0 {
+		id = string(buf[:idLen])
+	}
+	meta := buf[idLen : idLen+metaLen]
+	payload := buf[idLen+metaLen:]
+	return decodeFrameParts(header[1], id, int(header[2]), meta, payload)
+}
+
+// readFrameSections reads exactly total bytes, capping the upfront allocation
+// at maxFramePrealloc so growth beyond the cap only happens as bytes actually
+// arrive (the connection read limit bounds the real message size).
+func readFrameSections(r io.Reader, total int) ([]byte, error) {
+	if total <= 0 {
+		return nil, nil
+	}
+	buf := make([]byte, min(total, maxFramePrealloc))
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, fmt.Errorf("binary frame truncated: %w", err)
+	}
+	for len(buf) < total {
+		grown := make([]byte, min(len(buf)*2, total))
+		copy(grown, buf)
+		if _, err := io.ReadFull(r, grown[len(buf):]); err != nil {
+			return nil, fmt.Errorf("binary frame truncated: %w", err)
+		}
+		buf = grown
+	}
+	return buf, nil
 }
 
 // WriteMessage writes a unified binary tunnel frame.
@@ -611,13 +679,29 @@ func newEncodedFrame(kind byte, id string, wsMessageType int, meta, payload []by
 	}, nil
 }
 
+// frameHeadPool recycles buffers used to coalesce the frame header, id, and
+// meta sections into a single write on the hot path.
+var frameHeadPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 512)
+		return &b
+	},
+}
+
 func writeEncodedFrame(w io.Writer, enc encodedFrame) error {
-	var header [binaryFrameHeader]byte
-	putEncodedFrameHeader(header[:], enc)
-	if _, err := w.Write(header[:]); err != nil {
+	headPtr := frameHeadPool.Get().(*[]byte)
+	head := appendEncodedFrameHead((*headPtr)[:0], enc)
+	_, err := w.Write(head)
+	*headPtr = head[:0]
+	frameHeadPool.Put(headPtr)
+	if err != nil {
 		return err
 	}
-	return writeEncodedFrameSections(w, enc)
+	if len(enc.payload) == 0 {
+		return nil
+	}
+	_, err = w.Write(enc.payload)
+	return err
 }
 
 func putEncodedFrameHeader(header []byte, enc encodedFrame) {
@@ -629,22 +713,15 @@ func putEncodedFrameHeader(header []byte, enc encodedFrame) {
 	binary.BigEndian.PutUint32(header[10:14], uint32(len(enc.payload)))
 }
 
-func writeEncodedFrameSections(w io.Writer, enc encodedFrame) error {
-	if enc.id != "" {
-		if _, err := io.WriteString(w, enc.id); err != nil {
-			return err
-		}
-	}
-	if len(enc.meta) > 0 {
-		if _, err := w.Write(enc.meta); err != nil {
-			return err
-		}
-	}
-	if len(enc.payload) == 0 {
-		return nil
-	}
-	_, err := w.Write(enc.payload)
-	return err
+// appendEncodedFrameHead appends the fixed frame header plus the id and meta
+// sections so they go out in one write instead of three.
+func appendEncodedFrameHead(dst []byte, enc encodedFrame) []byte {
+	var header [binaryFrameHeader]byte
+	putEncodedFrameHeader(header[:], enc)
+	dst = append(dst, header[:]...)
+	dst = append(dst, enc.id...)
+	dst = append(dst, enc.meta...)
+	return dst
 }
 
 func encodedFrameLen(enc encodedFrame) int {

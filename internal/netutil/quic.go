@@ -30,5 +30,12 @@ func TunnelQUICConfig(maxIdle time.Duration) *quic.Config {
 	return &quic.Config{
 		MaxIdleTimeout:  maxIdle,
 		KeepAlivePeriod: keepAlive,
+		// Larger receive windows than the quic-go defaults (512KB/6MB stream,
+		// 768KB/15MB connection) keep 256KB tunnel chunks flowing on
+		// high-bandwidth-delay links instead of stalling on flow control.
+		InitialStreamReceiveWindow:     2 * 1024 * 1024,
+		MaxStreamReceiveWindow:         16 * 1024 * 1024,
+		InitialConnectionReceiveWindow: 4 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     64 * 1024 * 1024,
 	}
 }

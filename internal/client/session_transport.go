@@ -94,6 +94,8 @@ func (c *Client) connectWebSocketTransport(ctx context.Context, reg domain.Regis
 	dialer := websocket.Dialer{
 		HandshakeTimeout: wsHandshakeTimeout,
 		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
+		ReadBufferSize:   tunnelWSBufferSize,
+		WriteBufferSize:  tunnelWSBufferSize,
 	}
 	conn, _, err := dialer.DialContext(ctx, reg.WSURL, nil)
 	if err != nil {

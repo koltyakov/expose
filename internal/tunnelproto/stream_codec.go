@@ -138,15 +138,22 @@ func writeStreamBinaryFrameVersion(w io.Writer, frameKind byte, id string, wsMes
 }
 
 func writeStreamRecord(w io.Writer, enc encodedFrame, recordVersion byte) error {
-	var headers [streamRecordHeader + binaryFrameHeader]byte
-	headers[0] = recordVersion
-	headers[1] = streamRecordFrame
-	binary.BigEndian.PutUint32(headers[2:6], uint32(encodedFrameLen(enc)))
-	putEncodedFrameHeader(headers[streamRecordHeader:], enc)
-	if _, err := w.Write(headers[:]); err != nil {
+	headPtr := frameHeadPool.Get().(*[]byte)
+	head := (*headPtr)[:0]
+	head = append(head, recordVersion, streamRecordFrame, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(head[2:6], uint32(encodedFrameLen(enc)))
+	head = appendEncodedFrameHead(head, enc)
+	_, err := w.Write(head)
+	*headPtr = head[:0]
+	frameHeadPool.Put(headPtr)
+	if err != nil {
 		return err
 	}
-	return writeEncodedFrameSections(w, enc)
+	if len(enc.payload) == 0 {
+		return nil
+	}
+	_, err = w.Write(enc.payload)
+	return err
 }
 
 func streamFrameKind(frameKind byte) byte {

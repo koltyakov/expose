@@ -129,6 +129,10 @@ const (
 	wsWriteControlQueueSize      = 64
 	wsWriteDataQueueSize         = 128
 	visitorRetention             = 10 * time.Minute
+	// tunnelWSBufferSize sizes the tunnel websocket read/write buffers. Tunnel
+	// frames carry up to streamingChunkSize payloads; the gorilla default of
+	// 4KB fragments each chunk into dozens of small writes and syscalls.
+	tunnelWSBufferSize = 64 * 1024
 )
 
 // New creates a Client with the given configuration and logger.

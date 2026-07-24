@@ -104,7 +104,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		Name:                  EnvOrDefault("EXPOSE_SUBDOMAIN", ""),
 		Timeout:               30 * time.Second,
 		PingInterval:          defaultClientPingInterval,
-		MaxConcurrentForwards: envInt("EXPOSE_MAX_CONCURRENT_FORWARDS", 32, &envErrs),
+		MaxConcurrentForwards: envInt("EXPOSE_MAX_CONCURRENT_FORWARDS", 128, &envErrs),
 		PprofListen:           strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
 	}
 	if err := errors.Join(envErrs...); err != nil {
@@ -214,7 +214,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		WAFBodyInspectLimit:    envInt64("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024, &envErrs),
 		WAFMaxURILength:        envInt("EXPOSE_WAF_MAX_URI_LENGTH", 0, &envErrs),
 		WAFMaxHeaderCount:      envInt("EXPOSE_WAF_MAX_HEADER_COUNT", 0, &envErrs),
-		MaxPendingPerTunnel:    envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 32, &envErrs),
+		MaxPendingPerTunnel:    envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 128, &envErrs),
 		PublicRateLimitRPS:     envInt("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0, &envErrs),
 		PublicRateLimitBurst:   envInt("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0, &envErrs),
 		RouteCacheTTL:          envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),

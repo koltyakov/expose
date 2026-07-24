@@ -201,6 +201,16 @@ func TestParseClientFlagsMaxConcurrentForwardsFromEnv(t *testing.T) {
 	}
 }
 
+func TestParseClientFlagsMaxConcurrentForwardsDefault(t *testing.T) {
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxConcurrentForwards != 128 {
+		t.Fatalf("expected default max concurrent forwards 128, got %d", cfg.MaxConcurrentForwards)
+	}
+}
+
 func TestParseClientFlagsPprofListenFromEnv(t *testing.T) {
 	t.Setenv("EXPOSE_PPROF_LISTEN", "127.0.0.1:6060")
 
@@ -246,6 +256,16 @@ func TestParseServerFlagsAdvancedTunablesFromEnv(t *testing.T) {
 	}
 	if cfg.AccessCookieSecret != "cookie-secret" {
 		t.Fatalf("expected access cookie secret from env, got %q", cfg.AccessCookieSecret)
+	}
+}
+
+func TestParseServerFlagsMaxPendingPerTunnelDefault(t *testing.T) {
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxPendingPerTunnel != 128 {
+		t.Fatalf("expected default max pending per tunnel 128, got %d", cfg.MaxPendingPerTunnel)
 	}
 }
 

@@ -132,6 +132,9 @@ func TestNewStaticClientConfigSetsPingInterval(t *testing.T) {
 	if cfg.PingInterval != defaultClientPingInterval {
 		t.Fatalf("expected ping interval %s, got %s", defaultClientPingInterval, cfg.PingInterval)
 	}
+	if cfg.MaxConcurrentForwards != 128 {
+		t.Fatalf("expected max concurrent forwards 128, got %d", cfg.MaxConcurrentForwards)
+	}
 }
 
 func clearServerEnvVarsForTest(t *testing.T) {

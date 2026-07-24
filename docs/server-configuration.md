@@ -42,7 +42,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |
 | -                         | `EXPOSE_WAF_AUDIT_ONLY`          | `false`       | Evaluate WAF rules without blocking requests                   |
 | -                         | `EXPOSE_WAF_BODY_INSPECT_LIMIT`  | `16384`       | Max public request-body bytes the WAF inspects (`0` disables)  |
-| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`  | `32`          | Max in-flight public HTTP requests per active tunnel           |
+| -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`  | `128`         | Max in-flight public HTTP requests per active tunnel           |
 | -                         | `EXPOSE_PUBLIC_RATE_LIMIT_RPS`   | `0`           | Optional public request rate limit per hostname+client IP      |
 | -                         | `EXPOSE_PUBLIC_RATE_LIMIT_BURST` | `0`           | Burst for the public request limit (`0` auto-derives from RPS) |
 | -                         | `EXPOSE_ROUTE_CACHE_TTL`         | `1m`          | Positive hostname route cache TTL before DB revalidation       |

@@ -160,7 +160,7 @@ func runSoak(ctx context.Context, args []string) int {
 		LocalPort:             port,
 		Timeout:               30 * time.Second,
 		PingInterval:          30 * time.Second,
-		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 128),
 		PprofListen:           strings.TrimSpace(pprofListen),
 		RegistrationMode:      "temporary",
 	}

@@ -117,7 +117,7 @@ const (
 	reconnectThirdStageDelay     = 15 * time.Second
 	reconnectInitialWindow       = 30 * time.Second
 	reconnectSecondStageWindow   = 5 * time.Minute
-	defaultMaxConcurrentForwards = 32
+	defaultMaxConcurrentForwards = 128
 	wsMessageBufferSize          = 64
 	clientWSWriteTimeout         = 15 * time.Second
 	clientWSReadLimit            = 64 * 1024 * 1024

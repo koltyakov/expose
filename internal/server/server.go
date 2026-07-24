@@ -157,7 +157,7 @@ const (
 	tlsModeWildcard             = "wildcard"
 	maxRegisterBodyBytes        = 64 * 1024
 	minWSReadLimit              = 32 * 1024 * 1024
-	defaultMaxPendingPerSession = 32
+	defaultMaxPendingPerSession = 128
 	streamingThreshold          = 256 * 1024
 	streamingChunkSize          = 256 * 1024
 	streamingChanSize           = 16

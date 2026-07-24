@@ -48,7 +48,7 @@ Environment Variables:
   EXPOSE_PORT             Local port to expose
   EXPOSE_SUBDOMAIN        Requested subdomain name
   EXPOSE_PPROF_LISTEN     Optional pprof listen address (e.g. 127.0.0.1:6060)
-  EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 32)
+  EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 128)
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
 	  EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
 	  EXPOSE_DB_MAX_OPEN_CONNS  SQLite max open connections (default: 10)
@@ -58,7 +58,7 @@ Environment Variables:
 	  EXPOSE_WAF_ENABLE       Enable the built-in WAF (default: true)
   EXPOSE_WAF_AUDIT_ONLY   Run WAF in dry-run mode without blocking (default: false)
   EXPOSE_WAF_BODY_INSPECT_LIMIT  Public request-body bytes inspected by the WAF (default: 16384, 0 disables)
-  EXPOSE_MAX_PENDING_PER_TUNNEL   Per-tunnel in-flight request cap on the server (default: 32)
+  EXPOSE_MAX_PENDING_PER_TUNNEL   Per-tunnel in-flight request cap on the server (default: 128)
   EXPOSE_PUBLIC_RATE_LIMIT_RPS    Optional public request rate limit per hostname+client IP (default: 0)
   EXPOSE_PUBLIC_RATE_LIMIT_BURST  Burst for the public request rate limit (default: 0 -> 2x RPS when enabled)
   EXPOSE_ROUTE_CACHE_TTL          Positive route cache TTL on the server (default: 1m)

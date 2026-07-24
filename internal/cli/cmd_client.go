@@ -195,7 +195,7 @@ func newStaticClientConfig(serverURL, apiKey, transport, name, protectMode strin
 		Name:                  name,
 		Timeout:               30 * time.Second,
 		PingInterval:          defaultClientPingInterval,
-		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 32),
+		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 128),
 		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
 	}
 }

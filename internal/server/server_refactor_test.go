@@ -47,6 +47,10 @@ func (s *stubServerStore) SetTunnelAccessCredentials(context.Context, string, st
 	return nil
 }
 
+func (s *stubServerStore) SetTunnelWAFPathRules(context.Context, string, *domain.WAFPathRules) error {
+	return nil
+}
+
 func (s *stubServerStore) CreateConnectToken(context.Context, string, time.Duration) (string, error) {
 	return "", nil
 }

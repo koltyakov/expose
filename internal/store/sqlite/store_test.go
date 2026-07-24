@@ -157,6 +157,9 @@ func TestSetTunnelAccessPasswordHashAndRouteLookup(t *testing.T) {
 	if err := store.SetTunnelAccessCredentials(ctx, tunnel.ID, "admin", "form", "bcrypt-hash"); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetTunnelWAFPathRules(ctx, tunnel.ID, &domain.WAFPathRules{IgnorePaths: []string{"/generated", "/cache"}}); err != nil {
+		t.Fatal(err)
+	}
 
 	route, err := store.FindRouteByHost(ctx, d.Hostname)
 	if err != nil {
@@ -170,6 +173,19 @@ func TestSetTunnelAccessPasswordHashAndRouteLookup(t *testing.T) {
 	}
 	if route.Tunnel.AccessMode != "form" {
 		t.Fatalf("expected access mode to roundtrip, got %q", route.Tunnel.AccessMode)
+	}
+	if route.Tunnel.WAFPathRules == nil || strings.Join(route.Tunnel.WAFPathRules.IgnorePaths, ",") != "/generated,/cache" {
+		t.Fatalf("expected WAF path rules to roundtrip, got %#v", route.Tunnel.WAFPathRules)
+	}
+	if err := store.SetTunnelWAFPathRules(ctx, tunnel.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	route, err = store.FindRouteByHost(ctx, d.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.WAFPathRules != nil {
+		t.Fatalf("expected WAF path rules to clear, got %#v", route.Tunnel.WAFPathRules)
 	}
 }
 
@@ -1267,6 +1283,7 @@ VALUES('legacy-tunnel', 'legacy-key', 'legacy-domain', 'disconnected', 1, ?, ?)`
 		{table: "tunnels", column: "access_password_hash"},
 		{table: "tunnels", column: "access_user"},
 		{table: "tunnels", column: "access_mode"},
+		{table: "tunnels", column: "waf_ignore_paths"},
 		{table: "api_keys", column: "tunnel_limit"},
 	} {
 		ok, err := testSQLiteColumnExists(db, tc.table, tc.column)

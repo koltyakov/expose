@@ -72,7 +72,8 @@ func (s *Server) Run(ctx context.Context) error {
 			ShouldInspectBody: func(r *http.Request) bool {
 				return shouldInspectWAFBody(r)
 			},
-			OnBlock: s.recordWAFBlock,
+			ShouldIgnorePathRule: s.shouldIgnoreWAFPathRule,
+			OnBlock:              s.recordWAFBlock,
 		}, s.log)(handler)
 		s.log.Info("WAF enabled")
 	}

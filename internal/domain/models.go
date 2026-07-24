@@ -56,8 +56,13 @@ type Tunnel struct {
 	AccessUser         string
 	AccessMode         string
 	AccessPasswordHash string
+	WAFPathRules       *WAFPathRules
 	ConnectedAt        *time.Time
 	DisconnectedAt     *time.Time
+}
+
+type WAFPathRules struct {
+	IgnorePaths []string
 }
 
 // TunnelRoute pairs a [Domain] with its most recent [Tunnel] for routing.

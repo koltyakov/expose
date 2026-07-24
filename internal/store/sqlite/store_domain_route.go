@@ -24,7 +24,7 @@ func (s *Store) FindRouteByTunnelID(ctx context.Context, tunnelID string) (domai
 	const query = `
 SELECT
  d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
- t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.connected_at, t.disconnected_at
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.waf_ignore_paths, t.connected_at, t.disconnected_at
 FROM tunnels t
 JOIN domains d ON d.id = t.domain_id
 WHERE t.id = ?
@@ -41,18 +41,19 @@ func (s *Store) findRoute(ctx context.Context, query string, arg any) (domain.Tu
 	var accessUser sql.NullString
 	var accessMode sql.NullString
 	var accessPasswordHash sql.NullString
+	var wafIgnorePaths sql.NullString
 
 	stmt := s.findRouteByHostStmt
 	var err error
 	if stmt != nil && query == findRouteByHostQuery {
 		err = stmt.QueryRowContext(ctx, arg).Scan(
 			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
-			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
+			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &wafIgnorePaths, &connectedAt, &disconnectedAt,
 		)
 	} else {
 		err = s.db.QueryRowContext(ctx, query, arg).Scan(
 			&r.Domain.ID, &r.Domain.APIKeyID, &r.Domain.Type, &r.Domain.Hostname, &r.Domain.Status, &r.Domain.CreatedAt, &lastSeen,
-			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
+			&r.Tunnel.ID, &r.Tunnel.APIKeyID, &r.Tunnel.DomainID, &r.Tunnel.State, &r.Tunnel.IsTemporary, &clientMeta, &accessUser, &accessMode, &accessPasswordHash, &wafIgnorePaths, &connectedAt, &disconnectedAt,
 		)
 	}
 	if err != nil {
@@ -77,6 +78,9 @@ func (s *Store) findRoute(ctx context.Context, query string, arg any) (domain.Tu
 	}
 	if accessPasswordHash.Valid {
 		r.Tunnel.AccessPasswordHash = accessPasswordHash.String
+	}
+	if err := decodeWAFPathRules(wafIgnorePaths, &r.Tunnel); err != nil {
+		return domain.TunnelRoute{}, err
 	}
 	if disconnectedAt.Valid {
 		t := disconnectedAt.Time

@@ -133,7 +133,9 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 			return true, rl.name
 		}
 		if rl.targets&targetPath != 0 && matchPathRule(rl, view.path) {
-			return true, rl.name
+			if fw.pathRuleGuard == nil || !fw.pathRuleGuard(r, rl.name) {
+				return true, rl.name
+			}
 		}
 		if rl.targets&targetQuery != 0 && view.rawQuery != "" {
 			if rl.pattern.MatchString(view.rawQuery) ||

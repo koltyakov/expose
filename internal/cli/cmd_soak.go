@@ -163,6 +163,7 @@ func runSoak(ctx context.Context, args []string) int {
 		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 128),
 		PprofListen:           strings.TrimSpace(pprofListen),
 		RegistrationMode:      "temporary",
+		WAFIgnorePaths:        commaSeparatedValues(envOr("EXPOSE_WAF_IGNORE_PATHS", "")),
 	}
 	if err := mergeClientSettings(&baseCfg); err != nil {
 		fmt.Fprintln(os.Stderr, "soak config error:", err)

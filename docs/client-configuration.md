@@ -18,8 +18,8 @@ Complete reference for all client flags, environment variables, and credential m
 
 ## Flags & Environment Variables
 
-| Flag             | Env Variable                     | Description                                                                          |
-| ---------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| Flag                | Env Variable                     | Description                                                                          |
+| ------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `--port`         | `EXPOSE_PORT`                    | Local HTTP port on `127.0.0.1` (positional arg)                                      |
 | `--domain`       | `EXPOSE_SUBDOMAIN`               | Requested subdomain label (e.g. `myapp`)                                             |
 | `--server`       | `EXPOSE_DOMAIN`                  | Server URL (e.g. `example.com`)                                                      |
@@ -28,10 +28,52 @@ Complete reference for all client flags, environment variables, and credential m
 | `--pprof-listen` | `EXPOSE_PPROF_LISTEN`            | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
 | `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
 | `--allow`        | -                                | Allow blocked static paths matching a glob pattern                                   |
+| -                   | `EXPOSE_WAF_IGNORE_PATHS`        | Comma-separated path prefixes ignored by the WAF sensitive-file rule                     |
 | -                | `EXPOSE_USER`                    | Access-form username (default: `admin`)                                              |
 | -                | `EXPOSE_PASSWORD`                | Access-form password                                                                 |
 | -                | `EXPOSE_MAX_CONCURRENT_FORWARDS` | Max concurrent local upstream forwards per client process (default: `128`)           |
 | -                | `EXPOSE_AUTOUPDATE`              | Enable automatic self-update (`true`/`1`/`yes`)                                      |
+
+## Per-Tunnel WAF Paths
+
+Set `EXPOSE_WAF_IGNORE_PATHS` when an application intentionally serves URL
+subtrees containing dot-prefixed path segments:
+
+Single path for one command:
+
+```bash
+EXPOSE_WAF_IGNORE_PATHS=/generated/assets expose http 3000
+```
+
+Multiple paths are comma-separated:
+
+```bash
+EXPOSE_WAF_IGNORE_PATHS=/generated/assets,/runtime/cache,/node_modules/.cache expose http 3000
+```
+
+Export the value for subsequent client commands:
+
+```bash
+export EXPOSE_WAF_IGNORE_PATHS="/generated/assets,/runtime/cache"
+expose http 3000
+```
+
+Or define it in the project's `.env` file, which client commands load
+automatically:
+
+```dotenv
+EXPOSE_WAF_IGNORE_PATHS=/generated/assets,/runtime/cache
+```
+
+Each location matches the exact URL path and all descendants. For example,
+`/generated/assets` matches both `/generated/assets` and
+`/generated/assets/client/app.js`, but not `/generated/assets-old/app.js`.
+Paths must be absolute, may not contain `.` or `..` segments, and are limited
+to 16 entries per tunnel.
+
+This exception applies only to the WAF's **Sensitive File Probe** rule. SQL
+injection, XSS, path traversal, and every other WAF rule remain active. The rule
+is registered with this tunnel and does not affect other clients or subdomains.
 
 ## Credential Resolution
 

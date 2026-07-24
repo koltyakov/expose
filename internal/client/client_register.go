@@ -81,6 +81,7 @@ func (c *Client) register(ctx context.Context) (domain.RegisterResponse, error) 
 		ClientMachineID: machineID,
 		LocalPort:       fmt.Sprintf("%d", c.cfg.LocalPort),
 		ClientVersion:   c.version,
+		WAFIgnorePaths:  c.cfg.WAFIgnorePaths,
 	})
 	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
@@ -120,6 +121,9 @@ func (c *Client) register(ctx context.Context) (domain.RegisterResponse, error) 
 	out.H3URL = strings.TrimSpace(out.H3URL)
 	if out.WSURL == "" {
 		return domain.RegisterResponse{}, errors.New("server returned empty ws_url")
+	}
+	if len(c.cfg.WAFIgnorePaths) > 0 && !hasTunnelCapability(out.Capabilities, domain.CapabilityWAFIgnorePaths) {
+		return domain.RegisterResponse{}, errors.New("server does not support per-tunnel WAF ignore paths")
 	}
 	return out, nil
 }

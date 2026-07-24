@@ -27,6 +27,7 @@ import (
 type tunnelRegistrar interface {
 	AllocateDomainAndTunnelWithClientMeta(ctx context.Context, keyID, mode, subdomain, baseDomain, clientMeta string) (domain.Domain, domain.Tunnel, error)
 	SetTunnelAccessCredentials(ctx context.Context, tunnelID, user, mode, hash string) error
+	SetTunnelWAFPathRules(ctx context.Context, tunnelID string, rules *domain.WAFPathRules) error
 	CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error)
 	ResumeTunnelSession(ctx context.Context, tunnelID, keyID, clientMeta string) (domain.Domain, domain.Tunnel, error)
 	IsHostnameActive(ctx context.Context, host string) (bool, error)

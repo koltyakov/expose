@@ -118,6 +118,7 @@ func runStatic(ctx context.Context, args []string) int {
 	}
 
 	cfg := newStaticClientConfig(serverURL, apiKey, transport, name, protectMode)
+	cfg.WAFIgnorePaths = commaSeparatedValues(envOr("EXPOSE_WAF_IGNORE_PATHS", ""))
 	cfg.Name = config.NormalizeTunnelSubdomain(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
 	if cfg.User == "" {
@@ -450,6 +451,16 @@ func (f *stringListFlag) values() []string {
 	}
 	out := make([]string, len(f.items))
 	copy(out, f.items)
+	return out
+}
+
+func commaSeparatedValues(value string) []string {
+	var out []string
+	for part := range strings.SplitSeq(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
 	return out
 }
 

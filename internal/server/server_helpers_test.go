@@ -165,7 +165,7 @@ func TestLiveRouteIndexLifecycle(t *testing.T) {
 		t.Fatalf("expected disconnected state before attach, got %q", hostSnap.route.Tunnel.State)
 	}
 
-	idx.setAccess("tun-1", "user", "basic", "hash-2")
+	idx.setRegistrationConfig("tun-1", "user", "basic", "hash-2", nil)
 	tunnelSnap, ok := idx.lookupTunnel("tun-1")
 	if !ok || tunnelSnap.route.Tunnel.AccessMode != "basic" || tunnelSnap.route.Tunnel.AccessUser != "user" {
 		t.Fatalf("lookupTunnel() = %#v, %v", tunnelSnap, ok)
@@ -259,7 +259,7 @@ func TestLiveRouteIndexConcurrentLookupAndMutation(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for range iterations {
-			idx.setAccess(tunnelID, "user", "basic", "hash")
+			idx.setRegistrationConfig(tunnelID, "user", "basic", "hash", nil)
 		}
 	}()
 	go func() {

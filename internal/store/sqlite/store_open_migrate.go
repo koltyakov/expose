@@ -107,7 +107,7 @@ const isHostnameActiveQuery = `SELECT 1 FROM domains WHERE hostname = ? AND stat
 const findRouteByHostQuery = `
 SELECT
  d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
- t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.connected_at, t.disconnected_at
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.waf_ignore_paths, t.connected_at, t.disconnected_at
 FROM domains d
 JOIN tunnels t ON t.id = (
 	SELECT id
@@ -279,6 +279,9 @@ var schemaMigrations = []schemaMigration{
 		return ensureColumn(ctx, tx, "api_keys", "tunnel_limit", `ALTER TABLE api_keys ADD COLUMN tunnel_limit INTEGER NOT NULL DEFAULT -1`)
 	}},
 	{version: 6, name: "temporary_domain_activity_index", apply: applyTemporaryDomainActivityMigration},
+	{version: 7, name: "tunnels_waf_ignore_paths", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "tunnels", "waf_ignore_paths", `ALTER TABLE tunnels ADD COLUMN waf_ignore_paths TEXT NULL`)
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {
@@ -358,6 +361,7 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	access_user TEXT NULL,
 	access_mode TEXT NULL,
 	access_password_hash TEXT NULL,
+	waf_ignore_paths TEXT NULL,
 	connected_at DATETIME NULL,
 	disconnected_at DATETIME NULL
 );

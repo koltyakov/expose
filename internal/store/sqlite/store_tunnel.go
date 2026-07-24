@@ -161,15 +161,16 @@ func (s *Store) ResumeTunnelSession(ctx context.Context, tunnelID, keyID, client
 		var accessUser sql.NullString
 		var accessMode sql.NullString
 		var accessPasswordHash sql.NullString
+		var wafIgnorePaths sql.NullString
 		if err = tx.QueryRowContext(ctx, `
 SELECT
  d.id, d.api_key_id, d.type, d.hostname, d.status, d.created_at, d.last_seen_at,
- t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.connected_at, t.disconnected_at
+ t.id, t.api_key_id, t.domain_id, t.state, t.is_temporary, t.client_meta, t.access_user, t.access_mode, t.access_password_hash, t.waf_ignore_paths, t.connected_at, t.disconnected_at
 FROM tunnels t
 JOIN domains d ON d.id = t.domain_id
 WHERE t.id = ?`, tunnelID).Scan(
 			&d.ID, &d.APIKeyID, &d.Type, &d.Hostname, &d.Status, &d.CreatedAt, &lastSeen,
-			&t.ID, &t.APIKeyID, &t.DomainID, &t.State, &t.IsTemporary, &storedClientMeta, &accessUser, &accessMode, &accessPasswordHash, &connectedAt, &disconnectedAt,
+			&t.ID, &t.APIKeyID, &t.DomainID, &t.State, &t.IsTemporary, &storedClientMeta, &accessUser, &accessMode, &accessPasswordHash, &wafIgnorePaths, &connectedAt, &disconnectedAt,
 		); err != nil {
 			return err
 		}
@@ -190,6 +191,9 @@ WHERE t.id = ?`, tunnelID).Scan(
 		}
 		if accessPasswordHash.Valid {
 			t.AccessPasswordHash = accessPasswordHash.String
+		}
+		if err = decodeWAFPathRules(wafIgnorePaths, &t); err != nil {
+			return err
 		}
 		if connectedAt.Valid {
 			v := connectedAt.Time

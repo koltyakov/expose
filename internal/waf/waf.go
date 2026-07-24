@@ -36,6 +36,9 @@ type Config struct {
 	// ShouldInspectBody allows callers to opt specific requests out of body
 	// inspection while still evaluating path, query, header, and UA rules.
 	ShouldInspectBody func(*http.Request) bool
+	// ShouldIgnorePathRule allows callers to ignore a matched path rule for a
+	// request while continuing to evaluate all other WAF rules.
+	ShouldIgnorePathRule func(*http.Request, string) bool
 	// OnBlock is called (if non-nil) every time the WAF blocks (or would
 	// block, in audit mode) a request.
 	OnBlock func(BlockEvent)
@@ -43,14 +46,15 @@ type Config struct {
 
 // firewall holds pre-compiled rules and the logger.
 type firewall struct {
-	rules      []rule
-	log        *slog.Logger
-	auditOnly  bool
-	bodyLimit  int64
-	maxURI     int
-	maxHeaders int
-	bodyGuard  func(*http.Request) bool
-	onBlock    func(BlockEvent)
+	rules         []rule
+	log           *slog.Logger
+	auditOnly     bool
+	bodyLimit     int64
+	maxURI        int
+	maxHeaders    int
+	bodyGuard     func(*http.Request) bool
+	pathRuleGuard func(*http.Request, string) bool
+	onBlock       func(BlockEvent)
 }
 
 var forbiddenJSONBody = []byte(`{"error":"Forbidden"}` + "\n")
@@ -75,14 +79,15 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 		}
 
 		fw := &firewall{
-			rules:      defaultRules(),
-			log:        logger,
-			auditOnly:  cfg.AuditOnly,
-			bodyLimit:  cfg.BodyInspectLimit,
-			maxURI:     intOr(cfg.MaxURILength, maxURILength),
-			maxHeaders: intOr(cfg.MaxHeaderCount, maxHeaderCount),
-			bodyGuard:  cfg.ShouldInspectBody,
-			onBlock:    cfg.OnBlock,
+			rules:         defaultRules(),
+			log:           logger,
+			auditOnly:     cfg.AuditOnly,
+			bodyLimit:     cfg.BodyInspectLimit,
+			maxURI:        intOr(cfg.MaxURILength, maxURILength),
+			maxHeaders:    intOr(cfg.MaxHeaderCount, maxHeaderCount),
+			bodyGuard:     cfg.ShouldInspectBody,
+			pathRuleGuard: cfg.ShouldIgnorePathRule,
+			onBlock:       cfg.OnBlock,
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/healthz" {

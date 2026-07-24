@@ -247,6 +247,18 @@ func TestWellKnownPathsAllowed(t *testing.T) {
 	}
 }
 
+func TestMatchedPathRuleCanBeIgnoredWithoutSkippingLaterRules(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled: true,
+		ShouldIgnorePathRule: func(r *http.Request, rule string) bool {
+			return rule == "sensitive-file-probe" && strings.HasPrefix(r.URL.Path, "/generated/")
+		},
+	})
+
+	assertAllowed(t, handler, httptest.NewRequest(http.MethodGet, "/generated/.framework/app.js", nil))
+	assertBlocked(t, handler, httptest.NewRequest(http.MethodGet, "/generated/.framework/app.js?x=<?php", nil))
+}
+
 func TestProtocolAttack(t *testing.T) {
 	handler := newTestMiddleware(t)
 	tests := []struct {

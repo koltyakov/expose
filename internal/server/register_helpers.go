@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/koltyakov/expose/internal/access"
@@ -22,6 +23,11 @@ type preparedRegisterRequest struct {
 	autoStableSubdomain bool
 	clientMachineID     string
 }
+
+const (
+	maxWAFIgnorePaths      = 16
+	maxWAFIgnorePathLength = 256
+)
 
 func reuseStableAccessPasswordHash(prepared *preparedRegisterRequest, existing domain.TunnelRoute, keyID string) {
 	if prepared == nil {
@@ -102,6 +108,12 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 		http.Error(w, "protect mode requires password", http.StatusBadRequest)
 		return preparedRegisterRequest{}, false
 	}
+	wafIgnorePaths, err := normalizeWAFIgnorePaths(req.WAFIgnorePaths)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return preparedRegisterRequest{}, false
+	}
+	req.WAFIgnorePaths = wafIgnorePaths
 
 	accessUser := ""
 	accessMode := ""
@@ -130,6 +142,38 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 		autoStableSubdomain: autoStableSubdomain,
 		clientMachineID:     normalizedClientMachineID(req.ClientMachineID, req.ClientHostname),
 	}, true
+}
+
+func normalizeWAFIgnorePaths(values []string) ([]string, error) {
+	if len(values) > maxWAFIgnorePaths {
+		return nil, fmt.Errorf("waf ignore paths must contain at most %d entries", maxWAFIgnorePaths)
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || !strings.HasPrefix(value, "/") {
+			return nil, errors.New("waf ignore paths must be absolute URL paths")
+		}
+		if len(value) > maxWAFIgnorePathLength {
+			return nil, fmt.Errorf("waf ignore paths must be at most %d characters", maxWAFIgnorePathLength)
+		}
+		if strings.ContainsAny(value, "\\?#") {
+			return nil, errors.New("waf ignore paths cannot contain backslashes, queries, or fragments")
+		}
+		for segment := range strings.SplitSeq(value, "/") {
+			if segment == "." || segment == ".." {
+				return nil, errors.New("waf ignore paths cannot contain dot segments")
+			}
+		}
+		value = path.Clean(value)
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func (s *Server) prepareRegisterPasswordHash(ctx context.Context, keyID, resumeTunnelID string, prepared *preparedRegisterRequest) error {

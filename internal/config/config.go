@@ -34,6 +34,7 @@ type ClientConfig struct {
 	PingInterval          time.Duration
 	MaxConcurrentForwards int
 	PprofListen           string
+	WAFIgnorePaths        []string
 }
 
 // ServerConfig holds all settings required by the expose HTTPS server.
@@ -106,6 +107,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		PingInterval:          defaultClientPingInterval,
 		MaxConcurrentForwards: envInt("EXPOSE_MAX_CONCURRENT_FORWARDS", 128, &envErrs),
 		PprofListen:           strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
+		WAFIgnorePaths:        splitCommaSeparated(EnvOrDefault("EXPOSE_WAF_IGNORE_PATHS", "")),
 	}
 	if err := errors.Join(envErrs...); err != nil {
 		return cfg, err
@@ -160,6 +162,16 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg.Protect = cfg.ProtectMode != ""
 
 	return cfg, nil
+}
+
+func splitCommaSeparated(value string) []string {
+	var out []string
+	for part := range strings.SplitSeq(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // NormalizeProtectFlagArgs rewrites --protect, --protect=true and

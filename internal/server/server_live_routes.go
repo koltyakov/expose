@@ -38,6 +38,7 @@ type liveRouteEntry struct {
 	accessUser         string
 	accessMode         string
 	accessPasswordHash string
+	wafPathRules       *domain.WAFPathRules
 	active             bool
 	session            *session
 }
@@ -135,6 +136,7 @@ func (i *liveRouteIndex) upsert(route domain.TunnelRoute) {
 	entry.accessUser = route.Tunnel.AccessUser
 	entry.accessMode = route.Tunnel.AccessMode
 	entry.accessPasswordHash = route.Tunnel.AccessPasswordHash
+	entry.wafPathRules = cloneWAFPathRules(route.Tunnel.WAFPathRules)
 	if route.Tunnel.State != domain.TunnelStateConnected {
 		entry.active = false
 		entry.session = nil
@@ -300,7 +302,7 @@ func (i *liveRouteIndex) deleteHostIfDomain(host, domainID string) bool {
 	return true
 }
 
-func (i *liveRouteIndex) setAccess(tunnelID, user, mode, hash string) {
+func (i *liveRouteIndex) setRegistrationConfig(tunnelID, user, mode, hash string, rules *domain.WAFPathRules) {
 	if i == nil {
 		return
 	}
@@ -315,6 +317,7 @@ func (i *liveRouteIndex) setAccess(tunnelID, user, mode, hash string) {
 		entry.accessUser = strings.TrimSpace(user)
 		entry.accessMode = strings.TrimSpace(mode)
 		entry.accessPasswordHash = strings.TrimSpace(hash)
+		entry.wafPathRules = cloneWAFPathRules(rules)
 		entry.mu.Unlock()
 	}
 	shard.mu.RUnlock()
@@ -443,11 +446,19 @@ func snapshotFromEntryLocked(entry *liveRouteEntry) liveRouteSnapshot {
 				AccessUser:         entry.accessUser,
 				AccessMode:         entry.accessMode,
 				AccessPasswordHash: entry.accessPasswordHash,
+				WAFPathRules:       entry.wafPathRules,
 			},
 		},
 		session: entry.session,
 		active:  entry.active,
 	}
+}
+
+func cloneWAFPathRules(rules *domain.WAFPathRules) *domain.WAFPathRules {
+	if rules == nil || len(rules.IgnorePaths) == 0 {
+		return nil
+	}
+	return &domain.WAFPathRules{IgnorePaths: append([]string(nil), rules.IgnorePaths...)}
 }
 
 func tunnelStateForEntry(entry *liveRouteEntry) string {

@@ -49,6 +49,7 @@ Environment Variables:
   EXPOSE_SUBDOMAIN        Requested subdomain name
   EXPOSE_PPROF_LISTEN     Optional pprof listen address (e.g. 127.0.0.1:6060)
   EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 128)
+  EXPOSE_WAF_IGNORE_PATHS  Comma-separated URL prefixes ignored by the WAF sensitive-file rule
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
 	  EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
 	  EXPOSE_DB_MAX_OPEN_CONNS  SQLite max open connections (default: 10)

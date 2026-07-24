@@ -42,6 +42,7 @@ func isNonRetriableRegisterError(err error) bool {
 	}
 	return strings.Contains(msg, "unauthorized") ||
 		strings.Contains(msg, "forbidden") ||
+		strings.Contains(msg, "does not support per-tunnel waf ignore paths") ||
 		strings.Contains(msg, "invalid mode") ||
 		strings.Contains(msg, "invalid json") ||
 		strings.Contains(msg, "requires subdomain")

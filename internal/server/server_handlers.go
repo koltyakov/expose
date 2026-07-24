@@ -87,9 +87,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tunnelRec.AccessUser = prepared.accessUser
 	tunnelRec.AccessMode = prepared.accessMode
 	tunnelRec.AccessPasswordHash = prepared.passwordHash
+	tunnelRec.WAFPathRules = nil
+	if len(prepared.request.WAFIgnorePaths) > 0 {
+		tunnelRec.WAFPathRules = &domain.WAFPathRules{IgnorePaths: append([]string(nil), prepared.request.WAFIgnorePaths...)}
+	}
+	if err = s.store.SetTunnelWAFPathRules(r.Context(), tunnelRec.ID, tunnelRec.WAFPathRules); err != nil {
+		http.Error(w, "failed to persist tunnel WAF path rules", http.StatusInternalServerError)
+		return
+	}
 	registeredRoute := domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec}
+	s.liveRoutes.setRegistrationConfig(tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash, tunnelRec.WAFPathRules)
 	s.publishRegisteredRoute(registeredRoute)
-	s.liveRoutes.setAccess(tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash)
 	s.routeLifecycleMu.Unlock()
 	lifecycleLocked = false
 
@@ -100,7 +108,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	publicURL, wsURL, h3URL := s.registerURLs(r.Host, domainRec.Hostname, token)
-	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream_v2", "h3_multistream"}
+	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream_v2", "h3_multistream", domain.CapabilityWAFIgnorePaths}
 
 	resp := domain.RegisterResponse{
 		TunnelID:      tunnelRec.ID,

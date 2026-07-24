@@ -956,6 +956,55 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 	}
 }
 
+func TestRegisterSendsWAFIgnorePaths(t *testing.T) {
+	t.Parallel()
+
+	pathsCh := make(chan []string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req domain.RegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		pathsCh <- req.WAFIgnorePaths
+		writeJSON := `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc","capabilities":["waf_ignore_paths_v1"]}`
+		_, _ = io.WriteString(w, writeJSON)
+	}))
+	defer srv.Close()
+
+	c := New(config.ClientConfig{
+		ServerURL:      srv.URL,
+		APIKey:         "key123",
+		LocalPort:      8080,
+		WAFIgnorePaths: []string{"/generated", "/cache"},
+	}, nil)
+	if _, err := c.register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(<-pathsCh, ","); got != "/generated,/cache" {
+		t.Fatalf("registered WAF ignore paths = %q", got)
+	}
+}
+
+func TestRegisterRejectsUnsupportedWAFIgnorePaths(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc"}`)
+	}))
+	defer srv.Close()
+
+	c := New(config.ClientConfig{
+		ServerURL:      srv.URL,
+		APIKey:         "key123",
+		LocalPort:      8080,
+		WAFIgnorePaths: []string{"/generated"},
+	}, nil)
+	if _, err := c.register(context.Background()); err == nil || !strings.Contains(err.Error(), "does not support") {
+		t.Fatalf("expected unsupported WAF ignore path error, got %v", err)
+	}
+}
+
 func TestNormalizeWSURLPort(t *testing.T) {
 	tests := []struct {
 		name      string

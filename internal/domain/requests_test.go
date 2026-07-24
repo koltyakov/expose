@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -18,6 +19,7 @@ func TestRegisterRequestJSONRoundTrip(t *testing.T) {
 		ClientMachineID: "abc123",
 		LocalPort:       "3000",
 		ClientVersion:   "v1.0.0",
+		WAFIgnorePaths:  []string{"/generated"},
 	}
 	data, err := json.Marshal(orig)
 	if err != nil {
@@ -27,7 +29,7 @@ func TestRegisterRequestJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded != orig {
+	if !reflect.DeepEqual(decoded, orig) {
 		t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded, orig)
 	}
 }

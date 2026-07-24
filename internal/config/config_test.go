@@ -58,6 +58,23 @@ func TestParseClientFlagsTransportDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestParseClientFlagsWAFIgnorePaths(t *testing.T) {
+	t.Setenv("EXPOSE_WAF_IGNORE_PATHS", "/from-env,/cache")
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(cfg.WAFIgnorePaths, ","), "/from-env,/cache"; got != want {
+		t.Fatalf("WAFIgnorePaths = %q, want %q", got, want)
+	}
+}
+
+func TestParseClientFlagsRejectsWAFIgnorePathFlag(t *testing.T) {
+	if _, err := ParseClientFlags([]string{"--port", "8080", "--waf-ignore-path", "/generated"}); err == nil {
+		t.Fatal("expected WAF ignore paths to be environment-only")
+	}
+}
+
 func TestParseClientFlagsPasswordLengthValidation(t *testing.T) {
 	t.Setenv("EXPOSE_PASSWORD", strings.Repeat("a", 257))
 	_, err := ParseClientFlags([]string{"--port", "8080"})

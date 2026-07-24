@@ -78,6 +78,10 @@ expose static --allow '.well-known/**' ./public
 
 Use it carefully because it overrides the default path blocklist and public file-type restriction.
 
+`EXPOSE_WAF_IGNORE_PATHS` affects only the server-side WAF. It does not override
+the static server's hidden-file policy; use `--allow` as well when intentionally
+serving a hidden static path.
+
 ## Folder Behavior
 
 - If a requested directory contains `index.html`, that file is served.

@@ -64,6 +64,11 @@ Rules use pre-compiled regular expressions and inspect both raw and
 URL-decoded values (including `+` → space decoding and **double-decoded**
 values) to defeat encoding-based evasion.
 
+Clients can register per-tunnel path prefixes through
+`EXPOSE_WAF_IGNORE_PATHS` that bypass only the **Sensitive File Probe** rule.
+All other rules continue to inspect those requests, and the exception does not
+affect other tunnels. See [Client Configuration](client-configuration.md#per-tunnel-waf-paths).
+
 ### Inspected Request Parts
 
 Each rule targets one or more of:

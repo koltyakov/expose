@@ -125,6 +125,9 @@ expose login
 # Expose a local HTTP port (e.g. 3000) to the internet
 expose http 3000
 
+# Or expose it with a named subdomain
+expose http --domain=myapp 3000
+
 # Or expose a static directory as a website
 expose static
 ```

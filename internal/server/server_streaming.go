@@ -18,6 +18,17 @@ var (
 			return new(bytes.Buffer)
 		},
 	}
+	// requestSmallChunkPool serves the common case: bodies that fit well
+	// under streamingThreshold. Handing every request with a body a
+	// streamingThreshold-sized buffer meant a form post of a few hundred
+	// bytes checked out 256 KiB, so peak memory scaled with in-flight
+	// requests rather than with actual body sizes.
+	requestSmallChunkPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, smallBodyBufferSize)
+			return &b
+		},
+	}
 	requestFirstChunkPool = sync.Pool{
 		New: func() any {
 			b := make([]byte, streamingThreshold+1)
@@ -31,6 +42,26 @@ var (
 		},
 	}
 )
+
+// smallBodyBufferSize is the first read size for request bodies. Bodies at or
+// below it never touch the larger pools.
+const smallBodyBufferSize = 16 * 1024
+
+// maxPooledBufferBytes caps the capacity of a bytes.Buffer returned to
+// bufferPool, so one large request cannot pin an oversized buffer forever.
+const maxPooledBufferBytes = 1 << 20
+
+func getPooledBuf(pool *sync.Pool, size int) (*[]byte, []byte) {
+	ref := pool.Get().(*[]byte)
+	buf := *ref
+	if cap(buf) < size {
+		buf = make([]byte, size)
+	} else {
+		buf = buf[:size]
+	}
+	*ref = buf
+	return ref, buf
+}
 
 // sendRequestBody reads the public HTTP request body and sends it to the
 // tunnel client. For small bodies (<= streamingThreshold) the body is inlined
@@ -55,17 +86,36 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	// Read the first chunk plus one byte to decide inline vs streamed.
-	firstBufRef := requestFirstChunkPool.Get().(*[]byte)
-	firstBuf := *firstBufRef
-	if cap(firstBuf) < streamingThreshold+1 {
-		firstBuf = make([]byte, streamingThreshold+1)
-	} else {
-		firstBuf = firstBuf[:streamingThreshold+1]
+	// Probe with a small buffer first; only bodies that outgrow it need a
+	// streamingThreshold-sized one. When Content-Length already says the body
+	// exceeds the threshold, skip the probe and stream directly.
+	var (
+		firstBuf []byte
+		n        int
+		readErr  error
+	)
+	knownLarge := r.ContentLength > int64(streamingThreshold)
+
+	if !knownLarge {
+		smallRef, smallBuf := getPooledBuf(&requestSmallChunkPool, smallBodyBufferSize)
+		defer requestSmallChunkPool.Put(smallRef)
+
+		n, readErr = io.ReadFull(r.Body, smallBuf)
+		firstBuf = smallBuf
 	}
-	*firstBufRef = firstBuf
-	defer requestFirstChunkPool.Put(firstBufRef)
-	n, readErr := io.ReadFull(r.Body, firstBuf)
+
+	// The small buffer filled without hitting EOF, so the body may still be
+	// inlineable but needs the larger buffer to find out.
+	if knownLarge || readErr == nil {
+		bigRef, bigBuf := getPooledBuf(&requestFirstChunkPool, streamingThreshold+1)
+		defer requestFirstChunkPool.Put(bigRef)
+
+		copied := copy(bigBuf, firstBuf[:n])
+		var more int
+		more, readErr = io.ReadFull(r.Body, bigBuf[copied:])
+		n = copied + more
+		firstBuf = bigBuf
+	}
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		// The entire body fits within the threshold - send inline. Passing the
@@ -112,14 +162,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	}
 
 	// Read remaining body in chunks.
-	chunkBufRef := requestStreamChunkPool.Get().(*[]byte)
-	chunkBuf := *chunkBufRef
-	if cap(chunkBuf) < streamingChunkSize {
-		chunkBuf = make([]byte, streamingChunkSize)
-	} else {
-		chunkBuf = chunkBuf[:streamingChunkSize]
-	}
-	*chunkBufRef = chunkBuf
+	chunkBufRef, chunkBuf := getPooledBuf(&requestStreamChunkPool, streamingChunkSize)
 	defer requestStreamChunkPool.Put(chunkBufRef)
 	for {
 		cn, err := r.Body.Read(chunkBuf)
@@ -242,10 +285,20 @@ func readLimitedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (*b
 	buf.Reset()
 	_, err := buf.ReadFrom(reader)
 	if err != nil {
-		bufferPool.Put(buf)
+		releasePooledBuffer(buf)
 		return nil, nil, err
 	}
-	return buf, func() { bufferPool.Put(buf) }, nil
+	return buf, func() { releasePooledBuffer(buf) }, nil
+}
+
+// releasePooledBuffer returns buf to the pool unless it grew past
+// maxPooledBufferBytes, in which case it is dropped so a single large request
+// does not keep an oversized buffer alive for the process lifetime.
+func releasePooledBuffer(buf *bytes.Buffer) {
+	if buf == nil || buf.Cap() > maxPooledBufferBytes {
+		return
+	}
+	bufferPool.Put(buf)
 }
 
 func isBodyTooLargeError(err error) bool {

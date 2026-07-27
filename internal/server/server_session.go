@@ -14,7 +14,6 @@ import (
 
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/domain"
-	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 	"github.com/koltyakov/expose/internal/waf"
@@ -271,7 +270,7 @@ func (s *Server) activateSession(
 		h3StreamPool:  opts.h3Pool,
 		h3AuthToken:   strings.TrimSpace(opts.h3AuthToken),
 		pending:       make(map[string]*pendingRequest),
-		wsPending:     make(map[string]chan tunnelproto.Message),
+		wsPending:     make(map[string]*wsStream),
 	}
 	if sess.h3AuthToken != "" {
 		s.registerH3SessionToken(sess.h3AuthToken, sess)
@@ -376,7 +375,7 @@ func (s *Server) readLoop(sess *session) {
 						sess.releasePending()
 						pending.abort()
 						pending.discardBody()
-						_ = sess.cancelRequest(msg.BodyChunk.ID)
+						_ = sess.cancelRequestAsync(msg.BodyChunk.ID)
 					}
 				}
 			} else {
@@ -433,7 +432,12 @@ func (s *Server) readLoop(sess *session) {
 					pong.Stats = &tunnelproto.Stats{WAFBlocked: total}
 				}
 			}
-			_ = sess.writeJSON(pong)
+			// Async: a blocking pong would stall the read loop, and with it
+			// every request multiplexed over this tunnel, behind whatever the
+			// write pump is currently sending to a slow peer.
+			if err := sess.writeJSONAsync(pong); errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
+				s.log.Warn("dropped pong: control lane saturated", "tunnel_id", sess.tunnelID)
+			}
 		}
 	}
 }
@@ -485,6 +489,26 @@ func (s *session) cancelRequest(id string) error {
 		return nil
 	}
 	return s.writeJSON(tunnelproto.Message{
+		Kind:      tunnelproto.KindReqCancel,
+		ReqCancel: &tunnelproto.RequestCancel{ID: id},
+	})
+}
+
+// writeJSONAsync queues a control message without waiting for it to be
+// written. Used from the read loop, which must not block on a slow peer.
+func (s *session) writeJSONAsync(msg tunnelproto.Message) error {
+	if s.writer == nil {
+		return tunneltransport.ErrWritePumpClosed
+	}
+	return s.writer.WriteJSONAsync(msg)
+}
+
+// cancelRequestAsync is cancelRequest for callers on the read loop.
+func (s *session) cancelRequestAsync(id string) error {
+	if strings.TrimSpace(id) == "" || s.writer == nil {
+		return nil
+	}
+	return s.writeJSONAsync(tunnelproto.Message{
 		Kind:      tunnelproto.KindReqCancel,
 		ReqCancel: &tunnelproto.RequestCancel{ID: id},
 	})
@@ -546,62 +570,62 @@ func (s *session) pendingDelete(id string) (*pendingRequest, bool) {
 	return req, ok
 }
 
-func (s *session) wsPendingStore(id string, ch chan tunnelproto.Message) {
+func (s *session) wsPendingStore(id string, stream *wsStream) {
 	s.wsMu.Lock()
-	s.wsPending[id] = ch
+	s.wsPending[id] = stream
 	s.wsMu.Unlock()
 }
 
 func (s *session) wsPendingSend(id string, msg tunnelproto.Message, wait time.Duration) bool {
+	// Resolve the stream under the lock, then release it before sending.
+	// Holding wsMu across a blocking send let one stalled consumer block
+	// wsPendingStore/Abort/closeWSPending for the full wait; because Go's
+	// RWMutex queues new readers behind a waiting writer, that stalled every
+	// other WebSocket on the session, not just this stream.
 	s.wsMu.RLock()
-	ch, ok := s.wsPending[id]
-	defer s.wsMu.RUnlock()
+	stream, ok := s.wsPending[id]
+	s.wsMu.RUnlock()
 	if !ok {
 		return true
 	}
-
-	select {
-	case ch <- msg:
-		return true
-	default:
-	}
-
-	if wait <= 0 {
-		return false
-	}
-
-	timer := timerpool.Acquire(wait)
-	defer timerpool.Release(timer)
-	select {
-	case ch <- msg:
-		return true
-	case <-timer.C:
-		return false
-	}
+	return stream.send(msg, wait)
 }
 
 func (s *session) wsPendingAbort(id string) {
 	s.wsMu.Lock()
-	if ch, ok := s.wsPending[id]; ok {
+	stream, ok := s.wsPending[id]
+	if ok {
 		delete(s.wsPending, id)
-		close(ch)
 	}
 	s.wsMu.Unlock()
+	if ok {
+		stream.close()
+	}
 }
 
 func (s *session) wsPendingDelete(id string) {
 	s.wsMu.Lock()
-	delete(s.wsPending, id)
+	stream, ok := s.wsPending[id]
+	if ok {
+		delete(s.wsPending, id)
+	}
 	s.wsMu.Unlock()
+	if ok {
+		stream.close()
+	}
 }
 
 func (s *session) closeWSPending() {
 	s.wsMu.Lock()
-	for id, ch := range s.wsPending {
+	streams := make([]*wsStream, 0, len(s.wsPending))
+	for id, stream := range s.wsPending {
 		delete(s.wsPending, id)
-		close(ch)
+		streams = append(streams, stream)
 	}
 	s.wsMu.Unlock()
+	for _, stream := range streams {
+		stream.close()
+	}
 }
 
 // recordWAFBlock increments the WAF-blocked counter for the given hostname

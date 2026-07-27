@@ -19,7 +19,18 @@ type pendingRequest struct {
 	doneOnce sync.Once
 }
 
-func acquirePendingRequest() *pendingRequest {
+// newPendingRequest allocates a pending request.
+//
+// This is deliberately not pooled. The read loop resolves a *pendingRequest
+// from session.pending under the map lock but then uses it after releasing
+// that lock, so a recycled object could be handed to a late body chunk from a
+// previous request and cross responses between visitors. Making that safe
+// needs refcounting on every map lookup in the response hot path, which buys
+// 3 allocations out of ~200 per proxied request (well under 1% of round-trip
+// cost, see BenchmarkPublicHTTPRoundTripSingleTunnel) — not worth the failure
+// mode. Without pooling, a stale pointer is merely a live object whose doneCh
+// is already closed, which every method handles.
+func newPendingRequest() *pendingRequest {
 	return &pendingRequest{
 		headerCh: make(chan *tunnelproto.HTTPResponse, 1),
 		doneCh:   make(chan struct{}),

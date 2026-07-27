@@ -72,11 +72,7 @@ func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
 		return
 	}
 
-	deleteHeaderCI(h, "Host")
-	deleteHeaderCI(h, "X-Forwarded-For")
-	deleteHeaderCI(h, "X-Forwarded-Proto")
-	deleteHeaderCI(h, "X-Forwarded-Host")
-	deleteHeaderCI(h, "X-Forwarded-Port")
+	deleteProxyHeaders(h)
 
 	h["Host"] = []string{host}
 
@@ -100,15 +96,50 @@ func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
 	h["X-Forwarded-Port"] = []string{port}
 }
 
-func deleteHeaderCI(h map[string][]string, key string) {
-	if h == nil || key == "" {
+// proxyHeadersToReplace are the headers injectForwardedProxyHeaders rewrites,
+// in canonical form.
+var proxyHeadersToReplace = []string{
+	"Host",
+	"X-Forwarded-For",
+	"X-Forwarded-Proto",
+	"X-Forwarded-Host",
+	"X-Forwarded-Port",
+}
+
+// deleteProxyHeaders removes every case-insensitive spelling of the headers we
+// are about to set. Keys arrive canonicalized by net/http, so the common case
+// is a handful of direct map deletes; the full scan only runs if a
+// non-canonical spelling is actually present, which a client can force but
+// which costs one pass rather than one pass per header.
+func deleteProxyHeaders(h map[string][]string) {
+	if h == nil {
 		return
 	}
+
+	for _, key := range proxyHeadersToReplace {
+		delete(h, key)
+	}
+
+	// Any remaining key that folds onto one of the canonical names was
+	// spelled non-canonically and still needs removing.
+	var nonCanonical []string
 	for k := range h {
-		if strings.EqualFold(k, key) {
-			delete(h, k)
+		if isProxyHeaderName(k) {
+			nonCanonical = append(nonCanonical, k)
 		}
 	}
+	for _, k := range nonCanonical {
+		delete(h, k)
+	}
+}
+
+func isProxyHeaderName(key string) bool {
+	for _, candidate := range proxyHeadersToReplace {
+		if len(key) == len(candidate) && strings.EqualFold(key, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {

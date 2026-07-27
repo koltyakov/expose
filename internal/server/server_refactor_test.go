@@ -220,11 +220,11 @@ func TestExpireStaleSessionsUsesCallerContext(t *testing.T) {
 func TestPendingRequestsDoNotReuseBodyChannels(t *testing.T) {
 	t.Parallel()
 
-	req := acquirePendingRequest()
+	req := newPendingRequest()
 	bodyCh := req.ensureBodyCh()
 	bodyCh <- []byte("chunk")
 
-	req = acquirePendingRequest()
+	req = newPendingRequest()
 	if req.bodyCh != nil {
 		t.Fatal("expected a fresh pending request without a body channel")
 	}
@@ -233,7 +233,7 @@ func TestPendingRequestsDoNotReuseBodyChannels(t *testing.T) {
 func TestPendingRequestDiscardBodyDrainsBufferedChunks(t *testing.T) {
 	t.Parallel()
 
-	pending := acquirePendingRequest()
+	pending := newPendingRequest()
 	bodyCh := pending.ensureBodyCh()
 	bodyCh <- []byte("one")
 	bodyCh <- []byte("two")

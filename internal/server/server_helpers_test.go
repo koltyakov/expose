@@ -28,7 +28,7 @@ func (s *limitStoreStub) GetAPIKeyTunnelLimit(context.Context, string) (int, err
 func TestPendingRequestLifecycle(t *testing.T) {
 	t.Parallel()
 
-	req := acquirePendingRequest()
+	req := newPendingRequest()
 
 	resp := &tunnelproto.HTTPResponse{ID: "req-1", Status: 200}
 	if !req.deliverHeader(resp) {
@@ -61,7 +61,7 @@ func TestPendingRequestLifecycle(t *testing.T) {
 func TestPendingRequestReturnsDeliveredHeaderAfterFinish(t *testing.T) {
 	t.Parallel()
 
-	req := acquirePendingRequest()
+	req := newPendingRequest()
 	resp := &tunnelproto.HTTPResponse{ID: "req-finished", Status: 200}
 	if !req.deliverHeader(resp) {
 		t.Fatal("deliverHeader() = false, want true")
@@ -83,7 +83,7 @@ func TestPendingRequestWaitHeaderHandlesContextAndNil(t *testing.T) {
 		t.Fatalf("nil waitHeader() = %#v, %v", got, ok)
 	}
 
-	req := acquirePendingRequest()
+	req := newPendingRequest()
 	if got, ok := req.waitHeader(ctx); ok || got != nil {
 		t.Fatalf("canceled waitHeader() = %#v, %v", got, ok)
 	}
@@ -366,7 +366,7 @@ func TestActiveTunnelTrackerLimitForBlankKeyAndError(t *testing.T) {
 func TestPendingRequestAbortAndBodyChannelReuse(t *testing.T) {
 	t.Parallel()
 
-	req := acquirePendingRequest()
+	req := newPendingRequest()
 
 	bodyCh1 := req.ensureBodyCh()
 	bodyCh2 := req.ensureBodyCh()
@@ -405,15 +405,22 @@ func TestSessionHTTPAndWebSocketCapacityAreIndependent(t *testing.T) {
 func TestSessionWSPendingAbortOnlyClosesTarget(t *testing.T) {
 	t.Parallel()
 
-	sess := &session{wsPending: make(map[string]chan tunnelproto.Message)}
-	first := make(chan tunnelproto.Message, 1)
-	second := make(chan tunnelproto.Message, 1)
+	sess := &session{wsPending: make(map[string]*wsStream)}
+	first := newWSStream(1)
+	second := newWSStream(1)
 	sess.wsPendingStore("first", first)
 	sess.wsPendingStore("second", second)
 	sess.wsPendingAbort("first")
 
-	if _, open := <-first; open {
-		t.Fatal("aborted websocket channel remains open")
+	select {
+	case <-first.closed:
+	default:
+		t.Fatal("aborted websocket stream remains open")
+	}
+	select {
+	case <-second.closed:
+		t.Fatal("unrelated websocket stream was closed")
+	default:
 	}
 	if !sess.wsPendingSend("second", tunnelproto.Message{Kind: tunnelproto.KindPing}, 0) {
 		t.Fatal("unrelated websocket channel was affected")

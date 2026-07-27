@@ -290,3 +290,144 @@ func TestWritePumpBackpressureClosesPump(t *testing.T) {
 		t.Fatalf("expected closed pump after backpressure, got %v", err)
 	}
 }
+
+// TestWriteJSONAsyncDoesNotWaitForWrite is the regression test for the read
+// loop stall: WriteJSON blocks until the pump finishes writing, so a slow peer
+// mid-frame would freeze the caller. WriteJSONAsync must return immediately.
+func TestWriteJSONAsyncDoesNotWaitForWrite(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	writing := make(chan struct{})
+	var once sync.Once
+
+	pump := NewWritePump(func(req writeRequest) error {
+		once.Do(func() { close(writing) })
+		<-release
+		return nil
+	}, nil, 8, 8, time.Second, time.Second)
+	defer func() {
+		close(release)
+		pump.Close()
+	}()
+
+	// Occupy the writer so nothing can drain.
+	go func() { _ = pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}) }()
+	<-writing
+
+	done := make(chan error, 1)
+	go func() { done <- pump.WriteJSONAsync(tunnelproto.Message{Kind: tunnelproto.KindPong}) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WriteJSONAsync() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("WriteJSONAsync blocked waiting for the in-flight write")
+	}
+}
+
+// TestWriteJSONAsyncReportsBackpressureWithoutClosing checks that a saturated
+// control lane costs one dropped frame rather than tearing down the tunnel.
+func TestWriteJSONAsyncReportsBackpressureWithoutClosing(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	writing := make(chan struct{})
+	var once sync.Once
+
+	pump := NewWritePump(func(req writeRequest) error {
+		once.Do(func() { close(writing) })
+		<-release
+		return nil
+	}, nil, 1, 1, time.Second, time.Second)
+	defer func() {
+		close(release)
+		pump.Close()
+	}()
+
+	go func() { _ = pump.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}) }()
+	<-writing
+
+	// Fill the single control slot, then overflow it.
+	var lastErr error
+	for range 4 {
+		lastErr = pump.WriteJSONAsync(tunnelproto.Message{Kind: tunnelproto.KindPong})
+	}
+	if !errors.Is(lastErr, ErrWritePumpBackpressure) {
+		t.Fatalf("expected backpressure error, got %v", lastErr)
+	}
+	if pump.closed.Load() {
+		t.Fatal("a full control lane must not close the pump")
+	}
+}
+
+// TestWritePumpDoesNotStarveDataLane covers sustained control traffic: strict
+// priority for the control lane would let it starve data frames forever.
+func TestWritePumpDoesNotStarveDataLane(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	dataWrites := 0
+
+	// Each write takes long enough that producers always have something
+	// queued when the pump picks the next message, which is the condition
+	// under which strict control-lane priority starves data.
+	pump := NewWritePump(func(req writeRequest) error {
+		if req.binary {
+			mu.Lock()
+			dataWrites++
+			mu.Unlock()
+		}
+		time.Sleep(200 * time.Microsecond)
+		return nil
+	}, nil, 64, 64, time.Second, time.Second)
+	defer pump.Close()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Keep the control lane permanently non-empty. These must be async
+	// writes: WriteJSON waits for its own write to complete, which would let
+	// the lane drain between messages and hide the starvation.
+	for range 4 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = pump.WriteJSONAsync(tunnelproto.Message{Kind: tunnelproto.KindPing})
+				}
+			}
+		})
+	}
+
+	// Let the control producers get ahead of the pump.
+	time.Sleep(20 * time.Millisecond)
+
+	// A single data frame must still get through.
+	sent := make(chan error, 1)
+	wg.Go(func() {
+		sent <- pump.WriteBinaryFrame(tunnelproto.BinaryFrameRespBody, "d-1", 0, []byte("x"))
+	})
+
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Errorf("data write failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("data frame starved by continuous control traffic")
+	}
+
+	close(stop)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dataWrites == 0 {
+		t.Error("no data frames were written")
+	}
+}

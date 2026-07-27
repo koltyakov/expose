@@ -14,7 +14,7 @@ import (
 func (s *Server) waitForPublicWSOpenAck(
 	r *http.Request,
 	timer *time.Timer,
-	streamCh <-chan tunnelproto.Message,
+	stream *wsStream,
 ) (*tunnelproto.WSOpenAck, int, string) {
 	for {
 		select {
@@ -22,10 +22,9 @@ func (s *Server) waitForPublicWSOpenAck(
 			return nil, 0, ""
 		case <-timer.C:
 			return nil, http.StatusGatewayTimeout, "upstream timeout"
-		case msg, ok := <-streamCh:
-			if !ok {
-				return nil, http.StatusBadGateway, "tunnel closed"
-			}
+		case <-stream.closed:
+			return nil, http.StatusBadGateway, "tunnel closed"
+		case msg := <-stream.ch:
 			if msg.Kind == tunnelproto.KindWSOpenAck && msg.WSOpenAck != nil {
 				return msg.WSOpenAck, 0, ""
 			}
@@ -64,7 +63,7 @@ func (s *Server) startPublicWSReadRelay(
 func (s *Server) startPublicWSWriteRelay(
 	r *http.Request,
 	publicConn *websocket.Conn,
-	streamCh <-chan tunnelproto.Message,
+	stream *wsStream,
 	relayStop <-chan struct{},
 	writeDone chan<- struct{},
 ) {
@@ -76,10 +75,9 @@ func (s *Server) startPublicWSWriteRelay(
 				return
 			case <-r.Context().Done():
 				return
-			case msg, ok := <-streamCh:
-				if !ok {
-					return
-				}
+			case <-stream.closed:
+				return
+			case msg := <-stream.ch:
 				switch msg.Kind {
 				case tunnelproto.KindWSData:
 					if msg.WSData == nil {

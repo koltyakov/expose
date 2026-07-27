@@ -364,7 +364,7 @@ func setupBenchmarkWSSessions(
 			writer:        tunneltransport.NewWebSocketWritePump(serverConn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 			transportName: "ws",
 			pending:       make(map[string]*pendingRequest),
-			wsPending:     make(map[string]chan tunnelproto.Message),
+			wsPending:     make(map[string]*wsStream),
 		}
 		sess.touch(time.Now())
 		srv.hub.sessions[tunnelID] = sess
@@ -449,7 +449,7 @@ func setupBenchmarkQUICSessions(
 			h3StreamV2:    true,
 			h3StreamPool:  newH3StreamPool(workersPerTunnel * 2),
 			pending:       make(map[string]*pendingRequest),
-			wsPending:     make(map[string]chan tunnelproto.Message),
+			wsPending:     make(map[string]*wsStream),
 		}
 		sess.touch(time.Now())
 		srv.hub.sessions[tunnelID] = sess

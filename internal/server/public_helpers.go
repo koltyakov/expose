@@ -155,7 +155,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, r.RemoteAddr)
 
-	pending := acquirePendingRequest()
+	pending := newPendingRequest()
 	sess.pendingStore(reqID, pending)
 
 	if _, err := s.sendRequestBody(sess, reqID, r, requestHeaders); err != nil {

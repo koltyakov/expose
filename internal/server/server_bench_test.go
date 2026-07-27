@@ -69,10 +69,10 @@ func BenchmarkRouteCacheDeleteByTunnelID(b *testing.B) {
 }
 
 func BenchmarkSessionWSPendingSendBuffered(b *testing.B) {
-	ch := make(chan tunnelproto.Message, 1)
+	stream := newWSStream(1)
 	sess := &session{
-		wsPending: map[string]chan tunnelproto.Message{
-			"stream-1": ch,
+		wsPending: map[string]*wsStream{
+			"stream-1": stream,
 		},
 	}
 	msg := tunnelproto.Message{
@@ -85,7 +85,7 @@ func BenchmarkSessionWSPendingSendBuffered(b *testing.B) {
 		if ok := sess.wsPendingSend("stream-1", msg, 0); !ok {
 			b.Fatal("expected ws pending send to succeed")
 		}
-		<-ch
+		<-stream.ch
 	}
 }
 
@@ -229,7 +229,7 @@ func newPublicTunnelBenchHarnessWithWAF(b *testing.B, responseSize int, response
 			conn:      conn,
 			writer:    tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 			pending:   make(map[string]*pendingRequest),
-			wsPending: make(map[string]chan tunnelproto.Message),
+			wsPending: make(map[string]*wsStream),
 		}
 	}))
 	b.Cleanup(wsPeer.Close)

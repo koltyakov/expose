@@ -32,6 +32,10 @@ type routeCacheEntry struct {
 const defaultRouteCacheTTL = time.Minute
 const defaultRouteCacheMaxEntries = 10_000
 
+// routeCacheEvictBatch caps how many expired entries a single insert reclaims,
+// so eviction stays O(1)-ish rather than scanning the whole map.
+const routeCacheEvictBatch = 8
+
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
 	route, found, cached := c.lookup(host)
 	if !cached || !found {
@@ -89,40 +93,71 @@ func (c *routeCache) startClock(done <-chan struct{}) {
 }
 
 func (c *routeCache) set(host string, route domain.TunnelRoute) {
-	c.mu.Lock()
-	if _, exists := c.entries[host]; !exists && len(c.entries) >= c.entryLimit() {
-		c.mu.Unlock()
-		return
-	}
-	if prev, exists := c.entries[host]; exists {
-		c.untrackHostLocked(prev.route.Tunnel.ID, host)
-	}
-	c.entries[host] = routeCacheEntry{
-		route:             route,
-		found:             true,
-		expiresAtUnixNano: c.nowNanos() + int64(c.cacheTTL()),
-	}
-	c.trackHostLocked(route.Tunnel.ID, host)
-	c.mu.Unlock()
+	c.storeEntry(host, routeCacheEntry{route: route, found: true})
 }
 
 func (c *routeCache) setMiss(host string) {
+	c.storeEntry(host, routeCacheEntry{found: false})
+}
+
+func (c *routeCache) storeEntry(host string, entry routeCacheEntry) {
 	if host == "" {
 		return
 	}
 	c.mu.Lock()
-	if _, exists := c.entries[host]; !exists && len(c.entries) >= c.entryLimit() {
-		c.mu.Unlock()
-		return
-	}
+	defer c.mu.Unlock()
+
 	if prev, exists := c.entries[host]; exists {
 		c.untrackHostLocked(prev.route.Tunnel.ID, host)
+	} else if len(c.entries) >= c.entryLimit() {
+		c.evictLocked()
 	}
-	c.entries[host] = routeCacheEntry{
-		found:             false,
-		expiresAtUnixNano: c.nowNanos() + int64(c.cacheTTL()),
+
+	entry.expiresAtUnixNano = c.nowNanos() + int64(c.cacheTTL())
+	c.entries[host] = entry
+	if entry.found {
+		c.trackHostLocked(entry.route.Tunnel.ID, host)
 	}
-	c.mu.Unlock()
+}
+
+// evictLocked makes room for one new entry.
+//
+// A full cache used to reject inserts outright. Because negative lookups are
+// cached too, a spread of unknown hostnames could fill every slot and then
+// legitimate new hosts would go uncached, hitting the store on every request
+// until the janitor's next sweep minutes later. Evicting instead bounds the
+// damage to the entries actually displaced. Expired entries go first; failing
+// that, Go's randomised map iteration gives a cheap random victim.
+func (c *routeCache) evictLocked() {
+	nowUnix := c.nowNanos()
+	evicted := 0
+	for host, e := range c.entries {
+		if nowUnix > e.expiresAtUnixNano {
+			delete(c.entries, host)
+			c.untrackHostLocked(e.route.Tunnel.ID, host)
+			evicted++
+			if evicted >= routeCacheEvictBatch {
+				return
+			}
+		}
+	}
+	if evicted > 0 {
+		return
+	}
+
+	// Nothing expired: drop misses before hits, since a miss is cheaper to
+	// recompute than an active route.
+	for host, e := range c.entries {
+		if !e.found {
+			delete(c.entries, host)
+			return
+		}
+	}
+	for host, e := range c.entries {
+		delete(c.entries, host)
+		c.untrackHostLocked(e.route.Tunnel.ID, host)
+		return
+	}
 }
 
 func (c *routeCache) cleanup() {

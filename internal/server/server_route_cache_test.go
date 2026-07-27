@@ -173,8 +173,62 @@ func TestRouteCacheCapacityIsBounded(t *testing.T) {
 	if got := len(c.entries); got != 2 {
 		t.Fatalf("cache size = %d, want 2", got)
 	}
-	if _, _, cached := c.lookup("three.example.com"); cached {
-		t.Fatal("expected entry beyond capacity not to be cached")
+	// A full cache evicts to admit the newcomer rather than refusing it.
+	// Refusing meant a flood of unknown hostnames could fill every slot and
+	// leave real hosts permanently uncached until the next janitor sweep.
+	if _, _, cached := c.lookup("three.example.com"); !cached {
+		t.Fatal("expected newest entry to be admitted by evicting an older one")
+	}
+}
+
+// TestRouteCacheEvictsMissesBeforeHits checks that a hostname flood cannot
+// push live routes out of the cache while cheap negative entries survive.
+func TestRouteCacheEvictsMissesBeforeHits(t *testing.T) {
+	t.Parallel()
+
+	c := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+		maxEntries:    2,
+	}
+	c.set("live.example.com", domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-1", Hostname: "live.example.com"},
+		Tunnel: domain.Tunnel{ID: "t-1"},
+	})
+	c.setMiss("junk.example.com")
+	c.setMiss("more-junk.example.com")
+
+	if _, ok := c.get("live.example.com"); !ok {
+		t.Fatal("live route was evicted in favour of a negative entry")
+	}
+	if got := len(c.entries); got > 2 {
+		t.Fatalf("cache size = %d, want <= 2", got)
+	}
+}
+
+// TestRouteCacheAdmitsAfterMissFlood is the regression this eviction change
+// exists for: unknown hostnames must not lock out later real lookups.
+func TestRouteCacheAdmitsAfterMissFlood(t *testing.T) {
+	t.Parallel()
+
+	c := routeCache{
+		entries:       make(map[string]routeCacheEntry),
+		hostsByTunnel: make(map[string]map[string]struct{}),
+		maxEntries:    64,
+	}
+	for i := range 500 {
+		c.setMiss(fmt.Sprintf("junk-%03d.example.com", i))
+	}
+
+	c.set("real.example.com", domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d-1", Hostname: "real.example.com"},
+		Tunnel: domain.Tunnel{ID: "t-1"},
+	})
+	if _, ok := c.get("real.example.com"); !ok {
+		t.Fatal("real route not cached after a flood of unknown hostnames")
+	}
+	if got := len(c.entries); got > 64 {
+		t.Fatalf("cache size = %d, want <= 64", got)
 	}
 }
 

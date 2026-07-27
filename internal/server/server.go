@@ -139,7 +139,7 @@ type session struct {
 	pendingMu        sync.RWMutex
 	pending          map[string]*pendingRequest
 	wsMu             sync.RWMutex
-	wsPending        map[string]chan tunnelproto.Message
+	wsPending        map[string]*wsStream
 	pendingCount     atomic.Int64
 	webSocketCount   atomic.Int64
 	lastSeenUnixNano atomic.Int64
@@ -148,6 +148,9 @@ type session struct {
 
 type sessionWriter interface {
 	WriteJSON(tunnelproto.Message) error
+	// WriteJSONAsync queues a control message without waiting for the write
+	// to complete, for callers that must not block (see the read loop).
+	WriteJSONAsync(tunnelproto.Message) error
 	WriteBinaryFrame(byte, string, int, []byte) error
 	Close()
 }

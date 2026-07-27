@@ -2,6 +2,7 @@ package waf
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func TestGenericBodyValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := genericBodyValues(tt.raw)
+			got := collectValuesForTest(func(set *valueSet) { collectGenericValues(set, tt.raw) })
 			if tt.want == nil {
 				if got != nil {
 					t.Fatalf("expected nil, got %v", got)
@@ -110,8 +111,9 @@ func TestCollectJSONStrings(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var out []string
-			collectJSONStrings(tt.value, tt.parentKey, &out)
+			set := newValueSet(1 << 20)
+			collectJSONStrings(tt.value, tt.parentKey, set)
+			out := valueStrings(set.values)
 			if len(out) != tt.wantLen {
 				t.Errorf("got %d values %v, want %d", len(out), out, tt.wantLen)
 			}
@@ -308,7 +310,7 @@ func TestCollectFormBodyValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := collectFormBodyValues(tt.raw)
+			got := collectValuesForTest(func(set *valueSet) { collectFormBodyValues(set, tt.raw) })
 			if len(got) < tt.wantMinLen {
 				t.Fatalf("got %d values %v, want at least %d", len(got), got, tt.wantMinLen)
 			}
@@ -336,7 +338,7 @@ func TestCollectJSONBodyValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := collectJSONBodyValues([]byte(tt.body))
+			got := collectValuesForTest(func(set *valueSet) { collectJSONBodyValues(set, []byte(tt.body)) })
 			if len(got) < tt.wantMinLen {
 				t.Fatalf("got %d values %v, want at least %d", len(got), got, tt.wantMinLen)
 			}
@@ -344,30 +346,63 @@ func TestCollectJSONBodyValues(t *testing.T) {
 	}
 }
 
-func TestAppendUnique(t *testing.T) {
+func TestValueSetDedup(t *testing.T) {
 	t.Parallel()
 
-	var dst []string
-	appendUnique(&dst, "a")
-	appendUnique(&dst, "b")
-	appendUnique(&dst, "a") // duplicate
-	appendUnique(&dst, "")  // empty, should be ignored
+	set := newValueSet(1 << 20)
+	set.add("a")
+	set.add("b")
+	set.add("a") // duplicate
+	set.add("")  // empty, should be ignored
 
-	if len(dst) != 2 {
-		t.Fatalf("expected 2 unique values, got %v", dst)
+	got := valueStrings(set.values)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unique values, got %v", got)
 	}
-	if dst[0] != "a" || dst[1] != "b" {
-		t.Fatalf("unexpected values: %v", dst)
+	if got[0] != "a" || got[1] != "b" {
+		t.Fatalf("unexpected values: %v", got)
+	}
+
+	set.addAll("a", "b", "a", "c")
+	if got := valueStrings(set.values); len(got) != 3 {
+		t.Fatalf("expected 3 unique values, got %v", got)
 	}
 }
 
-func TestAppendAllUnique(t *testing.T) {
+func TestValueSetBudget(t *testing.T) {
 	t.Parallel()
 
-	var dst []string
-	appendAllUnique(&dst, "a", "b", "a", "c")
-	if len(dst) != 3 {
-		t.Fatalf("expected 3 unique values, got %v", dst)
+	set := newValueSet(10)
+	set.add("12345")  // 5 bytes, fits
+	set.add("678")    // 3 bytes, fits (8 total)
+	set.add("abcdef") // 6 bytes, would exceed the remaining 2
+
+	got := valueStrings(set.values)
+	if len(got) != 2 {
+		t.Fatalf("expected budget to stop the third value, got %v", got)
+	}
+	if !set.dropped {
+		t.Error("expected dropped to be set once a value was rejected")
+	}
+}
+
+// TestValueSetBoundsWork asserts the budget makes extraction linear in the
+// inspected body size rather than in the number of distinct fragments.
+func TestValueSetBoundsWork(t *testing.T) {
+	t.Parallel()
+
+	const budget = 4096
+	set := newValueSet(budget)
+	for i := range 100_000 {
+		set.add(fmt.Sprintf("distinct-value-%06d", i))
+	}
+
+	total := 0
+	for _, v := range set.values {
+		total += len(v.raw)
+	}
+	if total > budget {
+		t.Fatalf("scanned bytes %d exceeded budget %d", total, budget)
 	}
 }
 
@@ -388,8 +423,8 @@ func TestNewRequestView(t *testing.T) {
 		t.Parallel()
 		r := httptest.NewRequest(http.MethodGet, "/search?q=hello+world", nil)
 		view := newRequestView(r, maxURILength, maxHeaderCount)
-		if view.plusDecoded != "q=hello world" {
-			t.Errorf("plusDecoded = %q, want %q", view.plusDecoded, "q=hello world")
+		if view.plusDecoded.raw != "q=hello world" {
+			t.Errorf("plusDecoded = %q, want %q", view.plusDecoded.raw, "q=hello world")
 		}
 	})
 
@@ -423,7 +458,7 @@ func TestNewRequestView(t *testing.T) {
 		r.Header.Set("X-Custom", "value")
 		view := newRequestView(r, maxURILength, maxHeaderCount)
 		// Only X-Custom should appear
-		if len(view.headerValues) != 1 || view.headerValues[0] != "value" {
+		if len(view.headerValues) != 1 || view.headerValues[0].raw != "value" {
 			t.Errorf("expected only custom header, got %v", view.headerValues)
 		}
 	})

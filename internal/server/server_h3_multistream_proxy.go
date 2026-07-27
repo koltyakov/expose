@@ -334,16 +334,33 @@ func (s *Server) sendRequestBodyToH3Stream(
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	firstBufRef := requestFirstChunkPool.Get().(*[]byte)
-	firstBuf := *firstBufRef
-	if cap(firstBuf) < streamingThreshold+1 {
-		firstBuf = make([]byte, streamingThreshold+1)
-	} else {
-		firstBuf = firstBuf[:streamingThreshold+1]
+	// Mirrors sendRequestBody: probe with a small buffer so that ordinary
+	// request bodies never check out a streamingThreshold-sized one.
+	var (
+		firstBuf []byte
+		n        int
+		readErr  error
+	)
+	knownLarge := r.ContentLength > int64(streamingThreshold)
+
+	if !knownLarge {
+		smallRef, smallBuf := getPooledBuf(&requestSmallChunkPool, smallBodyBufferSize)
+		defer requestSmallChunkPool.Put(smallRef)
+
+		n, readErr = io.ReadFull(r.Body, smallBuf)
+		firstBuf = smallBuf
 	}
-	*firstBufRef = firstBuf
-	defer requestFirstChunkPool.Put(firstBufRef)
-	n, readErr := io.ReadFull(r.Body, firstBuf)
+
+	if knownLarge || readErr == nil {
+		bigRef, bigBuf := getPooledBuf(&requestFirstChunkPool, streamingThreshold+1)
+		defer requestFirstChunkPool.Put(bigRef)
+
+		copied := copy(bigBuf, firstBuf[:n])
+		var more int
+		more, readErr = io.ReadFull(r.Body, bigBuf[copied:])
+		n = copied + more
+		firstBuf = bigBuf
+	}
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		return false, writeH3StreamJSON(stream, tunnelproto.Message{
@@ -383,14 +400,7 @@ func (s *Server) sendRequestBodyToH3Stream(
 		return true, err
 	}
 
-	chunkBufRef := requestStreamChunkPool.Get().(*[]byte)
-	chunkBuf := *chunkBufRef
-	if cap(chunkBuf) < streamingChunkSize {
-		chunkBuf = make([]byte, streamingChunkSize)
-	} else {
-		chunkBuf = chunkBuf[:streamingChunkSize]
-	}
-	*chunkBufRef = chunkBuf
+	chunkBufRef, chunkBuf := getPooledBuf(&requestStreamChunkPool, streamingChunkSize)
 	defer requestStreamChunkPool.Put(chunkBufRef)
 	for {
 		cn, err := r.Body.Read(chunkBuf)

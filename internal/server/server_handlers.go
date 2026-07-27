@@ -199,8 +199,8 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	defer sess.releaseWebSocket()
 
 	streamID := s.nextWSStreamID()
-	streamCh := make(chan tunnelproto.Message, 64)
-	sess.wsPendingStore(streamID, streamCh)
+	stream := newWSStream(64)
+	sess.wsPendingStore(streamID, stream)
 	defer sess.wsPendingDelete(streamID)
 
 	headers := tunnelproto.ShallowCloneHeaders(r.Header)
@@ -236,7 +236,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	}
 	defer stopTimer()
 
-	ack, status, msg := s.waitForPublicWSOpenAck(r, timer, streamCh)
+	ack, status, msg := s.waitForPublicWSOpenAck(r, timer, stream)
 	if status != 0 {
 		if msg != "" {
 			http.Error(w, msg, status)
@@ -278,7 +278,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	defer close(relayStop)
 
 	s.startPublicWSReadRelay(streamID, sess, publicConn, readDone)
-	s.startPublicWSWriteRelay(r, publicConn, streamCh, relayStop, writeDone)
+	s.startPublicWSWriteRelay(r, publicConn, stream, relayStop, writeDone)
 
 	select {
 	case <-r.Context().Done():

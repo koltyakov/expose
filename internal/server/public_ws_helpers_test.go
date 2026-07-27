@@ -18,9 +18,9 @@ func TestWaitForPublicWSOpenAck(t *testing.T) {
 	t.Parallel()
 
 	srv := &Server{}
-	streamCh := make(chan tunnelproto.Message, 2)
-	streamCh <- tunnelproto.Message{Kind: tunnelproto.KindPing}
-	streamCh <- tunnelproto.Message{
+	stream := newWSStream(2)
+	stream.ch <- tunnelproto.Message{Kind: tunnelproto.KindPing}
+	stream.ch <- tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpenAck,
 		WSOpenAck: &tunnelproto.WSOpenAck{
 			ID:     "ws_1",
@@ -32,7 +32,7 @@ func TestWaitForPublicWSOpenAck(t *testing.T) {
 	ack, status, message := srv.waitForPublicWSOpenAck(
 		httptest.NewRequest(http.MethodGet, "https://demo.example.com/ws", nil),
 		time.NewTimer(time.Second),
-		streamCh,
+		stream,
 	)
 	if ack == nil || ack.ID != "ws_1" || status != 0 || message != "" {
 		t.Fatalf("waitForPublicWSOpenAck() = (%+v, %d, %q)", ack, status, message)
@@ -49,18 +49,18 @@ func TestWaitForPublicWSOpenAckErrors(t *testing.T) {
 	_, status, message := srv.waitForPublicWSOpenAck(
 		httptest.NewRequest(http.MethodGet, "https://demo.example.com/ws", nil).WithContext(req),
 		time.NewTimer(time.Second),
-		make(chan tunnelproto.Message),
+		newWSStream(1),
 	)
 	if status != 0 || message != "" {
 		t.Fatalf("canceled wait = (%d, %q), want zero values", status, message)
 	}
 
-	streamCh := make(chan tunnelproto.Message)
-	close(streamCh)
+	closedStream := newWSStream(1)
+	closedStream.close()
 	_, status, message = srv.waitForPublicWSOpenAck(
 		httptest.NewRequest(http.MethodGet, "https://demo.example.com/ws", nil),
 		time.NewTimer(time.Second),
-		streamCh,
+		closedStream,
 	)
 	if status != http.StatusBadGateway || message != "tunnel closed" {
 		t.Fatalf("closed tunnel = (%d, %q)", status, message)
@@ -69,7 +69,7 @@ func TestWaitForPublicWSOpenAckErrors(t *testing.T) {
 	_, status, message = srv.waitForPublicWSOpenAck(
 		httptest.NewRequest(http.MethodGet, "https://demo.example.com/ws", nil),
 		time.NewTimer(10*time.Millisecond),
-		make(chan tunnelproto.Message),
+		newWSStream(1),
 	)
 	if status != http.StatusGatewayTimeout || message != "upstream timeout" {
 		t.Fatalf("timed out wait = (%d, %q)", status, message)
@@ -110,13 +110,13 @@ func TestStartPublicWSWriteRelayWritesDataAndClose(t *testing.T) {
 	defer closeServerWebSocketPair(publicConn, peerConn)
 
 	srv := &Server{hub: &hub{}}
-	streamCh := make(chan tunnelproto.Message, 2)
+	stream := newWSStream(2)
 	relayStop := make(chan struct{})
 	writeDone := make(chan struct{})
 	req := httptest.NewRequest(http.MethodGet, "https://demo.example.com/ws", nil)
 
-	srv.startPublicWSWriteRelay(req, publicConn, streamCh, relayStop, writeDone)
-	streamCh <- tunnelproto.Message{
+	srv.startPublicWSWriteRelay(req, publicConn, stream, relayStop, writeDone)
+	stream.ch <- tunnelproto.Message{
 		Kind: tunnelproto.KindWSData,
 		WSData: &tunnelproto.WSData{
 			ID:          "ws_1",
@@ -136,7 +136,7 @@ func TestStartPublicWSWriteRelayWritesDataAndClose(t *testing.T) {
 		t.Fatalf("ReadMessage() = (%d, %q)", msgType, payload)
 	}
 
-	streamCh <- tunnelproto.Message{
+	stream.ch <- tunnelproto.Message{
 		Kind: tunnelproto.KindWSClose,
 		WSClose: &tunnelproto.WSClose{
 			ID:   "ws_1",

@@ -32,6 +32,15 @@ type writeCompletion struct {
 	ch chan error
 }
 
+// complete delivers the write result to a waiting caller. Requests queued by
+// WriteJSONAsync have no waiter and carry a nil completion.
+func (r writeRequest) complete(err error) {
+	if r.done == nil {
+		return
+	}
+	r.done.ch <- err
+}
+
 type WritePump struct {
 	writeFn     func(writeRequest) error
 	closeFn     func()
@@ -44,6 +53,9 @@ type WritePump struct {
 	enqueueMu   sync.RWMutex
 	highTimeout time.Duration
 	lowTimeout  time.Duration
+	// controlBurst counts consecutive control-lane writes. Only touched by
+	// run(), so it needs no synchronisation.
+	controlBurst int
 }
 
 var writeCompletionPool = sync.Pool{
@@ -89,6 +101,43 @@ func (p *WritePump) WriteJSON(msg tunnelproto.Message) error {
 		msg:  msg,
 		done: acquireWriteCompletion(),
 	}, true)
+}
+
+// WriteJSONAsync queues msg on the control lane without waiting for the write
+// to complete, and without blocking if the lane is full.
+//
+// It exists for callers that must never stall, notably the session read loop:
+// WriteJSON blocks until the pump has drained ahead of the message and
+// finished writing it (bounded only by the write deadline), so a single slow
+// peer mid-way through a large frame would stop the read loop and with it
+// every multiplexed request on that tunnel. Suitable only for self-contained
+// control messages: unlike WriteJSON it gives no guarantee that pooled buffers
+// referenced by msg are done being read.
+func (p *WritePump) WriteJSONAsync(msg tunnelproto.Message) error {
+	if p.closed.Load() {
+		return ErrWritePumpClosed
+	}
+
+	p.enqueueMu.RLock()
+	defer p.enqueueMu.RUnlock()
+	if p.closed.Load() {
+		return ErrWritePumpClosed
+	}
+	select {
+	case <-p.stop:
+		return ErrWritePumpClosed
+	default:
+	}
+
+	select {
+	case p.high <- writeRequest{msg: msg}:
+		return nil
+	default:
+		// Deliberately does not trigger backpressure teardown: a transiently
+		// full control lane should cost one dropped control frame, not the
+		// whole tunnel.
+		return ErrWritePumpBackpressure
+	}
 }
 
 func (p *WritePump) WriteBinaryFrame(frameKind byte, id string, wsMessageType int, payload []byte) error {
@@ -170,7 +219,7 @@ func (p *WritePump) run() {
 			return
 		}
 		err := p.write(req)
-		req.done.ch <- err
+		req.complete(err)
 		if err != nil {
 			p.closed.Store(true)
 			p.signalStop()
@@ -185,19 +234,39 @@ func (p *WritePump) run() {
 	}
 }
 
+// maxControlBurst is how many control messages may be written back-to-back
+// before the data lane is given a turn. Control traffic is normally sparse,
+// but a WebSocket-churn workload can keep the high lane permanently non-empty,
+// and strict priority would then starve data frames indefinitely.
+const maxControlBurst = 32
+
 func (p *WritePump) next() (writeRequest, bool) {
-	select {
-	case req := <-p.high:
-		return req, true
-	default:
+	if p.controlBurst < maxControlBurst {
+		select {
+		case req := <-p.high:
+			p.controlBurst++
+			return req, true
+		default:
+		}
+	} else {
+		// Control lane has had its burst; let one data frame through first.
+		select {
+		case req := <-p.low:
+			p.controlBurst = 0
+			return req, true
+		default:
+		}
+		p.controlBurst = 0
 	}
 
 	select {
 	case <-p.stop:
 		return writeRequest{}, false
 	case req := <-p.high:
+		p.controlBurst++
 		return req, true
 	case req := <-p.low:
+		p.controlBurst = 0
 		return req, true
 	}
 }
@@ -250,7 +319,7 @@ func (p *WritePump) failPending(err error) {
 		for {
 			select {
 			case req := <-ch:
-				req.done.ch <- err
+				req.complete(err)
 			default:
 				return
 			}

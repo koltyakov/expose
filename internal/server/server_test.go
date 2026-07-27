@@ -905,8 +905,8 @@ func TestRouteCacheGetEvictsExpiredEntry(t *testing.T) {
 }
 
 func TestSessionWSPendingSend(t *testing.T) {
-	ch := make(chan tunnelproto.Message, 1)
-	sess := &session{wsPending: map[string]chan tunnelproto.Message{"stream-1": ch}}
+	stream := newWSStream(1)
+	sess := &session{wsPending: map[string]*wsStream{"stream-1": stream}}
 	msg := tunnelproto.Message{Kind: tunnelproto.KindWSData}
 
 	if ok := sess.wsPendingSend("stream-1", msg, 0); !ok {
@@ -914,7 +914,7 @@ func TestSessionWSPendingSend(t *testing.T) {
 	}
 
 	select {
-	case got := <-ch:
+	case got := <-stream.ch:
 		if got.Kind != tunnelproto.KindWSData {
 			t.Fatalf("expected ws data message, got %q", got.Kind)
 		}
@@ -924,8 +924,7 @@ func TestSessionWSPendingSend(t *testing.T) {
 }
 
 func TestSessionWSPendingSendTimeout(t *testing.T) {
-	ch := make(chan tunnelproto.Message)
-	sess := &session{wsPending: map[string]chan tunnelproto.Message{"stream-1": ch}}
+	sess := &session{wsPending: map[string]*wsStream{"stream-1": newWSStream(0)}}
 
 	start := time.Now()
 	ok := sess.wsPendingSend("stream-1", tunnelproto.Message{Kind: tunnelproto.KindWSData}, 15*time.Millisecond)
@@ -1040,6 +1039,10 @@ func (w *testSessionWriter) WriteJSON(msg tunnelproto.Message) error {
 	return nil
 }
 
+func (w *testSessionWriter) WriteJSONAsync(msg tunnelproto.Message) error {
+	return w.WriteJSON(msg)
+}
+
 func (w *testSessionWriter) WriteBinaryFrame(byte, string, int, []byte) error {
 	return nil
 }
@@ -1067,6 +1070,10 @@ func (w *blockingWorkerSignalWriter) WriteJSON(msg tunnelproto.Message) error {
 		<-w.release
 	}
 	return nil
+}
+
+func (w *blockingWorkerSignalWriter) WriteJSONAsync(msg tunnelproto.Message) error {
+	return w.WriteJSON(msg)
 }
 
 func (w *blockingWorkerSignalWriter) WriteBinaryFrame(byte, string, int, []byte) error {
@@ -2020,7 +2027,7 @@ func TestAbortPendingRequestSendsCancel(t *testing.T) {
 		conn:     conn,
 		writer:   tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize),
 		pending: map[string]*pendingRequest{
-			"req_1": acquirePendingRequest(),
+			"req_1": newPendingRequest(),
 		},
 	}
 	defer sess.writer.Close()
@@ -2057,7 +2064,7 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
-	pending := acquirePendingRequest()
+	pending := newPendingRequest()
 	respCh := pending.ensureBodyCh()
 
 	chunk1 := []byte("hello ")
@@ -2082,7 +2089,7 @@ func TestWriteStreamedResponseBodyAborted(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
-	pending := acquirePendingRequest()
+	pending := newPendingRequest()
 	respCh := pending.ensureBodyCh()
 
 	respCh <- []byte("partial")
@@ -2103,7 +2110,7 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 100 * time.Millisecond}}
-	pending := acquirePendingRequest()
+	pending := newPendingRequest()
 	respCh := pending.ensureBodyCh()
 
 	respCh <- []byte("partial")
@@ -2156,7 +2163,7 @@ func TestSessionStreamSendTimeout(t *testing.T) {
 func TestSessionPendingLoad(t *testing.T) {
 	sess := &session{pending: make(map[string]*pendingRequest)}
 
-	req := acquirePendingRequest()
+	req := newPendingRequest()
 	sess.pendingStore("req_1", req)
 
 	got, ok := sess.pendingLoad("req_1")

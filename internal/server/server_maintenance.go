@@ -113,25 +113,33 @@ func (s *Server) expireStaleSessions(ctx context.Context) {
 
 		s.log.Warn("client heartbeat timeout", "tunnel_id", sess.tunnelID, "last_seen", lastSeen.UTC().Format(time.RFC3339))
 		closeCtx, closeCancel := context.WithTimeout(contextOrBackground(ctx), 10*time.Second)
+
+		// routeLifecycleMu also gates every connect, register and session
+		// teardown, so it is held only for the session-currency check. The
+		// store write and certificate-cache scan below can each take seconds;
+		// running them under the lock meant one slow disk or database made
+		// the whole server refuse new tunnels, and a burst of dropped clients
+		// serialised N of those pauses back to back.
 		s.routeLifecycleMu.Lock()
-		if !s.isSessionCurrent(sess) {
-			s.routeLifecycleMu.Unlock()
+		current := s.isSessionCurrent(sess)
+		s.routeLifecycleMu.Unlock()
+		if !current {
 			closeCancel()
 			continue
 		}
+
 		hostname, closed, err := s.store.CloseTemporaryTunnel(closeCtx, sess.tunnelID)
 		if err != nil {
 			s.log.Error("failed to close stale temporary tunnel", "tunnel_id", sess.tunnelID, "err", err)
 		}
 		if closed {
-			removed, err := s.removeInactiveTunnelCertCacheLocked(closeCtx, hostname, "", false)
+			removed, err := s.removeInactiveTunnelCertCache(closeCtx, hostname, "", false)
 			if err != nil {
 				s.log.Error("failed to remove certificate cache", "hostname", hostname, "err", err)
 			} else if removed > 0 {
 				s.log.Info("temporary tunnel certificate cache removed", "hostname", hostname, "files", removed)
 			}
 		}
-		s.routeLifecycleMu.Unlock()
 		closeCancel()
 		if sess.transport != nil {
 			_ = sess.transport.Close()
@@ -146,15 +154,24 @@ func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
 	if err != nil {
 		s.log.Error("temporary domain cleanup failed", "err", err)
 	} else if len(purgedDomains) > 0 {
-		removedFiles := 0
-		failedFiles := 0
+		// Unpublish each route, then prune every certificate in a single
+		// directory scan. The per-host helper does its own ReadDir, which made
+		// this loop O(hosts x cache entries).
+		hosts := make([]string, 0, len(purgedDomains))
 		for _, purged := range purgedDomains {
-			removed, removeErr := s.removeInactiveTunnelCertCache(ctx, purged.Hostname, purged.ID, true)
-			removedFiles += removed
-			if removeErr != nil {
-				failedFiles++
-				s.log.Error("failed to remove certificate cache during cleanup", "hostname", purged.Hostname, "err", removeErr)
+			unpublished, err := s.unpublishInactiveTunnelRoute(ctx, purged.Hostname, purged.ID, true)
+			if err != nil {
+				s.log.Error("failed to unpublish purged domain", "hostname", purged.Hostname, "err", err)
+				continue
 			}
+			if unpublished {
+				hosts = append(hosts, purged.Hostname)
+			}
+		}
+
+		removedFiles, failedFiles, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
+		if err != nil {
+			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
 		}
 		s.log.Info("stale temporary domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
 	}
@@ -169,25 +186,39 @@ func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
 }
 
 func (s *Server) removeInactiveTunnelCertCache(ctx context.Context, hostname, domainID string, requireDeleted bool) (int, error) {
-	s.routeLifecycleMu.Lock()
-	defer s.routeLifecycleMu.Unlock()
-	return s.removeInactiveTunnelCertCacheLocked(ctx, hostname, domainID, requireDeleted)
+	unpublished, err := s.unpublishInactiveTunnelRoute(ctx, hostname, domainID, requireDeleted)
+	if err != nil || !unpublished {
+		return 0, err
+	}
+	// Deliberately outside routeLifecycleMu: scanning and pruning the
+	// certificate cache directory only touches the filesystem, and it is a
+	// full ReadDir per hostname. Doing it under the lock that gates every
+	// connect and register made cleanup bursts block new tunnels.
+	return removeTunnelCertCache(s.cfg.CertCacheDir, hostname)
 }
 
-func (s *Server) removeInactiveTunnelCertCacheLocked(ctx context.Context, hostname, domainID string, requireDeleted bool) (int, error) {
+// unpublishInactiveTunnelRoute drops the route for hostname when it is really
+// inactive, reporting whether the caller should now prune its certificates.
+// The store lookup and the route removal must be atomic with respect to
+// connect/register, otherwise a tunnel reconnecting in between would have its
+// fresh route deleted.
+func (s *Server) unpublishInactiveTunnelRoute(ctx context.Context, hostname, domainID string, requireDeleted bool) (bool, error) {
+	s.routeLifecycleMu.Lock()
+	defer s.routeLifecycleMu.Unlock()
+
 	current, err := s.store.FindRouteByHost(ctx, hostname)
 	switch {
 	case err == nil:
 		if requireDeleted || current.Domain.Status == domain.DomainStatusActive || (domainID != "" && current.Domain.ID != domainID) {
-			return 0, nil
+			return false, nil
 		}
 		domainID = current.Domain.ID
 	case !errors.Is(err, sql.ErrNoRows):
-		return 0, err
+		return false, err
 	}
 
 	s.removePublishedRoute(hostname, domainID)
-	return removeTunnelCertCache(s.cfg.CertCacheDir, hostname)
+	return true, nil
 }
 
 func removeTunnelCertCache(cacheDir, hostname string) (int, error) {

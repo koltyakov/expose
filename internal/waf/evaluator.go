@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"slices"
 	"sort"
@@ -15,44 +16,55 @@ import (
 	"github.com/koltyakov/expose/internal/netutil"
 )
 
-// skipHeaders are headers excluded from WAF pattern matching because they
+// skipHeaderNames are headers excluded from WAF pattern matching because they
 // are either safe, controlled by the browser, or cause false positives.
-var skipHeaders = map[string]struct{}{
-	"host":                     {},
-	"accept":                   {},
-	"accept-language":          {},
-	"accept-encoding":          {},
-	"connection":               {},
-	"content-length":           {},
-	"content-type":             {},
-	"if-modified-since":        {},
-	"if-none-match":            {},
-	"cache-control":            {},
-	"upgrade":                  {},
-	"authorization":            {},
-	"sec-websocket-key":        {},
-	"sec-websocket-version":    {},
-	"sec-websocket-extensions": {},
-	"sec-websocket-protocol":   {},
-	"sec-fetch-dest":           {},
-	"sec-fetch-mode":           {},
-	"sec-fetch-site":           {},
-	"sec-fetch-user":           {},
-	"sec-ch-ua":                {},
-	"sec-ch-ua-mobile":         {},
-	"sec-ch-ua-platform":       {},
+var skipHeaderNames = []string{
+	"host",
+	"accept",
+	"accept-language",
+	"accept-encoding",
+	"connection",
+	"content-length",
+	"content-type",
+	"if-modified-since",
+	"if-none-match",
+	"cache-control",
+	"upgrade",
+	"authorization",
+	"sec-websocket-key",
+	"sec-websocket-version",
+	"sec-websocket-extensions",
+	"sec-websocket-protocol",
+	"sec-fetch-dest",
+	"sec-fetch-mode",
+	"sec-fetch-site",
+	"sec-fetch-user",
+	"sec-ch-ua",
+	"sec-ch-ua-mobile",
+	"sec-ch-ua-platform",
 }
 
+// skipHeaders is keyed by canonical MIME header form, matching the keys
+// net/http puts in Request.Header. Looking up the canonical key directly
+// avoids lowercasing every header name on every request.
+var skipHeaders = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(skipHeaderNames))
+	for _, name := range skipHeaderNames {
+		m[textproto.CanonicalMIMEHeaderKey(name)] = struct{}{}
+	}
+	return m
+}()
+
 type requestView struct {
-	requestURI    string
-	path          string
-	rawQuery      string
-	decodedQuery  string
-	plusDecoded   string
-	doubleDecoded string // second pass URL-decode to catch double-encoding
-	userAgent     string
-	headerValues  []string
-	bodyValues    []string
+	requestURI    scanInput
+	path          scanInput
+	rawQuery      scanInput
+	decodedQuery  scanInput
+	plusDecoded   scanInput
+	doubleDecoded scanInput
+	userAgent     scanInput
+	headerValues  []scanInput
+	bodyValues    []scanInput
 	uriTooLong    bool // URI exceeds safety limit
 	tooManyHdrs   bool // excessive header count
 }
@@ -90,22 +102,26 @@ func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 		}
 	}
 
-	headerValues := make([]string, 0, len(r.Header))
+	// r.Header keys are already in canonical MIME form, so skipHeaders is
+	// keyed the same way and needs no per-header lowercasing.
+	headerValues := make([]scanInput, 0, len(r.Header))
 	for name, values := range r.Header {
-		if _, skip := skipHeaders[strings.ToLower(name)]; skip {
+		if _, skip := skipHeaders[name]; skip {
 			continue
 		}
-		headerValues = append(headerValues, values...)
+		for _, v := range values {
+			headerValues = append(headerValues, newScanInput(v))
+		}
 	}
 
 	return requestView{
-		requestURI:    r.RequestURI,
-		path:          r.URL.Path,
-		rawQuery:      rawQuery,
-		decodedQuery:  decodedQuery,
-		plusDecoded:   plusDecoded,
-		doubleDecoded: doubleDecoded,
-		userAgent:     r.UserAgent(),
+		requestURI:    newScanInput(r.RequestURI),
+		path:          newScanInput(r.URL.Path),
+		rawQuery:      newScanInput(rawQuery),
+		decodedQuery:  newScanInput(decodedQuery),
+		plusDecoded:   newScanInput(plusDecoded),
+		doubleDecoded: newScanInput(doubleDecoded),
+		userAgent:     newScanInput(r.UserAgent()),
 		headerValues:  headerValues,
 		uriTooLong:    len(r.RequestURI) > maxURI,
 		tooManyHdrs:   len(headerValues) > maxHeaders,
@@ -129,7 +145,7 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 	for i := range fw.rules {
 		rl := &fw.rules[i]
 
-		if rl.targets&targetURI != 0 && rl.pattern.MatchString(view.requestURI) {
+		if rl.targets&targetURI != 0 && rl.matches(view.requestURI) {
 			return true, rl.name
 		}
 		if rl.targets&targetPath != 0 && matchPathRule(rl, view.path) {
@@ -137,15 +153,15 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 				return true, rl.name
 			}
 		}
-		if rl.targets&targetQuery != 0 && view.rawQuery != "" {
-			if rl.pattern.MatchString(view.rawQuery) ||
-				rl.pattern.MatchString(view.decodedQuery) ||
-				rl.pattern.MatchString(view.plusDecoded) ||
-				(view.doubleDecoded != view.decodedQuery && rl.pattern.MatchString(view.doubleDecoded)) {
+		if rl.targets&targetQuery != 0 && view.rawQuery.raw != "" {
+			if rl.matches(view.rawQuery) ||
+				rl.matches(view.decodedQuery) ||
+				rl.matches(view.plusDecoded) ||
+				(view.doubleDecoded.raw != view.decodedQuery.raw && rl.matches(view.doubleDecoded)) {
 				return true, rl.name
 			}
 		}
-		if rl.targets&targetUA != 0 && view.userAgent != "" && rl.pattern.MatchString(view.userAgent) {
+		if rl.targets&targetUA != 0 && rl.matches(view.userAgent) {
 			return true, rl.name
 		}
 		if rl.targets&targetHeaders != 0 && fw.matchHeaderValues(rl, view.headerValues) {
@@ -159,11 +175,11 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 	return false, ""
 }
 
-func matchPathRule(rl *rule, path string) bool {
-	if rl.name == "sensitive-file-probe" && isWellKnownPath(path) {
+func matchPathRule(rl *rule, path scanInput) bool {
+	if rl.name == "sensitive-file-probe" && isWellKnownPath(path.raw) {
 		return false
 	}
-	return rl.pattern.MatchString(path)
+	return rl.matches(path)
 }
 
 func isWellKnownPath(path string) bool {
@@ -171,13 +187,25 @@ func isWellKnownPath(path string) bool {
 }
 
 // matchHeaderValues inspects all non-exempt header values for a rule match.
-func (fw *firewall) matchHeaderValues(rl *rule, values []string) bool {
-	return slices.ContainsFunc(values, rl.pattern.MatchString)
+func (fw *firewall) matchHeaderValues(rl *rule, values []scanInput) bool {
+	return slices.ContainsFunc(values, rl.matches)
 }
 
 // matchBodyValues inspects normalized body fragments for a rule match.
-func (fw *firewall) matchBodyValues(rl *rule, values []string) bool {
-	return slices.ContainsFunc(values, rl.pattern.MatchString)
+func (fw *firewall) matchBodyValues(rl *rule, values []scanInput) bool {
+	return slices.ContainsFunc(values, rl.matches)
+}
+
+// matchUserAgent reports whether any User-Agent rule matches ua.
+func (fw *firewall) matchUserAgent(ua string) bool {
+	in := newScanInput(ua)
+	for i := range fw.rules {
+		rl := &fw.rules[i]
+		if rl.targets&targetUA != 0 && rl.matches(in) {
+			return true
+		}
+	}
+	return false
 }
 
 // clientAddr extracts the remote IP for logging. It prefers X-Forwarded-For
@@ -202,7 +230,86 @@ type replayBody struct {
 	io.Closer
 }
 
-func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Request) bool) []string {
+// bodyScanBudgetFactor bounds how many bytes of extracted body fragments the
+// rule engine may scan, as a multiple of the inspected body size.
+//
+// Extraction is expansive: every fragment can yield URL-decoded, plus-decoded
+// and double-decoded variants, so a body at the inspection limit could
+// otherwise produce several times its own size in values, each scanned by
+// every rule. The budget makes worst-case CPU per request a function of the
+// configured inspection limit alone, regardless of body shape.
+const bodyScanBudgetFactor = 2
+
+// valueSetLinearDedupMax is the number of fragments below which dedup uses a
+// linear scan. Most bodies stay well under it, and avoiding the map keeps the
+// common case allocation-free.
+const valueSetLinearDedupMax = 32
+
+// valueSet accumulates distinct body fragments under a byte budget.
+//
+// Dedup switches from a linear scan to a map once the set grows: bodies with
+// many distinct fragments made the previous slices.Contains approach
+// quadratic, which let a single request burn milliseconds of CPU.
+type valueSet struct {
+	values  []scanInput
+	seen    map[string]struct{} // built lazily past valueSetLinearDedupMax
+	budget  int
+	dropped bool
+}
+
+func newValueSet(budget int) *valueSet {
+	return &valueSet{budget: budget}
+}
+
+func (s *valueSet) contains(value string) bool {
+	if s.seen != nil {
+		_, ok := s.seen[value]
+		return ok
+	}
+	for i := range s.values {
+		if s.values[i].raw == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *valueSet) add(value string) {
+	if value == "" {
+		return
+	}
+	if s.budget <= 0 || len(value) > s.budget {
+		s.dropped = true
+		return
+	}
+	if s.contains(value) {
+		return
+	}
+
+	s.budget -= len(value)
+	s.values = append(s.values, newScanInput(value))
+
+	if s.seen != nil {
+		s.seen[value] = struct{}{}
+		return
+	}
+	if len(s.values) > valueSetLinearDedupMax {
+		s.seen = make(map[string]struct{}, len(s.values)*2)
+		for i := range s.values {
+			s.seen[s.values[i].raw] = struct{}{}
+		}
+	}
+}
+
+func (s *valueSet) addAll(values ...string) {
+	for _, v := range values {
+		s.add(v)
+	}
+}
+
+func (s *valueSet) empty() bool { return len(s.values) == 0 }
+
+func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Request) bool) []scanInput {
 	if r == nil || r.Body == nil || r.Body == http.NoBody || limit <= 0 {
 		return nil
 	}
@@ -215,19 +322,97 @@ func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Reques
 		return nil
 	}
 
+	set := newValueSet(len(body) * bodyScanBudgetFactor)
 	switch {
 	case strings.HasPrefix(mediaType, "multipart/"):
 		return nil
 	case mediaType == "application/x-www-form-urlencoded":
-		return collectFormBodyValues(string(body))
+		collectFormBodyValues(set, string(body))
 	case mediaType == "application/json", strings.HasSuffix(mediaType, "+json"):
-		return collectJSONBodyValues(body)
+		collectJSONBodyValues(set, body)
 	case mediaType == "application/octet-stream":
 		return nil
 	case utf8.Valid(body):
-		return genericBodyValues(string(body))
+		collectGenericValues(set, string(body))
 	default:
 		return nil
+	}
+	return set.values
+}
+
+// collectJSONTokens extracts strings and numbers from a JSON document that may
+// be incomplete, which is the normal case for a body truncated at the
+// inspection limit.
+//
+// Without this, a truncated document fails to parse and falls back to scanning
+// the whole raw blob, so bodies at or over the limit were both the most
+// expensive to inspect and the least precisely inspected. Streaming tokens
+// keeps extraction structured right up to the truncation point.
+func collectJSONTokens(set *valueSet, body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+
+	// Track object depth and key position so that values under a sensitive
+	// key are skipped exactly as they are in the whole-document path.
+	var (
+		inObject  []bool
+		expectKey bool
+		lastKey   string
+		found     bool
+	)
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			// io.EOF or a truncation error: keep whatever was extracted.
+			return found
+		}
+
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{':
+				inObject = append(inObject, true)
+				expectKey = true
+				lastKey = ""
+			case '[':
+				inObject = append(inObject, false)
+				expectKey = false
+			case '}', ']':
+				if len(inObject) > 0 {
+					inObject = inObject[:len(inObject)-1]
+				}
+				expectKey = len(inObject) > 0 && inObject[len(inObject)-1]
+			}
+		case string:
+			if expectKey {
+				lastKey = v
+				set.add(v)
+				found = true
+				expectKey = false
+				continue
+			}
+			if !sensitiveBodyField(lastKey) {
+				collectGenericValues(set, v)
+				found = true
+			}
+			if len(inObject) > 0 && inObject[len(inObject)-1] {
+				expectKey = true
+			}
+		case json.Number:
+			if !sensitiveBodyField(lastKey) {
+				set.add(v.String())
+				found = true
+			}
+			if len(inObject) > 0 && inObject[len(inObject)-1] {
+				expectKey = true
+			}
+		default:
+			// bool or nil: nothing to inspect, but object keys still alternate.
+			if len(inObject) > 0 && inObject[len(inObject)-1] {
+				expectKey = true
+			}
+		}
 	}
 }
 
@@ -255,55 +440,56 @@ func previewRequestBody(r *http.Request, limit int64) ([]byte, string, bool) {
 	return preview, mediaType, true
 }
 
-func collectFormBodyValues(raw string) []string {
+func collectFormBodyValues(set *valueSet, raw string) {
 	values, err := url.ParseQuery(raw)
 	if err != nil {
-		return genericBodyValues(raw)
+		collectGenericValues(set, raw)
+		return
 	}
 
-	out := make([]string, 0, len(values)*2)
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		appendUnique(&out, key)
+		set.add(key)
 		if sensitiveBodyField(key) {
 			continue
 		}
 		for _, value := range values[key] {
-			appendAllUnique(&out, genericBodyValues(value)...)
+			collectGenericValues(set, value)
 		}
 	}
-	if len(out) == 0 {
-		return genericBodyValues(raw)
+	if set.empty() {
+		collectGenericValues(set, raw)
 	}
-	return out
 }
 
-func collectJSONBodyValues(body []byte) []string {
+func collectJSONBodyValues(set *valueSet, body []byte) {
 	var payload any
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
-	if err := dec.Decode(&payload); err != nil {
-		return genericBodyValues(string(body))
+	if err := dec.Decode(&payload); err == nil {
+		var extra any
+		if err := dec.Decode(&extra); err == io.EOF {
+			collectJSONStrings(payload, "", set)
+			if !set.empty() {
+				return
+			}
+		}
 	}
 
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return genericBodyValues(string(body))
+	// Not a single well-formed document: most often a body truncated at the
+	// inspection limit. Recover what structure we can before falling back to
+	// scanning the raw bytes.
+	if collectJSONTokens(set, body) {
+		return
 	}
-
-	out := make([]string, 0, 8)
-	collectJSONStrings(payload, "", &out)
-	if len(out) == 0 {
-		return genericBodyValues(string(body))
-	}
-	return out
+	collectGenericValues(set, string(body))
 }
 
-func collectJSONStrings(value any, parentKey string, out *[]string) {
+func collectJSONStrings(value any, parentKey string, set *valueSet) {
 	switch v := value.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(v))
@@ -312,52 +498,51 @@ func collectJSONStrings(value any, parentKey string, out *[]string) {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			appendUnique(out, key)
-			collectJSONStrings(v[key], key, out)
+			set.add(key)
+			collectJSONStrings(v[key], key, set)
 		}
 	case []any:
 		for _, item := range v {
-			collectJSONStrings(item, parentKey, out)
+			collectJSONStrings(item, parentKey, set)
 		}
 	case string:
 		if sensitiveBodyField(parentKey) {
 			return
 		}
-		appendAllUnique(out, genericBodyValues(v)...)
+		collectGenericValues(set, v)
 	case json.Number:
 		if sensitiveBodyField(parentKey) {
 			return
 		}
-		appendUnique(out, v.String())
+		set.add(v.String())
 	}
 }
 
-func genericBodyValues(raw string) []string {
+// collectGenericValues adds raw plus any decoded variants that differ from it,
+// so that encoded attack payloads are inspected in decoded form too.
+func collectGenericValues(set *valueSet, raw string) {
 	if raw == "" {
-		return nil
+		return
 	}
-
-	out := []string{raw}
+	set.add(raw)
 
 	decoded := raw
 	if strings.ContainsAny(raw, "%+") {
 		if v, err := url.QueryUnescape(raw); err == nil {
 			decoded = v
-			appendUnique(&out, decoded)
+			set.add(decoded)
 		}
 	}
 
 	if strings.Contains(raw, "+") {
-		appendUnique(&out, strings.ReplaceAll(raw, "+", " "))
+		set.add(strings.ReplaceAll(raw, "+", " "))
 	}
 
 	if strings.Contains(decoded, "%") {
 		if v, err := url.QueryUnescape(decoded); err == nil {
-			appendUnique(&out, v)
+			set.add(v)
 		}
 	}
-
-	return out
 }
 
 func sensitiveBodyField(name string) bool {
@@ -382,20 +567,4 @@ func sensitiveBodyField(name string) bool {
 	default:
 		return false
 	}
-}
-
-func appendAllUnique(dst *[]string, values ...string) {
-	for _, value := range values {
-		appendUnique(dst, value)
-	}
-}
-
-func appendUnique(dst *[]string, value string) {
-	if value == "" {
-		return
-	}
-	if slices.Contains(*dst, value) {
-		return
-	}
-	*dst = append(*dst, value)
 }

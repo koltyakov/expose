@@ -39,6 +39,9 @@ type Config struct {
 	// ShouldIgnorePathRule allows callers to ignore a matched path rule for a
 	// request while continuing to evaluate all other WAF rules.
 	ShouldIgnorePathRule func(*http.Request, string) bool
+	// ClientAddr resolves the trusted client address for audit events. When
+	// nil, the middleware falls back to its standalone header-based resolver.
+	ClientAddr func(*http.Request) string
 	// OnBlock is called (if non-nil) every time the WAF blocks (or would
 	// block, in audit mode) a request.
 	OnBlock func(BlockEvent)
@@ -54,6 +57,7 @@ type firewall struct {
 	maxHeaders    int
 	bodyGuard     func(*http.Request) bool
 	pathRuleGuard func(*http.Request, string) bool
+	clientAddr    func(*http.Request) string
 	onBlock       func(BlockEvent)
 }
 
@@ -87,6 +91,7 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 			maxHeaders:    intOr(cfg.MaxHeaderCount, maxHeaderCount),
 			bodyGuard:     cfg.ShouldInspectBody,
 			pathRuleGuard: cfg.ShouldIgnorePathRule,
+			clientAddr:    cfg.ClientAddr,
 			onBlock:       cfg.OnBlock,
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +102,9 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 
 			if matched, ruleName := fw.check(r); matched {
 				clientIP := clientAddr(r)
+				if fw.clientAddr != nil {
+					clientIP = fw.clientAddr(r)
+				}
 				host := normalizeHost(r.Host)
 				userAgent := r.UserAgent()
 

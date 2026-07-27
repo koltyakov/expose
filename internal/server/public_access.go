@@ -325,13 +325,17 @@ type publicAccessFormData struct {
 }
 
 func writePublicAccessForm(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, state publicAccessFormState, status int) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
 	if r.Method == http.MethodHead {
 		w.WriteHeader(status)
 		return
 	}
 
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 
 	_ = publicAccessFormTemplate.Execute(w, publicAccessFormData{
@@ -474,7 +478,7 @@ func writeBasicAuthChallenge(w http.ResponseWriter) {
 // accessAuthLimitKey scopes failed-auth throttling per protected hostname and
 // client IP so one visitor cannot lock others out.
 func (s *Server) accessAuthLimitKey(route domain.TunnelRoute, r *http.Request) string {
-	return "access|" + publicRateLimitKey(route.Domain.Hostname, clientIPFromRemoteAddr(r.RemoteAddr))
+	return "access|" + publicRateLimitKey(route.Domain.Hostname, s.clientIP(r))
 }
 
 func writeAccessAuthThrottled(w http.ResponseWriter) {

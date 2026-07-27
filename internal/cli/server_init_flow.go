@@ -187,7 +187,7 @@ func runServerInitInteractive(ctx context.Context, in io.Reader, out io.Writer, 
 	apiKeyPepperDefault := resolveInitPepperDefault(ctx, dbPath, defaults.APIKeyPepper)
 	apiKeyPepper, err := askWizardValue(ctx, reader, out,
 		"API key pepper",
-		"Secret salt used when hashing API keys. Default is existing DB pepper (if set), otherwise this machine ID.",
+		"Secret salt used when hashing API keys. Default is existing DB pepper (if set), otherwise a generated random secret.",
 		"Press Enter to accept default. Leave empty only if you intentionally want auto-resolution.",
 		apiKeyPepperDefault,
 		strings.TrimSpace,

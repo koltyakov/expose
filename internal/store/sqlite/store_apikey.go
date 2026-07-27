@@ -116,9 +116,14 @@ func (s *Store) SetAPIKeyTunnelLimit(ctx context.Context, keyID string, limit in
 	return nil
 }
 
-func (s *Store) GetServerPepper(ctx context.Context) (string, bool, error) {
+const (
+	serverSettingAPIKeyPepper       = "api_key_pepper"
+	serverSettingAccessCookieSecret = "access_cookie_secret"
+)
+
+func (s *Store) getServerSetting(ctx context.Context, key string) (string, bool, error) {
 	var current string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = 'api_key_pepper'`).Scan(&current)
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = ?`, key).Scan(&current)
 	if err == nil {
 		return current, true, nil
 	}
@@ -128,22 +133,71 @@ func (s *Store) GetServerPepper(ctx context.Context) (string, bool, error) {
 	return "", false, err
 }
 
+func (s *Store) putServerSetting(ctx context.Context, key, value string) error {
+	_, err := s.execWithSQLiteBusyRetry(ctx, `INSERT INTO server_settings(key, value) VALUES(?, ?)`, key, value)
+	return err
+}
+
+func (s *Store) putServerSettingIfAbsent(ctx context.Context, key, value string) error {
+	_, err := s.execWithSQLiteBusyRetry(ctx, `
+INSERT INTO server_settings(key, value) VALUES(?, ?)
+ON CONFLICT(key) DO NOTHING`, key, value)
+	return err
+}
+
+func (s *Store) GetServerPepper(ctx context.Context) (string, bool, error) {
+	return s.getServerSetting(ctx, serverSettingAPIKeyPepper)
+}
+
 func (s *Store) ResolveServerPepper(ctx context.Context, suggested string) (string, error) {
 	suggested = strings.TrimSpace(suggested)
 
-	var current string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM server_settings WHERE key = 'api_key_pepper'`).Scan(&current)
-	if err == nil {
+	current, exists, err := s.getServerSetting(ctx, serverSettingAPIKeyPepper)
+	if err != nil {
+		return "", err
+	}
+	if exists {
 		if suggested != "" && suggested != current {
 			return "", errors.New("provided api key pepper does not match database")
 		}
 		return current, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
-	if _, err := s.execWithSQLiteBusyRetry(ctx, `INSERT INTO server_settings(key, value) VALUES('api_key_pepper', ?)`, suggested); err != nil {
+	if err := s.putServerSetting(ctx, serverSettingAPIKeyPepper, suggested); err != nil {
 		return "", err
 	}
 	return suggested, nil
+}
+
+func (s *Store) GetAccessCookieSecret(ctx context.Context) (string, bool, error) {
+	return s.getServerSetting(ctx, serverSettingAccessCookieSecret)
+}
+
+// ResolveAccessCookieSecret persists the suggested secret on first use and
+// returns the stored value afterwards. Unlike the API key pepper, a mismatch
+// is not an error: the persisted value wins so every server replica signs
+// cookies with the same secret.
+func (s *Store) ResolveAccessCookieSecret(ctx context.Context, suggested string) (string, error) {
+	suggested = strings.TrimSpace(suggested)
+	if suggested == "" {
+		return "", errors.New("access cookie secret must not be empty")
+	}
+
+	current, exists, err := s.getServerSetting(ctx, serverSettingAccessCookieSecret)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return current, nil
+	}
+	if err := s.putServerSettingIfAbsent(ctx, serverSettingAccessCookieSecret, suggested); err != nil {
+		return "", err
+	}
+	current, exists, err = s.getServerSetting(ctx, serverSettingAccessCookieSecret)
+	if err != nil {
+		return "", err
+	}
+	if !exists || strings.TrimSpace(current) == "" {
+		return "", errors.New("failed to persist access cookie secret")
+	}
+	return current, nil
 }

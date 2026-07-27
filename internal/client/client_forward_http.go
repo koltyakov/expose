@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
@@ -439,19 +440,25 @@ func (r *trafficCountingReader) Read(p []byte) (int, error) {
 
 // logForwardResult logs the forwarded request result via display or logger.
 func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, started time.Time) {
-	path := req.Path
-	if strings.TrimSpace(req.Query) != "" {
-		path = path + "?" + req.Query
+	method := config.SanitizeTerminalString(req.Method)
+	path := config.SanitizeTerminalString(req.Path)
+	query := strings.TrimSpace(req.Query)
+	if query != "" {
+		path = path + "?" + config.SanitizeTerminalString(query)
 	}
 	elapsed := time.Since(started)
 	if c.display != nil {
-		c.display.LogRequest(req.Method, path, status, elapsed, req.Headers)
+		c.display.LogRequest(method, path, status, elapsed, req.Headers)
 	} else if c.log != nil {
+		logPath := config.SanitizeTerminalString(req.Path)
+		if query != "" {
+			logPath = logPath + "?" + config.RedactQueryValues(query)
+		}
 		fp := visitorFingerprint(req.Headers)
 		if fp != "" {
-			c.log.Info("forwarded request", "method", req.Method, "path", path, "status", status, "duration", elapsed.String(), "client_fingerprint", fp)
+			c.log.Info("forwarded request", "method", method, "path", logPath, "status", status, "duration", elapsed.String(), "client_fingerprint", fp)
 		} else {
-			c.log.Info("forwarded request", "method", req.Method, "path", path, "status", status, "duration", elapsed.String())
+			c.log.Info("forwarded request", "method", method, "path", logPath, "status", status, "duration", elapsed.String())
 		}
 	}
 }

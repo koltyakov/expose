@@ -91,7 +91,8 @@ type soakRunner struct {
 }
 
 func runSoak(ctx context.Context, args []string) int {
-	loadClientEnvFromDotEnv(".env")
+	preEnvServer, preEnvAPIKey := capturePreDotEnv()
+	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
 	fs := flag.NewFlagSet("soak", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
@@ -165,7 +166,8 @@ func runSoak(ctx context.Context, args []string) int {
 		RegistrationMode:      "temporary",
 		WAFIgnorePaths:        commaSeparatedValues(envOr("EXPOSE_WAF_IGNORE_PATHS", "")),
 	}
-	if err := mergeClientSettings(&baseCfg); err != nil {
+	src := captureClientCredSources(args, dotEnvKeys, preEnvServer, preEnvAPIKey)
+	if err := resolveClientCredentials(ctx, &baseCfg, src); err != nil {
 		fmt.Fprintln(os.Stderr, "soak config error:", err)
 		return 2
 	}

@@ -34,34 +34,39 @@ func injectForwardedFor(h map[string][]string, remoteAddr string) {
 	}
 }
 
-// getAndNormalizeForwardedFor returns the first X-Forwarded-For header value
-// and canonicalizes the header key in-place.
+// getAndNormalizeForwardedFor joins all X-Forwarded-For header values and
+// canonicalizes the header key in-place.
 func getAndNormalizeForwardedFor(h map[string][]string) string {
 	if h == nil {
 		return ""
 	}
 	if vals, ok := h["X-Forwarded-For"]; ok {
-		if len(vals) == 0 {
-			return ""
-		}
-		return strings.TrimSpace(vals[0])
+		return joinForwardedForValues(vals)
 	}
-	var existing string
+	var values []string
 	for k, vals := range h {
 		if !strings.EqualFold(k, "X-Forwarded-For") {
 			continue
 		}
-		if existing == "" && len(vals) > 0 {
-			existing = strings.TrimSpace(vals[0])
-		}
+		values = append(values, vals...)
 		delete(h, k)
 	}
-	return existing
+	return joinForwardedForValues(values)
 }
 
-// injectForwardedProxyHeaders overwrites reverse-proxy headers to reflect the
-// public request. Public callers can spoof these headers, so we remove any
-// case-insensitive variants before setting canonical keys.
+func joinForwardedForValues(values []string) string {
+	nonEmpty := values[:0]
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			nonEmpty = append(nonEmpty, value)
+		}
+	}
+	return strings.Join(nonEmpty, ", ")
+}
+
+// injectForwardedProxyHeaders overwrites proxy-derived host, protocol, and
+// port headers to reflect the public request. X-Forwarded-For is preserved so
+// injectForwardedFor can append the immediate peer to its existing chain.
 func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
 	if h == nil || r == nil {
 		return
@@ -100,7 +105,6 @@ func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
 // in canonical form.
 var proxyHeadersToReplace = []string{
 	"Host",
-	"X-Forwarded-For",
 	"X-Forwarded-Proto",
 	"X-Forwarded-Host",
 	"X-Forwarded-Port",

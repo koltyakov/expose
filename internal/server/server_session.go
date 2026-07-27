@@ -235,7 +235,7 @@ func (s *Server) handleConnectH3Stream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) consumeConnectToken(w http.ResponseWriter, r *http.Request) (string, bool) {
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	token := connectTokenFromRequest(r)
 	if token == "" {
 		http.Error(w, "missing token", http.StatusBadRequest)
 		return "", false
@@ -246,6 +246,20 @@ func (s *Server) consumeConnectToken(w http.ResponseWriter, r *http.Request) (st
 		return "", false
 	}
 	return tunnelID, true
+}
+
+// connectTokenFromRequest prefers the Authorization header so tokens stay out
+// of URLs (and proxy access logs); the query parameter remains as a legacy
+// fallback for older clients.
+func connectTokenFromRequest(r *http.Request) string {
+	if authz := strings.TrimSpace(r.Header.Get("Authorization")); authz != "" {
+		if scheme, value, ok := strings.Cut(authz, " "); ok && strings.EqualFold(scheme, "Bearer") {
+			if token := strings.TrimSpace(value); token != "" {
+				return token
+			}
+		}
+	}
+	return strings.TrimSpace(r.URL.Query().Get("token"))
 }
 
 func (s *Server) activateSession(
@@ -690,12 +704,14 @@ func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent
 	if s.log == nil {
 		return
 	}
+	// Query strings may carry tokens; log the path only.
+	uriPath, _, _ := strings.Cut(audit.event.RequestURI, "?")
 	s.log.Warn("waf audit: request blocked",
 		"rule", audit.event.Rule,
 		"tunnel_id", tunnelID,
 		"domain", domainName,
 		"method", audit.event.Method,
-		"uri", audit.event.RequestURI,
+		"uri", uriPath,
 		"remote", audit.event.RemoteAddr,
 		"ua", audit.event.UserAgent,
 		"total_blocks", audit.totalBlocks,

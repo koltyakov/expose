@@ -25,6 +25,94 @@ func TestIsNewerExported(t *testing.T) {
 	}
 }
 
+func TestValidateAssetURLStrict(t *testing.T) {
+	valid := []string{
+		"https://github.com/koltyakov/expose/releases/download/v1.0.0/expose_Linux_x86_64.tar.gz",
+		"https://objects.githubusercontent.com/github-production-release-asset/abc",
+		"https://release-assets.githubusercontent.com/expose/checksums.txt",
+		"HTTPS://GITHUB.COM/koltyakov/expose/releases/download/v1.0.0/checksums.txt",
+	}
+	for _, rawURL := range valid {
+		if err := validateAssetURLStrict(rawURL); err != nil {
+			t.Errorf("validateAssetURLStrict(%q) error = %v, want nil", rawURL, err)
+		}
+	}
+
+	invalid := []string{
+		"http://github.com/koltyakov/expose/releases/download/v1.0.0/expose_Linux_x86_64.tar.gz",
+		"https://evil.com/expose_Linux_x86_64.tar.gz",
+		"https://github.com.evil.com/checksums.txt",
+		"https://notgithubusercontent.com/checksums.txt",
+		"https://github.com@evil.com/checksums.txt",
+		"://not-a-url",
+	}
+	for _, rawURL := range invalid {
+		if err := validateAssetURLStrict(rawURL); err == nil {
+			t.Errorf("validateAssetURLStrict(%q) error = nil, want rejection", rawURL)
+		}
+	}
+}
+
+func TestHTTPSOnlyRedirect(t *testing.T) {
+	httpsReq, err := http.NewRequest(http.MethodGet, "https://github.com/next", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(https) error = %v", err)
+	}
+	if err := httpsOnlyRedirect(httpsReq, nil); err != nil {
+		t.Fatalf("httpsOnlyRedirect(https) error = %v, want nil", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodGet, "http://github.com/next", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(http) error = %v", err)
+	}
+	if err := httpsOnlyRedirect(httpReq, nil); err == nil || !strings.Contains(err.Error(), "non-HTTPS") {
+		t.Fatalf("httpsOnlyRedirect(http) error = %v, want non-HTTPS rejection", err)
+	}
+
+	via := make([]*http.Request, maxRedirects)
+	if err := httpsOnlyRedirect(httpsReq, via); err == nil || !strings.Contains(err.Error(), "redirects") {
+		t.Fatalf("httpsOnlyRedirect(max redirects) error = %v, want redirect limit error", err)
+	}
+}
+
+func TestRedirectValidatorsRejectUntrustedHTTPSHosts(t *testing.T) {
+	evilReq, err := http.NewRequest(http.MethodGet, "https://evil.example.com/payload", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := githubAPIRedirect(evilReq, nil); err == nil {
+		t.Fatal("GitHub API redirect accepted an untrusted HTTPS host")
+	}
+	if err := assetRedirect(evilReq, nil); err == nil {
+		t.Fatal("asset redirect accepted an untrusted HTTPS host")
+	}
+	assetReq, err := http.NewRequest(http.MethodGet, "https://objects.githubusercontent.com/release", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assetRedirect(assetReq, nil); err != nil {
+		t.Fatalf("asset redirect rejected an allowlisted host: %v", err)
+	}
+}
+
+func TestApplyRejectsUntrustedAssetURL(t *testing.T) {
+	assetName, err := assetNameForPlatform()
+	if err != nil {
+		t.Fatalf("assetNameForPlatform() error = %v", err)
+	}
+	rel := &Release{
+		TagName: "v9.9.9",
+		Assets: []Asset{
+			{Name: assetName, BrowserDownloadURL: "http://evil.example.com/" + assetName},
+			{Name: checksumAssetName, BrowserDownloadURL: "http://evil.example.com/checksums.txt"},
+		},
+	}
+	if _, err := Apply(context.Background(), rel); err == nil || !strings.Contains(err.Error(), "non-HTTPS") {
+		t.Fatalf("Apply(untrusted URL) error = %v, want non-HTTPS rejection", err)
+	}
+}
+
 func TestExtractBinary(t *testing.T) {
 	tarData := makeTarGzArchive(t, "bin/expose", []byte("tar-binary"))
 	got, err := extractBinary("expose_Linux_x86_64.tar.gz", tarData)
@@ -265,7 +353,16 @@ func useDownloadServer(t *testing.T, server *httptest.Server) {
 	t.Helper()
 
 	previous := downloadHTTPClient
-	t.Cleanup(func() { downloadHTTPClient = previous })
+	previousValidate := validateAssetURL
+	t.Cleanup(func() {
+		downloadHTTPClient = previous
+		validateAssetURL = previousValidate
+	})
+
+	// Test servers serve plain HTTP on a loopback host, so asset URL
+	// validation (HTTPS + GitHub host allowlist) is bypassed here and
+	// covered by TestValidateAssetURLStrict instead.
+	validateAssetURL = func(string) error { return nil }
 
 	client := server.Client()
 	client.Timeout = time.Second

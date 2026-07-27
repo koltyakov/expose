@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -68,6 +69,8 @@ type ServerConfig struct {
 	MaxPendingPerTunnel    int
 	PublicRateLimitRPS     int
 	PublicRateLimitBurst   int
+	ACMEIssueRatePerHour   int
+	TrustedProxyCIDRs      []string
 	RouteCacheTTL          time.Duration
 	WAFCounterRetention    time.Duration
 
@@ -229,6 +232,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		MaxPendingPerTunnel:    envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 128, &envErrs),
 		PublicRateLimitRPS:     envInt("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0, &envErrs),
 		PublicRateLimitBurst:   envInt("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0, &envErrs),
+		ACMEIssueRatePerHour:   envInt("EXPOSE_ACME_ISSUE_RATE_PER_HOUR", 10, &envErrs),
+		TrustedProxyCIDRs:      splitCommaSeparated(EnvOrDefault("EXPOSE_TRUSTED_PROXY_CIDRS", "")),
 		RouteCacheTTL:          envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),
 		WAFCounterRetention:    envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
 	}
@@ -311,6 +316,14 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 	if cfg.PublicRateLimitRPS > 0 && cfg.PublicRateLimitBurst == 0 {
 		cfg.PublicRateLimitBurst = cfg.PublicRateLimitRPS * 2
+	}
+	if cfg.ACMEIssueRatePerHour < 0 {
+		return cfg, errors.New("acme issue rate per hour must be >= 0")
+	}
+	for _, cidr := range cfg.TrustedProxyCIDRs {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			return cfg, fmt.Errorf("invalid trusted proxy cidr %q: %w", cidr, err)
+		}
 	}
 	if cfg.RouteCacheTTL <= 0 {
 		return cfg, errors.New("route cache ttl must be > 0")

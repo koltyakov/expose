@@ -29,7 +29,9 @@ func loadServerInitDefaults(envFile string) serverInitAnswers {
 	}
 	pepper := strings.TrimSpace(valueOrDefault("EXPOSE_API_KEY_PEPPER", ""))
 	if pepper == "" {
-		pepper = strings.TrimSpace(detectInitMachineID())
+		if generated, err := auth.GenerateAPIKey(); err == nil {
+			pepper = generated
+		}
 	}
 
 	return serverInitAnswers{
@@ -44,10 +46,6 @@ func loadServerInitDefaults(envFile string) serverInitAnswers {
 		LogLevel:     normalizeWizardLogLevel(valueOrDefault("EXPOSE_LOG_LEVEL", "info")),
 		APIKeyPepper: pepper,
 	}
-}
-
-func detectInitMachineID() string {
-	return detectMachineID()
 }
 
 func resolveInitPepperDefault(ctx context.Context, dbPath, fallback string) string {
@@ -85,7 +83,7 @@ func createInitAPIKey(ctx context.Context, dbPath, pepper, name string) (string,
 	if err != nil {
 		return "", err
 	}
-	if _, err := store.CreateAPIKey(ctx, strings.TrimSpace(name), auth.HashAPIKey(plain, resolvedPepper)); err != nil {
+	if _, err := store.CreateAPIKeyWithLimit(ctx, strings.TrimSpace(name), auth.HashAPIKey(plain, resolvedPepper), defaultTunnelLimit); err != nil {
 		return "", err
 	}
 	return plain, nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -56,17 +57,19 @@ var skipHeaders = func() map[string]struct{} {
 }()
 
 type requestView struct {
-	requestURI    scanInput
-	path          scanInput
-	rawQuery      scanInput
-	decodedQuery  scanInput
-	plusDecoded   scanInput
-	doubleDecoded scanInput
-	userAgent     scanInput
-	headerValues  []scanInput
-	bodyValues    []scanInput
-	uriTooLong    bool // URI exceeds safety limit
-	tooManyHdrs   bool // excessive header count
+	requestURI       scanInput
+	decodedURI       scanInput
+	doubleDecodedURI scanInput
+	path             scanInput
+	rawQuery         scanInput
+	decodedQuery     scanInput
+	plusDecoded      scanInput
+	doubleDecoded    scanInput
+	userAgent        scanInput
+	headerValues     []scanInput
+	bodyValues       []scanInput
+	uriTooLong       bool // URI exceeds safety limit
+	tooManyHdrs      bool // excessive header count
 }
 
 // maxURILength is the maximum URI length before the WAF considers a request
@@ -102,6 +105,23 @@ func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 		}
 	}
 
+	// Decoded URI variants catch encoding-obfuscated attacks against
+	// URI-targeted rules, e.g. %2e%2e%2f traversal sequences that contain
+	// no literal ".." in the raw request line.
+	decodedURI := r.RequestURI
+	if strings.Contains(decodedURI, "%") {
+		if d, err := url.QueryUnescape(decodedURI); err == nil {
+			decodedURI = d
+		}
+	}
+
+	doubleDecodedURI := decodedURI
+	if strings.Contains(decodedURI, "%") {
+		if dd, err := url.QueryUnescape(decodedURI); err == nil && dd != decodedURI {
+			doubleDecodedURI = dd
+		}
+	}
+
 	// r.Header keys are already in canonical MIME form, so skipHeaders is
 	// keyed the same way and needs no per-header lowercasing.
 	headerValues := make([]scanInput, 0, len(r.Header))
@@ -115,16 +135,18 @@ func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 	}
 
 	return requestView{
-		requestURI:    newScanInput(r.RequestURI),
-		path:          newScanInput(r.URL.Path),
-		rawQuery:      newScanInput(rawQuery),
-		decodedQuery:  newScanInput(decodedQuery),
-		plusDecoded:   newScanInput(plusDecoded),
-		doubleDecoded: newScanInput(doubleDecoded),
-		userAgent:     newScanInput(r.UserAgent()),
-		headerValues:  headerValues,
-		uriTooLong:    len(r.RequestURI) > maxURI,
-		tooManyHdrs:   len(headerValues) > maxHeaders,
+		requestURI:       newScanInput(r.RequestURI),
+		decodedURI:       newScanInput(decodedURI),
+		doubleDecodedURI: newScanInput(doubleDecodedURI),
+		path:             newScanInput(r.URL.Path),
+		rawQuery:         newScanInput(rawQuery),
+		decodedQuery:     newScanInput(decodedQuery),
+		plusDecoded:      newScanInput(plusDecoded),
+		doubleDecoded:    newScanInput(doubleDecoded),
+		userAgent:        newScanInput(r.UserAgent()),
+		headerValues:     headerValues,
+		uriTooLong:       len(r.RequestURI) > maxURI,
+		tooManyHdrs:      len(headerValues) > maxHeaders,
 	}
 }
 
@@ -145,7 +167,7 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 	for i := range fw.rules {
 		rl := &fw.rules[i]
 
-		if rl.targets&targetURI != 0 && rl.matches(view.requestURI) {
+		if rl.targets&targetURI != 0 && matchURIRule(rl, view) {
 			return true, rl.name
 		}
 		if rl.targets&targetPath != 0 && matchPathRule(rl, view.path) {
@@ -180,6 +202,19 @@ func matchPathRule(rl *rule, path scanInput) bool {
 		return false
 	}
 	return rl.matches(path)
+}
+
+// matchURIRule matches a rule against the raw RequestURI and its decoded
+// variants, mirroring the query handling, so that encoded payloads (fully
+// or double-encoded) cannot evade URI-targeted rules.
+func matchURIRule(rl *rule, view requestView) bool {
+	if rl.matches(view.requestURI) {
+		return true
+	}
+	if view.decodedURI.raw != view.requestURI.raw && rl.matches(view.decodedURI) {
+		return true
+	}
+	return view.doubleDecodedURI.raw != view.decodedURI.raw && rl.matches(view.doubleDecodedURI)
 }
 
 func isWellKnownPath(path string) bool {
@@ -325,13 +360,11 @@ func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Reques
 	set := newValueSet(len(body) * bodyScanBudgetFactor)
 	switch {
 	case strings.HasPrefix(mediaType, "multipart/"):
-		return nil
+		collectMultipartBodyValues(set, body, r.Header.Get("Content-Type"))
 	case mediaType == "application/x-www-form-urlencoded":
 		collectFormBodyValues(set, string(body))
 	case mediaType == "application/json", strings.HasSuffix(mediaType, "+json"):
 		collectJSONBodyValues(set, body)
-	case mediaType == "application/octet-stream":
-		return nil
 	case utf8.Valid(body):
 		collectGenericValues(set, string(body))
 	default:
@@ -352,12 +385,11 @@ func collectJSONTokens(set *valueSet, body []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
-	// Track object depth and key position so that values under a sensitive
-	// key are skipped exactly as they are in the whole-document path.
+	// Track container nesting so object keys are told apart from values:
+	// keys are added verbatim, values get full decoding treatment.
 	var (
 		inObject  []bool
 		expectKey bool
-		lastKey   string
 		found     bool
 	)
 
@@ -374,7 +406,6 @@ func collectJSONTokens(set *valueSet, body []byte) bool {
 			case '{':
 				inObject = append(inObject, true)
 				expectKey = true
-				lastKey = ""
 			case '[':
 				inObject = append(inObject, false)
 				expectKey = false
@@ -386,24 +417,19 @@ func collectJSONTokens(set *valueSet, body []byte) bool {
 			}
 		case string:
 			if expectKey {
-				lastKey = v
 				set.add(v)
 				found = true
 				expectKey = false
 				continue
 			}
-			if !sensitiveBodyField(lastKey) {
-				collectGenericValues(set, v)
-				found = true
-			}
+			collectGenericValues(set, v)
+			found = true
 			if len(inObject) > 0 && inObject[len(inObject)-1] {
 				expectKey = true
 			}
 		case json.Number:
-			if !sensitiveBodyField(lastKey) {
-				set.add(v.String())
-				found = true
-			}
+			set.add(v.String())
+			found = true
 			if len(inObject) > 0 && inObject[len(inObject)-1] {
 				expectKey = true
 			}
@@ -454,9 +480,6 @@ func collectFormBodyValues(set *valueSet, raw string) {
 	sort.Strings(keys)
 	for _, key := range keys {
 		set.add(key)
-		if sensitiveBodyField(key) {
-			continue
-		}
 		for _, value := range values[key] {
 			collectGenericValues(set, value)
 		}
@@ -466,6 +489,70 @@ func collectFormBodyValues(set *valueSet, raw string) {
 	}
 }
 
+// collectMultipartBodyValues parses a multipart body and scans each part's
+// field name, filename, and text content against the body rules. Binary
+// part content is skipped via the UTF-8 check. If the body cannot be parsed
+// as multipart at all (missing or malformed boundary), the raw preview is
+// scanned as generic text so boundary tricks cannot bypass inspection.
+func collectMultipartBodyValues(set *valueSet, body []byte, contentType string) {
+	boundary := ""
+	if _, params, err := mime.ParseMediaType(contentType); err == nil {
+		boundary = params["boundary"]
+	}
+	if boundary == "" {
+		if utf8.Valid(body) {
+			collectGenericValues(set, string(body))
+		}
+		return
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	parts := 0
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			// io.EOF, truncation at the inspection limit, or malformed
+			// content: keep whatever was extracted so far.
+			break
+		}
+		parts++
+		if name := part.FormName(); name != "" {
+			set.add(name)
+		}
+		if filename := rawPartFilename(part); filename != "" {
+			collectGenericValues(set, filename)
+		}
+		data, readErr := io.ReadAll(part)
+		// Form fields are textual even when a client includes malformed UTF-8;
+		// scan their byte string so one invalid byte cannot hide an otherwise
+		// ASCII attack payload. Binary file parts remain exempt.
+		if part.FileName() == "" || utf8.Valid(data) {
+			collectGenericValues(set, string(data))
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	if parts == 0 && utf8.Valid(body) {
+		collectGenericValues(set, string(body))
+	}
+}
+
+// rawPartFilename returns the filename parameter of a part's
+// Content-Disposition header exactly as sent. Part.FileName applies
+// filepath.Base, which would strip payload prefixes containing "/".
+func rawPartFilename(part *multipart.Part) string {
+	disp := part.Header.Get("Content-Disposition")
+	if disp == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(disp)
+	if err != nil {
+		return ""
+	}
+	return params["filename"]
+}
+
 func collectJSONBodyValues(set *valueSet, body []byte) {
 	var payload any
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -473,7 +560,7 @@ func collectJSONBodyValues(set *valueSet, body []byte) {
 	if err := dec.Decode(&payload); err == nil {
 		var extra any
 		if err := dec.Decode(&extra); err == io.EOF {
-			collectJSONStrings(payload, "", set)
+			collectJSONStrings(payload, set)
 			if !set.empty() {
 				return
 			}
@@ -489,7 +576,7 @@ func collectJSONBodyValues(set *valueSet, body []byte) {
 	collectGenericValues(set, string(body))
 }
 
-func collectJSONStrings(value any, parentKey string, set *valueSet) {
+func collectJSONStrings(value any, set *valueSet) {
 	switch v := value.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(v))
@@ -499,21 +586,15 @@ func collectJSONStrings(value any, parentKey string, set *valueSet) {
 		sort.Strings(keys)
 		for _, key := range keys {
 			set.add(key)
-			collectJSONStrings(v[key], key, set)
+			collectJSONStrings(v[key], set)
 		}
 	case []any:
 		for _, item := range v {
-			collectJSONStrings(item, parentKey, set)
+			collectJSONStrings(item, set)
 		}
 	case string:
-		if sensitiveBodyField(parentKey) {
-			return
-		}
 		collectGenericValues(set, v)
 	case json.Number:
-		if sensitiveBodyField(parentKey) {
-			return
-		}
 		set.add(v.String())
 	}
 }
@@ -542,29 +623,5 @@ func collectGenericValues(set *valueSet, raw string) {
 		if v, err := url.QueryUnescape(decoded); err == nil {
 			set.add(v)
 		}
-	}
-}
-
-func sensitiveBodyField(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	switch {
-	case name == "":
-		return false
-	case strings.Contains(name, "password"):
-		return true
-	case strings.Contains(name, "passwd"):
-		return true
-	case strings.Contains(name, "passphrase"):
-		return true
-	case strings.Contains(name, "passcode"):
-		return true
-	case name == "pin":
-		return true
-	case strings.HasSuffix(name, "_pin"):
-		return true
-	case strings.HasSuffix(name, "-pin"):
-		return true
-	default:
-		return false
 	}
 }

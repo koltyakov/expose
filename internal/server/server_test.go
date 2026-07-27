@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1223,14 +1224,24 @@ func TestInjectForwardedProxyHeadersOverwritesSpoofedValues(t *testing.T) {
 		t.Fatalf("expected X-Forwarded-Port 10443, got %v", got)
 	}
 
-	if got := headers["X-Forwarded-For"]; len(got) != 0 {
-		t.Fatalf("expected spoofed X-Forwarded-For to be removed, got %v", got)
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4" {
+		t.Fatalf("expected incoming X-Forwarded-For chain to be preserved, got %v", got)
 	}
 
 	injectForwardedFor(headers, "5.6.7.8:1234")
 
-	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "5.6.7.8" {
-		t.Fatalf("expected trusted client IP only, got %v", got)
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4, 5.6.7.8" {
+		t.Fatalf("expected incoming chain plus immediate peer, got %v", got)
+	}
+}
+
+func TestInjectForwardedForPreservesMultipleHeaderValues(t *testing.T) {
+	headers := map[string][]string{
+		"X-Forwarded-For": {"1.2.3.4", "5.6.7.8"},
+	}
+	injectForwardedFor(headers, "9.10.11.12:443")
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4, 5.6.7.8, 9.10.11.12" {
+		t.Fatalf("expected all X-Forwarded-For values to be preserved, got %v", got)
 	}
 }
 
@@ -2184,6 +2195,213 @@ func TestSessionPendingLoad(t *testing.T) {
 	_, ok4 := sess.pendingLoad("req_1")
 	if ok4 {
 		t.Fatal("expected channel to be gone after pendingLoadAndDelete")
+	}
+}
+
+// The client only moves the connect token out of the URL when the server
+// advertises it can read the Authorization header, so dropping the capability
+// would silently put every token back in the request line.
+func TestRegisterAdvertisesConnectTokenHeaderCapability(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "caps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	rawKey := "caps-secret"
+	if _, err := store.CreateAPIKeyWithLimit(ctx, "caps", auth.HashAPIKey(rawKey, ""), 1); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(config.ServerConfig{
+		BaseDomain:      "example.com",
+		ConnectTokenTTL: time.Minute,
+	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","local_port":"3000"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rr := httptest.NewRecorder()
+	srv.handleRegister(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("register = %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp domain.RegisterResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(resp.Capabilities, domain.CapabilityConnectTokenHeader) {
+		t.Fatalf("capabilities %v missing %q", resp.Capabilities, domain.CapabilityConnectTokenHeader)
+	}
+}
+
+func TestRegisterLimitIncludesPendingConnectTokens(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "pending-limit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	rawKey := "pending-limit-secret"
+	if _, err := store.CreateAPIKeyWithLimit(ctx, "pending-limit", auth.HashAPIKey(rawKey, ""), 1); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.ServerConfig{
+		BaseDomain:      "example.com",
+		ConnectTokenTTL: time.Minute,
+	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+
+	register := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","local_port":"3000"}`))
+		req.Header.Set("Authorization", "Bearer "+rawKey)
+		rr := httptest.NewRecorder()
+		srv.handleRegister(rr, req)
+		return rr
+	}
+	if rr := register(); rr.Code != http.StatusOK {
+		t.Fatalf("first register = %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := register(); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("second unconnected register = %d, want %d: %s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
+	}
+}
+
+func TestConsumeConnectTokenAcceptsAuthorizationHeader(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "connect-token.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	key, err := store.CreateAPIKeyWithLimit(ctx, "connect-token", auth.HashAPIKey("connect-token-secret", ""), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tunnelRec, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "temporary", "connect-token", "example.com", "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(config.ServerConfig{
+		BaseDomain:      "example.com",
+		ConnectTokenTTL: time.Minute,
+	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+
+	newToken := func() string {
+		token, err := store.CreateConnectToken(ctx, tunnelRec.ID, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+
+	// Authorization: Bearer takes the token out of the URL.
+	req := httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect", nil)
+	req.Header.Set("Authorization", "Bearer "+newToken())
+	rr := httptest.NewRecorder()
+	tunnelID, ok := srv.consumeConnectToken(rr, req)
+	if !ok || tunnelID != tunnelRec.ID {
+		t.Fatalf("expected header token to resolve tunnel %s, got %q ok=%v (status %d)", tunnelRec.ID, tunnelID, ok, rr.Code)
+	}
+
+	// The legacy query parameter still works for older clients.
+	req = httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect?token="+newToken(), nil)
+	rr = httptest.NewRecorder()
+	tunnelID, ok = srv.consumeConnectToken(rr, req)
+	if !ok || tunnelID != tunnelRec.ID {
+		t.Fatalf("expected query token to resolve tunnel %s, got %q ok=%v (status %d)", tunnelRec.ID, tunnelID, ok, rr.Code)
+	}
+
+	// The header wins when both are present.
+	queryToken := newToken()
+	headerToken := newToken()
+	req = httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect?token="+queryToken, nil)
+	req.Header.Set("Authorization", "Bearer "+headerToken)
+	rr = httptest.NewRecorder()
+	if _, ok = srv.consumeConnectToken(rr, req); !ok {
+		t.Fatal("expected header token to be accepted when both are present")
+	}
+	if _, err := store.ConsumeConnectToken(ctx, queryToken); err != nil {
+		t.Fatal("expected query token to remain unconsumed when the header wins")
+	}
+
+	// Missing token is a 400.
+	req = httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect", nil)
+	rr = httptest.NewRecorder()
+	if _, ok = srv.consumeConnectToken(rr, req); ok || rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing token, got ok=%v status=%d", ok, rr.Code)
+	}
+}
+
+func TestWriteRegisterAllocateErrorReturnsGenericMessage(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	rr := httptest.NewRecorder()
+	srv.writeRegisterAllocateError(rr, "k-1", errors.New("SQLITE_BUSY: database is locked at table api_keys"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusConflict)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "SQLITE") || strings.Contains(body, "api_keys") {
+		t.Fatalf("409 response leaked store details: %q", body)
+	}
+	if !strings.Contains(body, "failed to allocate tunnel route") {
+		t.Fatalf("expected generic conflict message, got %q", body)
+	}
+
+	rr = httptest.NewRecorder()
+	srv.writeRegisterAllocateError(rr, "k-1", sqlite.ErrHostnameInUse)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("hostname conflict status = %d, want %d", rr.Code, http.StatusConflict)
+	}
+	var resp domain.ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ErrorCode != errCodeHostnameInUse {
+		t.Fatalf("expected error code %q, got %q", errCodeHostnameInUse, resp.ErrorCode)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
+func TestLogWAFAuditEventRedactsQueryString(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	srv := &Server{
+		log:        slog.New(slog.NewTextHandler(&buf, nil)),
+		liveRoutes: newLiveRouteIndex(),
+	}
+	srv.logWAFAuditEvent(context.Background(), wafAuditEvent{
+		event: waf.BlockEvent{
+			Host:       "demo.example.com",
+			Rule:       "xss",
+			Method:     http.MethodGet,
+			RequestURI: "/search?token=secret-value&q=1",
+			RemoteAddr: "192.0.2.1",
+		},
+		totalBlocks: 1,
+	})
+
+	out := buf.String()
+	if strings.Contains(out, "secret-value") || strings.Contains(out, "token=") {
+		t.Fatalf("waf audit log leaked query string: %q", out)
+	}
+	if !strings.Contains(out, "/search") {
+		t.Fatalf("expected redacted path in audit log, got %q", out)
 	}
 }
 

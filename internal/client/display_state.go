@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/traffic"
 )
 
@@ -58,15 +59,15 @@ func (d *Display) ShowTunnelInfo(publicURL, localAddr, tlsMode, tunnelID string,
 		d.lastReconnect = now
 	}
 	d.setStatusLocked("online", now)
-	d.publicURL = publicURL
+	d.publicURL = config.SanitizeTerminalString(publicURL)
 	d.protected = protected
 	d.localAddr = localAddr
 	if strings.TrimSpace(d.localHealthAddr) == "" {
 		d.localHealthAddr = localAddr
 	}
-	d.tlsMode = tlsMode
-	d.transport = transport
-	d.tunnelID = tunnelID
+	d.tlsMode = config.SanitizeTerminalString(tlsMode)
+	d.transport = config.SanitizeTerminalString(transport)
+	d.tunnelID = config.SanitizeTerminalString(tunnelID)
 	if !d.sessionDetailsPinned {
 		d.showSessionDetails = false
 	}
@@ -86,7 +87,7 @@ func (d *Display) ShowVersions(clientVersion, serverVersion string, wafEnabled b
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.version = clientVersion
-	d.serverVersion = serverVersion
+	d.serverVersion = config.SanitizeTerminalString(serverVersion)
 	d.wafEnabled = wafEnabled
 	d.redraw()
 }
@@ -96,7 +97,7 @@ func (d *Display) ShowVersions(clientVersion, serverVersion string, wafEnabled b
 func (d *Display) ShowUpdateStatus(latestVersion string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.updateVersion = latestVersion
+	d.updateVersion = config.SanitizeTerminalString(latestVersion)
 	d.redraw()
 }
 
@@ -225,8 +226,8 @@ func (d *Display) LogRequest(method, path string, status int, duration time.Dura
 	now := d.now()
 	d.appendEntry(requestEntry{
 		ts:       now,
-		method:   method,
-		path:     path,
+		method:   config.SanitizeTerminalString(method),
+		path:     config.SanitizeTerminalString(path),
 		status:   status,
 		duration: duration,
 	})
@@ -240,7 +241,7 @@ func (d *Display) TrackWSOpen(id, path string, headers map[string][]string) {
 	defer d.mu.Unlock()
 	fp := visitorFingerprint(headers)
 	d.touchVisitor(fp)
-	d.wsConns[id] = wsEntry{id: id, path: path, ts: d.now(), fingerprint: fp}
+	d.wsConns[id] = wsEntry{id: id, path: config.SanitizeTerminalString(path), ts: d.now(), fingerprint: fp}
 	d.redraw()
 }
 
@@ -301,7 +302,7 @@ func (d *Display) ShowInfo(msg string) {
 }
 
 func (d *Display) setNoticeLocked(level, msg string) {
-	msg = strings.TrimSpace(msg)
+	msg = config.SanitizeTerminalString(strings.TrimSpace(msg))
 	level = strings.ToLower(strings.TrimSpace(level))
 	d.noticeText = msg
 	d.noticeLevel = level

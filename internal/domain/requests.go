@@ -8,6 +8,13 @@ const RegisterResumeTunnelHeader = "X-Expose-Resume-Tunnel"
 
 const CapabilityWAFIgnorePaths = "waf_ignore_paths_v1"
 
+// CapabilityConnectTokenHeader signals that the server accepts the tunnel
+// connect token via `Authorization: Bearer` on the connect request. Clients
+// that see it strip the token from the connect URL so it never reaches proxy
+// access logs or process listings; clients that do not still use the query
+// parameter, which the server keeps accepting.
+const CapabilityConnectTokenHeader = "connect_token_header_v1"
+
 // RegisterRequest is the JSON body sent by the client to create a new tunnel.
 type RegisterRequest struct {
 	Mode            string   `json:"mode"`

@@ -4,8 +4,10 @@ package selfupdate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,8 +26,71 @@ const (
 	maxBinaryBytes   = 100 << 20 // 100 MiB
 )
 
-var releaseHTTPClient = &http.Client{Timeout: 20 * time.Second}
-var downloadHTTPClient = &http.Client{Timeout: 5 * time.Minute}
+var releaseHTTPClient = &http.Client{Timeout: 20 * time.Second, CheckRedirect: githubAPIRedirect}
+var downloadHTTPClient = &http.Client{Timeout: 5 * time.Minute, CheckRedirect: assetRedirect}
+
+// allowedAssetHosts lists the only hosts release artifacts (archives and the
+// checksum manifest) may be downloaded from. Release metadata comes from the
+// GitHub API, and browser_download_url values point at github.com, which
+// redirects to a *.githubusercontent.com storage host.
+var allowedAssetHosts = []string{
+	"github.com",
+	"githubusercontent.com",
+}
+
+// maxRedirects caps the redirect chain at the net/http default limit.
+const maxRedirects = 10
+
+// httpsOnlyRedirect rejects redirect hops that would downgrade a request from
+// HTTPS to plain HTTP.
+func httpsOnlyRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("stopped after 10 redirects")
+	}
+	if !strings.EqualFold(req.URL.Scheme, "https") {
+		return fmt.Errorf("refusing redirect to non-HTTPS URL %q", req.URL.Redacted())
+	}
+	return nil
+}
+
+func githubAPIRedirect(req *http.Request, via []*http.Request) error {
+	if err := httpsOnlyRedirect(req, via); err != nil {
+		return err
+	}
+	if !strings.EqualFold(req.URL.Hostname(), "api.github.com") {
+		return fmt.Errorf("refusing GitHub API redirect to untrusted host %q", req.URL.Hostname())
+	}
+	return nil
+}
+
+func assetRedirect(req *http.Request, via []*http.Request) error {
+	if err := httpsOnlyRedirect(req, via); err != nil {
+		return err
+	}
+	return validateAssetURLStrict(req.URL.String())
+}
+
+// validateAssetURL checks that a release artifact URL uses HTTPS and targets
+// an allowlisted GitHub host. It is a variable so tests can substitute
+// plain-HTTP httptest servers.
+var validateAssetURL = validateAssetURLStrict
+
+func validateAssetURLStrict(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid download URL %q: %w", rawURL, err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("refusing non-HTTPS download URL %q", u.Redacted())
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, allowed := range allowedAssetHosts {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return nil
+		}
+	}
+	return fmt.Errorf("download host %q is not in the allowlist %v", host, allowedAssetHosts)
+}
 
 // Release holds the subset of GitHub release metadata we care about.
 type Release struct {
@@ -83,6 +148,9 @@ func Apply(ctx context.Context, rel *Release) (*Result, error) {
 	}
 	if dlURL == "" {
 		return nil, fmt.Errorf("no release asset %q found for %s/%s", assetName, runtime.GOOS, runtime.GOARCH)
+	}
+	if err := validateAssetURL(dlURL); err != nil {
+		return nil, fmt.Errorf("download %s: %w", assetName, err)
 	}
 
 	data, err := download(ctx, dlURL)

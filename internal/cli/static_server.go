@@ -20,11 +20,13 @@ import (
 )
 
 const staticServerShutdownTimeout = 5 * time.Second
+const staticServerReadHeaderTimeout = 10 * time.Second
 
 var staticFallbackFaviconICO = append([]byte(nil), embedassets.FaviconICO...)
 
 type staticFileServer struct {
-	server *http.Server
+	server  *http.Server
+	handler *staticHandler
 }
 
 type staticServerOptions struct {
@@ -69,12 +71,18 @@ func startStaticFileServer(ctx context.Context, root string, opts staticServerOp
 		return nil, 0, err
 	}
 
-	handler := newStaticHandler(absRoot, policy, opts)
+	handler, err := newStaticHandler(absRoot, policy, opts)
+	if err != nil {
+		_ = ln.Close()
+		return nil, 0, err
+	}
 
 	srv := &staticFileServer{
 		server: &http.Server{
-			Handler: handler,
+			Handler:           handler,
+			ReadHeaderTimeout: staticServerReadHeaderTimeout,
 		},
+		handler: handler,
 	}
 
 	go func() {
@@ -101,15 +109,22 @@ func (s *staticFileServer) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), staticServerShutdownTimeout)
 	defer cancel()
 	err := s.server.Shutdown(ctx)
+	if s.handler != nil {
+		_ = s.handler.close()
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
 }
 
-func newStaticHandler(root string, policy staticAccessPolicy, opts staticServerOptions) http.Handler {
+func newStaticHandler(root string, policy staticAccessPolicy, opts staticServerOptions) (*staticHandler, error) {
+	osRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
 	fsys := staticFileSystem{
-		root:   http.Dir(root),
+		root:   osRoot,
 		policy: policy,
 	}
 	return &staticHandler{
@@ -117,7 +132,7 @@ func newStaticHandler(root string, policy staticAccessPolicy, opts staticServerO
 		fileServer:   http.FileServer(fsys),
 		allowFolders: opts.AllowFolders,
 		spa:          opts.SPA,
-	}
+	}, nil
 }
 
 type staticHandler struct {
@@ -125,6 +140,13 @@ type staticHandler struct {
 	fileServer   http.Handler
 	allowFolders bool
 	spa          bool
+}
+
+func (h *staticHandler) close() error {
+	if h == nil || h.fsys.root == nil {
+		return nil
+	}
+	return h.fsys.root.Close()
 }
 
 func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -290,14 +312,21 @@ func shouldServeStaticFallbackFavicon(r *http.Request, cleanPath string) bool {
 }
 
 type staticFileSystem struct {
-	root   http.FileSystem
+	root   *os.Root
 	policy staticAccessPolicy
 }
 
+// Open resolves name inside the root via os.Root, which rejects paths that
+// escape the root through ".." segments or symlinks (e.g. a symlink inside
+// the published directory pointing at ~/.expose/settings.json).
 func (fsys staticFileSystem) Open(name string) (http.File, error) {
 	cleanName := staticCleanPath(name)
 	rel := strings.TrimPrefix(cleanName, "/")
-	f, err := fsys.root.Open(cleanName)
+	openName := filepath.FromSlash(rel)
+	if openName == "" {
+		openName = "."
+	}
+	f, err := fsys.root.Open(openName)
 	if err != nil {
 		return nil, err
 	}

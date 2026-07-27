@@ -5,8 +5,10 @@ package settings
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -29,21 +31,45 @@ func Path() string {
 // Load reads and validates the settings file. Returns an error if the file
 // is missing or contains empty credentials.
 func Load() (Credentials, error) {
+	creds, _, err := LoadChecked()
+	return creds, err
+}
+
+// LoadChecked behaves like Load but additionally reports a non-empty warning
+// when the settings file permissions are broader than 0600. The permission
+// check is skipped on Windows where POSIX mode bits do not apply.
+func LoadChecked() (Credentials, string, error) {
 	path := Path()
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return Credentials{}, err
+		return Credentials{}, "", err
 	}
+	warning := permissionWarning(path)
 	var s Credentials
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return Credentials{}, err
+		return Credentials{}, "", err
 	}
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	if s.ServerURL == "" || s.APIKey == "" {
-		return Credentials{}, errors.New("settings file is missing `server` or `apiKey`")
+		return Credentials{}, "", errors.New("settings file is missing `server` or `apiKey`")
 	}
-	return s, nil
+	return s, warning, nil
+}
+
+func permissionWarning(path string) string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	perm := info.Mode().Perm()
+	if perm&0o077 == 0 {
+		return ""
+	}
+	return fmt.Sprintf("settings file %s is readable by other users (permissions %04o); run `chmod 600 %s`", path, perm, path)
 }
 
 // Save writes validated credentials to the settings file with 0600 permissions.

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/koltyakov/expose/internal/domain"
 )
 
 func (s *Store) CreateConnectToken(ctx context.Context, tunnelID string, ttl time.Duration) (string, error) {
@@ -74,7 +76,57 @@ func (s *Store) PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan 
 	now = now.UTC()
 	usedOlderThan = usedOlderThan.UTC()
 
-	res, err := s.execWithSQLiteBusyRetry(ctx, `
+	var affected int64
+	err := s.withSerializedWrite(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		if _, err = tx.ExecContext(ctx, `
+WITH stale_tokens AS (
+	SELECT token, tunnel_id, expires_at, used_at
+	FROM connect_tokens
+	WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)
+	ORDER BY COALESCE(used_at, expires_at) ASC
+	LIMIT ?
+)
+UPDATE tunnels
+SET state = ?, disconnected_at = ?
+WHERE state = ?
+	AND connected_at IS NULL
+	AND EXISTS (
+		SELECT 1 FROM stale_tokens expired
+		WHERE expired.tunnel_id = tunnels.id
+			AND expired.expires_at < ?
+	)
+	AND NOT EXISTS (
+		SELECT 1 FROM connect_tokens usable
+		WHERE usable.tunnel_id = tunnels.id
+			AND usable.used_at IS NULL
+			AND usable.expires_at >= ?
+	)`, now, usedOlderThan, limit, domain.TunnelStateClosed, now, domain.TunnelStateDisconnected, now, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `
+UPDATE domains
+SET status = ?
+WHERE status = ?
+	AND EXISTS (
+		SELECT 1 FROM tunnels recently_closed
+		WHERE recently_closed.domain_id = domains.id
+			AND recently_closed.state = ?
+			AND recently_closed.disconnected_at = ?
+	)
+	AND NOT EXISTS (
+		SELECT 1 FROM tunnels t
+		WHERE t.domain_id = domains.id AND t.state != ?
+	)`, domain.DomainStatusInactive, domain.DomainStatusActive, domain.TunnelStateClosed, now, domain.TunnelStateClosed); err != nil {
+			return err
+		}
+
+		res, err := tx.ExecContext(ctx, `
 DELETE FROM connect_tokens
 WHERE token IN (
 	SELECT token
@@ -83,12 +135,14 @@ WHERE token IN (
 	ORDER BY COALESCE(used_at, expires_at) ASC
 	LIMIT ?
 )`, now, usedOlderThan, limit)
-	if err != nil {
-		return 0, err
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	return affected, nil
+		if err != nil {
+			return err
+		}
+		affected, err = res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	return affected, err
 }

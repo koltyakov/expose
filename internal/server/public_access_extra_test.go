@@ -216,3 +216,23 @@ func TestPublicAccessHelpers(t *testing.T) {
 		t.Fatalf("Cache-Control = %q, want %q", got, "no-store")
 	}
 }
+
+func TestPublicAccessFormSetsSecurityHeaders(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req := httptest.NewRequest(method, "https://demo.example.com/private", nil)
+		rr := httptest.NewRecorder()
+		writePublicAccessForm(rr, req, domain.TunnelRoute{Domain: domain.Domain{Hostname: "demo.example.com"}}, publicAccessFormState{}, http.StatusUnauthorized)
+
+		if got := rr.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+			t.Fatalf("%s: Content-Security-Policy = %q", method, got)
+		}
+		if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Fatalf("%s: X-Frame-Options = %q", method, got)
+		}
+		if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("%s: X-Content-Type-Options = %q", method, got)
+		}
+	}
+}

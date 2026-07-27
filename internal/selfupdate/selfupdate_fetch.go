@@ -44,6 +44,9 @@ func fetchLatestRelease(ctx context.Context) (*Release, error) {
 }
 
 func download(ctx context.Context, url string) ([]byte, error) {
+	if err := validateAssetURL(url); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

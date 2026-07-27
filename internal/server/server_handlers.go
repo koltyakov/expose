@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -64,19 +65,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		active := s.activeTunnels.activeCount(keyID)
-		if keyLimit >= 0 && active >= keyLimit {
-			writeJSON(w, http.StatusTooManyRequests, domain.ErrorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
-			return
+		if keyLimit >= 0 {
+			reserved, err := s.store.ReservedTunnelCountByKey(r.Context(), keyID, time.Now())
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if reserved >= keyLimit {
+				writeJSON(w, http.StatusTooManyRequests, domain.ErrorResponse{Error: "active tunnel limit reached", ErrorCode: errCodeTunnelLimit})
+				return
+			}
 		}
 
 		domainRec, tunnelRec, err = s.allocateRegisterRoute(r.Context(), keyID, prepared)
 		if err != nil {
-			if isHostnameInUseError(err) {
-				writeJSON(w, http.StatusConflict, domain.ErrorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
-			} else {
-				http.Error(w, err.Error(), http.StatusConflict)
-			}
+			s.writeRegisterAllocateError(w, keyID, err)
 			return
 		}
 	}
@@ -95,20 +98,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to persist tunnel WAF path rules", http.StatusInternalServerError)
 		return
 	}
+	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
+	if err != nil {
+		http.Error(w, "failed to create connect token", http.StatusInternalServerError)
+		return
+	}
 	registeredRoute := domain.TunnelRoute{Domain: domainRec, Tunnel: tunnelRec}
 	s.liveRoutes.setRegistrationConfig(tunnelRec.ID, prepared.accessUser, prepared.accessMode, prepared.passwordHash, tunnelRec.WAFPathRules)
 	s.publishRegisteredRoute(registeredRoute)
 	s.routeLifecycleMu.Unlock()
 	lifecycleLocked = false
 
-	token, err := s.store.CreateConnectToken(r.Context(), tunnelRec.ID, s.cfg.ConnectTokenTTL)
-	if err != nil {
-		http.Error(w, "failed to create connect token", http.StatusInternalServerError)
-		return
-	}
-
 	publicURL, wsURL, h3URL := s.registerURLs(r.Host, domainRec.Hostname, token)
-	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream_v2", "h3_multistream", domain.CapabilityWAFIgnorePaths}
+	capabilities := []string{"ws_v1", "h3_compat", "h3_multistream_v2", "h3_multistream", domain.CapabilityWAFIgnorePaths, domain.CapabilityConnectTokenHeader}
 
 	resp := domain.RegisterResponse{
 		TunnelID:      tunnelRec.ID,
@@ -124,13 +126,27 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) allowPreAuthRequest(w http.ResponseWriter, r *http.Request) bool {
-	if s.authLimiter == nil || s.authLimiter.allow(clientIPFromRemoteAddr(r.RemoteAddr)) {
+	if s.authLimiter == nil || s.authLimiter.allow(s.clientIP(r)) {
 		return true
 	}
 	w.Header().Set("Retry-After", "1")
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 	return false
+}
+
+// writeRegisterAllocateError reports allocation failures. Hostname conflicts
+// carry a client-safe domain error; anything else (e.g. store/SQL failures)
+// is logged in detail but answered with a generic message.
+func (s *Server) writeRegisterAllocateError(w http.ResponseWriter, keyID string, err error) {
+	if isHostnameInUseError(err) {
+		writeJSON(w, http.StatusConflict, domain.ErrorResponse{Error: err.Error(), ErrorCode: errCodeHostnameInUse})
+		return
+	}
+	if s.log != nil {
+		s.log.Error("failed to allocate tunnel route", "key_id", keyID, "err", err)
+	}
+	http.Error(w, "failed to allocate tunnel route", http.StatusConflict)
 }
 
 func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {

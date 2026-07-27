@@ -17,6 +17,7 @@ import (
 
 const (
 	upRouterShutdownTimeout        = 5 * time.Second
+	upRouterReadHeaderTimeout      = 10 * time.Second
 	upRouterProxyBufferSize        = 32 * 1024
 	upRouterProxyIdleConnTimeout   = 90 * time.Second
 	upRouterProxyResponseHeaderTTL = 2 * time.Minute
@@ -99,7 +100,7 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 		log:    log,
 		tr:     transport,
 	}
-	rt.server = &http.Server{Handler: rt}
+	rt.server = &http.Server{Handler: rt, ReadHeaderTimeout: upRouterReadHeaderTimeout}
 
 	go func() {
 		<-ctx.Done()

@@ -37,6 +37,27 @@ func (s *Store) ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, 
 	return count, err
 }
 
+// ReservedTunnelCountByKey counts connected tunnels and registrations whose
+// connect-token window has not expired. Used tokens remain reservations until
+// expiry so a failed upgrade cannot immediately free the slot for abuse.
+func (s *Store) ReservedTunnelCountByKey(ctx context.Context, keyID string, now time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM tunnels t
+WHERE t.api_key_id = ?
+	AND (
+		t.state = ?
+		OR EXISTS (
+			SELECT 1
+			FROM connect_tokens ct
+			WHERE ct.tunnel_id = t.id
+				AND ct.expires_at >= ?
+		)
+	)`, keyID, domain.TunnelStateConnected, now.UTC()).Scan(&count)
+	return count, err
+}
+
 func (s *Store) IsHostnameActive(ctx context.Context, host string) (bool, error) {
 	host = normalizeHostname(host)
 	var one int

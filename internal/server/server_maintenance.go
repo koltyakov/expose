@@ -89,6 +89,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.authLimiter.cleanup()
 			s.lookupLimiter.cleanup()
 			s.accessLimiter.cleanup()
+			s.cleanupACMEIssueAdmissions()
 			s.routes.cleanup()
 			if s.publicLimiter != nil {
 				s.publicLimiter.cleanup()

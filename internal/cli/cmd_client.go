@@ -77,7 +77,8 @@ func runHTTP(ctx context.Context, args []string) int {
 
 func runStatic(ctx context.Context, args []string) int {
 	args = config.NormalizeProtectFlagArgs(args)
-	loadClientEnvFromDotEnv(".env")
+	preEnvServer, preEnvAPIKey := capturePreDotEnv()
+	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
 	fs := flag.NewFlagSet("static", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
@@ -158,7 +159,8 @@ func runStatic(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	if err := mergeClientSettings(&cfg); err != nil {
+	src := captureClientCredSources(args, dotEnvKeys, preEnvServer, preEnvAPIKey)
+	if err := resolveClientCredentials(ctx, &cfg, src); err != nil {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
@@ -268,14 +270,16 @@ func runClientLogin(ctx context.Context, args []string) int {
 }
 
 func runClient(ctx context.Context, args []string) int {
-	loadClientEnvFromDotEnv(".env")
+	preEnvServer, preEnvAPIKey := capturePreDotEnv()
+	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
 	cfg, err := config.ParseClientFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
-	if err := mergeClientSettings(&cfg); err != nil {
+	src := captureClientCredSources(args, dotEnvKeys, preEnvServer, preEnvAPIKey)
+	if err := resolveClientCredentials(ctx, &cfg, src); err != nil {
 		fmt.Fprintln(os.Stderr, "client config error:", err)
 		return 2
 	}
@@ -464,29 +468,23 @@ func commaSeparatedValues(value string) []string {
 	return out
 }
 
-func mergeClientSettings(cfg *config.ClientConfig) error {
+// mergeClientSettingsWithSources fills missing credentials from the saved
+// settings file and reports where each one came from. Callers must not use
+// it directly: go through resolveClientCredentials so the provenance is
+// always trust-checked before the API key is sent anywhere.
+func mergeClientSettingsWithSources(cfg *config.ClientConfig, src clientCredSources) (clientCredSources, error) {
 	hasInlineCreds := hasNonEmpty(cfg.ServerURL) && hasNonEmpty(cfg.APIKey)
 	if !hasInlineCreds {
-		stored, err := settings.Load()
-		if err != nil {
-			return missingClientCredentialsError(err)
-		}
-		if !hasNonEmpty(cfg.ServerURL) {
-			cfg.ServerURL = stored.ServerURL
-		}
-		if !hasNonEmpty(cfg.APIKey) {
-			cfg.APIKey = stored.APIKey
-		}
-		if !hasNonEmpty(cfg.ServerURL) || !hasNonEmpty(cfg.APIKey) {
-			return missingClientCredentialsError(nil)
+		if err := loadStoredClientSettings(cfg, &src); err != nil {
+			return src, err
 		}
 	}
 	normalized, err := normalizeServerURL(cfg.ServerURL)
 	if err != nil {
-		return err
+		return src, err
 	}
 	cfg.ServerURL = normalized
-	return nil
+	return src, nil
 }
 
 func hasNonEmpty(v string) bool {

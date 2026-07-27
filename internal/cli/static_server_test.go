@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -103,7 +104,7 @@ func TestStaticFileSystemAllowPatternServesHiddenPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newStaticHandler(root, policy, staticServerOptions{})
+	handler := mustNewStaticHandler(t, root, policy, staticServerOptions{})
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/acme-challenge/token", nil)
 	rr := httptest.NewRecorder()
@@ -113,6 +114,50 @@ func TestStaticFileSystemAllowPatternServesHiddenPath(t *testing.T) {
 	}
 	if strings.TrimSpace(rr.Body.String()) != "token" {
 		t.Fatalf("unexpected response body %q", rr.Body.String())
+	}
+}
+
+func TestStaticFileSystemBlocksSymlinkEscapingRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on windows")
+	}
+
+	root := t.TempDir()
+	outside := t.TempDir()
+	mustWriteStaticTestFile(t, filepath.Join(root, "index.html"), "ok")
+	mustWriteStaticTestFile(t, filepath.Join(outside, "secret.txt"), "top-secret")
+
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "leak.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "leakdir")); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink that stays inside the root must keep working.
+	if err := os.Symlink("index.html", filepath.Join(root, "alias.html")); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := newTestStaticHandler(t, root, staticServerOptions{AllowFolders: true})
+
+	for _, path := range []string{"/leak.txt", "/leakdir/secret.txt", "/leakdir"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected symlink escape %s to return 404, got %d", path, rr.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/alias.html", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected in-root symlink to be served, got %d", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != "ok" {
+		t.Fatalf("unexpected in-root symlink body %q", rr.Body.String())
 	}
 }
 
@@ -127,7 +172,7 @@ func TestStaticFileSystemBlocksNonWebAssetsWhenUnprotected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newStaticHandler(root, policy, staticServerOptions{Unprotected: true})
+	handler := mustNewStaticHandler(t, root, policy, staticServerOptions{Unprotected: true})
 
 	req := httptest.NewRequest(http.MethodGet, "/secret.bin", nil)
 	rr := httptest.NewRecorder()
@@ -154,7 +199,7 @@ func TestStaticFileSystemAllowsAnyFileTypeWhenProtected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newStaticHandler(root, policy, staticServerOptions{})
+	handler := mustNewStaticHandler(t, root, policy, staticServerOptions{})
 
 	req := httptest.NewRequest(http.MethodGet, "/secret.bin", nil)
 	rr := httptest.NewRecorder()
@@ -870,7 +915,17 @@ func newTestStaticHandler(t *testing.T, root string, opts staticServerOptions) h
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newStaticHandler(root, policy, opts)
+	return mustNewStaticHandler(t, root, policy, opts)
+}
+
+func mustNewStaticHandler(t *testing.T, root string, policy staticAccessPolicy, opts staticServerOptions) *staticHandler {
+	t.Helper()
+	handler, err := newStaticHandler(root, policy, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.close() })
+	return handler
 }
 
 func mustWriteStaticTestFile(t *testing.T, path, content string) {

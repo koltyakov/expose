@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,7 +118,7 @@ func TestMergeClientSettingsNormalizesInlineServerURL(t *testing.T) {
 		ServerURL: "127.0.0.1.sslip.io:10443",
 		APIKey:    "k_test",
 	}
-	if err := mergeClientSettings(&cfg); err != nil {
+	if err := resolveClientCredentials(context.Background(), &cfg, clientCredSources{}); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ServerURL != "https://127.0.0.1.sslip.io:10443" {

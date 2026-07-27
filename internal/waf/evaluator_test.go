@@ -50,69 +50,32 @@ func TestGenericBodyValues(t *testing.T) {
 	}
 }
 
-func TestSensitiveBodyField(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		field     string
-		sensitive bool
-	}{
-		{"empty", "", false},
-		{"username", "username", false},
-		{"email", "email", false},
-		{"password", "password", true},
-		{"Password uppercase", "Password", true},
-		{"user_password", "user_password", true},
-		{"passwd", "passwd", true},
-		{"passphrase", "passphrase", true},
-		{"passcode", "passcode", true},
-		{"pin exact", "pin", true},
-		{"underscore pin suffix", "security_pin", true},
-		{"hyphen pin suffix", "security-pin", true},
-		{"pin as prefix", "pincode", false},
-		{"whitespace padded", "  password  ", true},
-		{"mixed case passwd", "  PASSWD  ", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := sensitiveBodyField(tt.field)
-			if got != tt.sensitive {
-				t.Errorf("sensitiveBodyField(%q) = %v, want %v", tt.field, got, tt.sensitive)
-			}
-		})
-	}
-}
-
 func TestCollectJSONStrings(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		value     any
-		parentKey string
-		wantLen   int
+		name    string
+		value   any
+		wantLen int
 	}{
-		{"nil value", nil, "", 0},
-		{"string value", "hello", "", 1},
-		{"number value", json.Number("42"), "", 1},
-		{"sensitive parent skipped", "secret123", "password", 0},
-		{"sensitive parent number", json.Number("1234"), "user_pin", 0},
-		{"nested map", map[string]any{"a": "val"}, "", 2}, // key "a" + value "val"
-		{"array of strings", []any{"x", "y"}, "", 2},
-		{"nested array in map", map[string]any{"items": []any{"one", "two"}}, "", 3}, // "items" + "one" + "two"
-		{"bool value ignored", true, "", 0},
-		{"empty map", map[string]any{}, "", 0},
-		{"empty array", []any{}, "", 0},
+		{"nil value", nil, 0},
+		{"string value", "hello", 1},
+		{"number value", json.Number("42"), 1},
+		{"sensitive key value scanned", "secret123", 1},
+		{"number under sensitive key scanned", json.Number("1234"), 1},
+		{"nested map", map[string]any{"a": "val"}, 2}, // key "a" + value "val"
+		{"array of strings", []any{"x", "y"}, 2},
+		{"nested array in map", map[string]any{"items": []any{"one", "two"}}, 3}, // "items" + "one" + "two"
+		{"bool value ignored", true, 0},
+		{"empty map", map[string]any{}, 0},
+		{"empty array", []any{}, 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			set := newValueSet(1 << 20)
-			collectJSONStrings(tt.value, tt.parentKey, set)
+			collectJSONStrings(tt.value, set)
 			out := valueStrings(set.values)
 			if len(out) != tt.wantLen {
 				t.Errorf("got %d values %v, want %d", len(out), out, tt.wantLen)
@@ -165,16 +128,37 @@ func TestCollectBodyValues(t *testing.T) {
 			wantMinLen:  2, // "query", "hello"
 		},
 		{
-			name:        "multipart skipped",
+			name:        "multipart parsed",
 			contentType: "multipart/form-data; boundary=----",
 			body:        "------\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\ndata\r\n------",
 			limit:       1024,
-			wantNil:     true,
+			wantMinLen:  2, // field name "file" + content "data"
 		},
 		{
-			name:        "octet-stream skipped",
+			name:        "multipart without boundary falls back to generic scan",
+			contentType: "multipart/form-data",
+			body:        "plain payload text",
+			limit:       1024,
+			wantMinLen:  1,
+		},
+		{
+			name:        "malformed multipart falls back to generic scan",
+			contentType: "multipart/form-data; boundary=zzz",
+			body:        "not a multipart body at all",
+			limit:       1024,
+			wantMinLen:  1,
+		},
+		{
+			name:        "octet-stream text inspected",
 			contentType: "application/octet-stream",
 			body:        "\x00\x01\x02\x03",
+			limit:       1024,
+			wantMinLen:  1,
+		},
+		{
+			name:        "octet-stream binary non-utf8 skipped",
+			contentType: "application/octet-stream",
+			body:        "\x80\x81\xff\xfe",
 			limit:       1024,
 			wantNil:     true,
 		},
@@ -302,7 +286,7 @@ func TestCollectFormBodyValues(t *testing.T) {
 		wantMinLen int
 	}{
 		{"simple form", "a=1&b=2", 4},                              // keys a, b + values 1, 2
-		{"sensitive field skipped", "password=secret&name=joe", 3}, // password, name, joe (secret skipped)
+		{"sensitive field scanned", "password=secret&name=joe", 4}, // password, secret, name, joe
 		{"invalid form falls back", "%%%", 1},                      // falls back to genericBodyValues
 		{"empty values form", "key=", 1},                           // just the key
 	}
@@ -330,7 +314,7 @@ func TestCollectJSONBodyValues(t *testing.T) {
 		{"nested object", `{"outer":{"inner":"val"}}`, 3},
 		{"array", `{"items":["x","y"]}`, 3},
 		{"with number", `{"count":42}`, 2},
-		{"sensitive skipped", `{"password":"secret","name":"joe"}`, 3}, // password, name, joe (secret skipped)
+		{"sensitive scanned", `{"password":"secret","name":"joe"}`, 4}, // password, secret, name, joe
 		{"invalid json", `not json`, 1},
 		{"trailing json", `{"a":"b"} extra`, 1},
 	}

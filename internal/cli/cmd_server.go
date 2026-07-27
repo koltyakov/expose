@@ -2,13 +2,9 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"sync/atomic"
 
@@ -63,7 +59,7 @@ func runServer(ctx context.Context, args []string) int {
 	}
 	cfg.APIKeyPepper = pepper
 
-	accessCookieSecret, ephemeralCookieSecret, err := resolveAccessCookieSecret(cfg.AccessCookieSecret, cfg.BaseDomain)
+	accessCookieSecret, ephemeralCookieSecret, err := resolveAccessCookieSecret(ctx, store, cfg.AccessCookieSecret)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server config error:", err)
 		return 2
@@ -117,83 +113,46 @@ func resolveServerPepper(ctx context.Context, store *sqlite.Store, configured st
 		if exists {
 			return current, nil
 		}
-		return store.ResolveServerPepper(ctx, chooseServerPepper())
+		generated, genErr := auth.GenerateAPIKey()
+		if genErr != nil {
+			return "", genErr
+		}
+		return store.ResolveServerPepper(ctx, generated)
 	}
 	return "", err
 }
 
-func chooseServerPepper() string {
-	return deriveMachineBoundSecret("expose-pepper")
-}
-
-func resolveAccessCookieSecret(configured, baseDomain string) (string, bool, error) {
+// resolveAccessCookieSecret picks the HMAC secret for protected-route access
+// cookies: explicit config first, then the secret persisted in server_settings,
+// then a freshly generated random secret persisted for future starts. If the
+// database cannot be read or written, it falls back to an ephemeral random
+// secret (reported via the second return value) so startup never blocks on a
+// transient DB failure.
+func resolveAccessCookieSecret(ctx context.Context, store *sqlite.Store, configured string) (string, bool, error) {
 	configured = strings.TrimSpace(configured)
 	if configured != "" {
 		return configured, false, nil
 	}
-	if derived := chooseAccessCookieSecret(baseDomain); derived != "" {
-		return derived, false, nil
+
+	current, exists, err := store.GetAccessCookieSecret(ctx)
+	if err != nil {
+		generated, genErr := auth.GenerateAPIKey()
+		if genErr != nil {
+			return "", false, genErr
+		}
+		return generated, true, nil
 	}
+	if exists && strings.TrimSpace(current) != "" {
+		return current, false, nil
+	}
+
 	generated, err := auth.GenerateAPIKey()
 	if err != nil {
 		return "", false, err
 	}
-	return generated, true, nil
-}
-
-func chooseAccessCookieSecret(baseDomain string) string {
-	baseDomain = strings.TrimSpace(baseDomain)
-	if baseDomain == "" {
-		return deriveMachineBoundSecret("expose-access-cookie")
+	persisted, err := store.ResolveAccessCookieSecret(ctx, generated)
+	if err != nil {
+		return generated, true, nil
 	}
-	return deriveMachineBoundSecret("expose-access-cookie:" + baseDomain)
-}
-
-func deriveMachineBoundSecret(label string) string {
-	machineID := detectMachineID()
-	if machineID == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(label + ":" + machineID))
-	return hex.EncodeToString(sum[:])
-}
-
-func detectMachineID() string {
-	for _, p := range []string{
-		"/etc/machine-id",
-		"/var/lib/dbus/machine-id",
-	} {
-		if b, err := os.ReadFile(p); err == nil {
-			if v := strings.TrimSpace(string(b)); v != "" {
-				return v
-			}
-		}
-	}
-	if runtime.GOOS == "darwin" {
-		if out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
-			if id := parseDarwinIOPlatformUUID(string(out)); id != "" {
-				return id
-			}
-		}
-		if out, err := exec.Command("sysctl", "-n", "kern.uuid").Output(); err == nil {
-			if id := strings.TrimSpace(string(out)); id != "" {
-				return id
-			}
-		}
-	}
-	return ""
-}
-
-func parseDarwinIOPlatformUUID(raw string) string {
-	const marker = `"IOPlatformUUID" = "`
-	idx := strings.Index(raw, marker)
-	if idx < 0 {
-		return ""
-	}
-	start := idx + len(marker)
-	end := strings.Index(raw[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return strings.TrimSpace(raw[start : start+end])
+	return persisted, false, nil
 }

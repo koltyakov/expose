@@ -10,6 +10,12 @@ import (
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
+// defaultTunnelLimit caps how many tunnels one API key may hold active at
+// once so a single leaked or junk key cannot register unbounded subdomains
+// (each of which may trigger an ACME certificate issuance against the base
+// domain's weekly quota). -1 remains available as an explicit opt-out.
+const defaultTunnelLimit = 50
+
 func runAPIKeyAdmin(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: expose apikey <create|list|revoke|set-limit> [flags]")
@@ -37,7 +43,7 @@ func runAPIKeyCreate(ctx context.Context, args []string) int {
 	fs.StringVar(&dbPath, "db", defaultDBPath(), "sqlite db path")
 	fs.StringVar(&name, "name", "default", "key label")
 	fs.StringVar(&pepper, "api-key-pepper", envOr("EXPOSE_API_KEY_PEPPER", ""), "hash pepper override")
-	fs.IntVar(&tunnelLimit, "tunnel-limit", -1, "max active tunnels for this key (-1 = unlimited)")
+	fs.IntVar(&tunnelLimit, "tunnel-limit", defaultTunnelLimit, "max active tunnels for this key (-1 = unlimited)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

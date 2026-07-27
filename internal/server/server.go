@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ type routeResolver interface {
 
 type tunnelLimiter interface {
 	ActiveTunnelCountByKey(ctx context.Context, keyID string) (int, error)
+	ReservedTunnelCountByKey(ctx context.Context, keyID string, now time.Time) (int, error)
 	GetAPIKeyTunnelLimit(ctx context.Context, keyID string) (int, error)
 }
 
@@ -81,6 +83,10 @@ type Server struct {
 	lookupLimiter    *rateLimiter
 	publicLimiter    *rateLimiter
 	accessLimiter    *rateLimiter
+	acmeIssueLimiter *rateLimiter
+	acmeIssueMu      sync.Mutex
+	acmeIssueHosts   map[string]time.Time
+	trustedProxies   []netip.Prefix
 	basicAuthCache   basicAuthSuccessCache
 	routes           routeCache
 	routeLookups     lookupGroup[liveRouteSnapshot]
@@ -181,6 +187,8 @@ const (
 	disconnectFlushInterval     = 75 * time.Millisecond
 	disconnectTimeout           = 10 * time.Second
 	publicRateLimitCleanupAge   = 5 * time.Minute
+	acmeIssueCleanupAge         = time.Hour
+	acmeIssueAdmissionTTL       = 10 * time.Minute
 	lookupRateLimit             = 20.0
 	lookupBurstLimit            = 40.0
 	preAuthRateLimit            = 10.0
@@ -236,25 +244,44 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 			publicRateLimitCleanupAge,
 		)
 	}
+	var acmeIssueLimiter *rateLimiter
+	if cfg.ACMEIssueRatePerHour > 0 {
+		perHour := float64(cfg.ACMEIssueRatePerHour)
+		acmeIssueLimiter = newConfiguredRateLimiter(perHour/3600, perHour, acmeIssueCleanupAge)
+	}
+	trustedProxies := make([]netip.Prefix, 0, len(cfg.TrustedProxyCIDRs))
+	for _, cidr := range cfg.TrustedProxyCIDRs {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		if err != nil {
+			if logger != nil {
+				logger.Warn("ignoring invalid trusted proxy CIDR", "cidr", cidr, "err", err)
+			}
+			continue
+		}
+		trustedProxies = append(trustedProxies, prefix)
+	}
 	return &Server{
-		cfg:           cfg,
-		store:         store,
-		log:           logger,
-		hub:           &hub{sessions: map[string]*session{}},
-		version:       version,
-		regLimiter:    newRateLimiter(),
-		authLimiter:   newConfiguredRateLimiter(preAuthRateLimit, preAuthBurstLimit, regCleanupAge),
-		lookupLimiter: newConfiguredRateLimiter(lookupRateLimit, lookupBurstLimit, regCleanupAge),
-		publicLimiter: publicLimiter,
-		accessLimiter: newConfiguredRateLimiter(accessAuthFailRate, accessAuthFailBurst, accessAuthCleanupAge),
-		routes:        routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
-		liveRoutes:    newLiveRouteIndex(),
-		activeTunnels: newActiveTunnelTracker(),
-		domainTouches: make(chan string, domainTouchQueueSize),
-		domainTouched: make(map[string]struct{}),
-		disconnects:   make(chan string, disconnectQueueSize),
-		disconnectQ:   make(map[string]struct{}),
-		wafAuditQueue: make(chan wafAuditEvent, wafAuditQueueSize),
+		cfg:              cfg,
+		store:            store,
+		log:              logger,
+		hub:              &hub{sessions: map[string]*session{}},
+		version:          version,
+		regLimiter:       newRateLimiter(),
+		authLimiter:      newConfiguredRateLimiter(preAuthRateLimit, preAuthBurstLimit, regCleanupAge),
+		lookupLimiter:    newConfiguredRateLimiter(lookupRateLimit, lookupBurstLimit, regCleanupAge),
+		publicLimiter:    publicLimiter,
+		accessLimiter:    newConfiguredRateLimiter(accessAuthFailRate, accessAuthFailBurst, accessAuthCleanupAge),
+		acmeIssueLimiter: acmeIssueLimiter,
+		acmeIssueHosts:   make(map[string]time.Time),
+		trustedProxies:   trustedProxies,
+		routes:           routeCache{entries: make(map[string]routeCacheEntry), hostsByTunnel: make(map[string]map[string]struct{}), ttl: durationOr(cfg.RouteCacheTTL, defaultRouteCacheTTL)},
+		liveRoutes:       newLiveRouteIndex(),
+		activeTunnels:    newActiveTunnelTracker(),
+		domainTouches:    make(chan string, domainTouchQueueSize),
+		domainTouched:    make(map[string]struct{}),
+		disconnects:      make(chan string, disconnectQueueSize),
+		disconnectQ:      make(map[string]struct{}),
+		wafAuditQueue:    make(chan wafAuditEvent, wafAuditQueueSize),
 	}
 }
 

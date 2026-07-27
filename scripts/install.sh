@@ -98,6 +98,29 @@ verify_checksum() {
   echo "Checksum verified for $asset_name"
 }
 
+verify_signature() {
+  checksums_path="$1"
+  if ! command -v cosign >/dev/null 2>&1; then
+    echo "warning: cosign not found; skipping signature verification" >&2
+    echo "warning: trusting checksums.txt from the same origin (checksum-only)" >&2
+    return 0
+  fi
+  sig="$checksums_path.sig"
+  pem="$checksums_path.pem"
+  if ! download "$base_url/checksums.txt.sig" "$sig" || ! download "$base_url/checksums.txt.pem" "$pem"; then
+    echo "error: cosign is installed but release signature assets could not be downloaded" >&2
+    echo "error: refusing to downgrade to checksum-only verification" >&2
+    exit 1
+  fi
+  cosign verify-blob \
+    --signature "$sig" \
+    --certificate "$pem" \
+    --certificate-identity-regexp "^https://github\.com/${repo}/\.github/workflows/release\.yml@refs/tags/.*$" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "$checksums_path"
+  echo "Signature verified for checksums.txt"
+}
+
 need_cmd tar
 need_cmd mktemp
 need_cmd install
@@ -116,6 +139,7 @@ checksums="$tmp_dir/checksums.txt"
 echo "Downloading $asset from $repo..."
 download "$base_url/$asset" "$archive"
 download "$base_url/checksums.txt" "$checksums"
+verify_signature "$checksums"
 verify_checksum "$archive" "$asset" "$checksums"
 
 tar -xzf "$archive" -C "$tmp_dir"

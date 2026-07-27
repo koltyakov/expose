@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/termui"
 	"github.com/koltyakov/expose/internal/traffic"
 )
@@ -287,10 +288,10 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 	case "tunnel ready":
 		g.Status = "online"
 		if v := attrString(attrMap, "public_url"); v != "" {
-			g.PublicURL = v
+			g.PublicURL = config.SanitizeTerminalString(v)
 		}
 		if v := attrString(attrMap, "tunnel_id"); v != "" {
-			g.TunnelID = v
+			g.TunnelID = config.SanitizeTerminalString(v)
 		}
 		g.LastMessage = "tunnel ready"
 	case "client disconnected; reconnecting":
@@ -309,8 +310,8 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 	case "forwarded request":
 		g.Requests++
 		d.totalHTTP++
-		g.LastReqMethod = attrString(attrMap, "method")
-		g.LastReqPath = attrString(attrMap, "path")
+		g.LastReqMethod = config.SanitizeTerminalString(attrString(attrMap, "method"))
+		g.LastReqPath = config.SanitizeTerminalString(attrString(attrMap, "path"))
 		g.LastReqStatus = attrInt(attrMap, "status")
 		d.touchVisitorLocked(attrString(attrMap, "client_fingerprint"))
 		d.appendRequestLocked(upDashboardRequest{
@@ -323,14 +324,14 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 		})
 	case "versions":
 		if v := attrString(attrMap, "server"); v != "" {
-			d.serverVersions[subdomain] = v
+			d.serverVersions[subdomain] = config.SanitizeTerminalString(v)
 		}
 		if attrBool(attrMap, "waf_enabled") {
 			d.wafEnabled[subdomain] = true
 		}
 	case "server tls mode":
 		if v := attrString(attrMap, "mode"); v != "" {
-			d.tlsModes[subdomain] = v
+			d.tlsModes[subdomain] = config.SanitizeTerminalString(v)
 		}
 	case "latency":
 		if v := dashboardFormatRequestDuration(attrString(attrMap, "duration")); strings.TrimSpace(v) != "" {
@@ -349,7 +350,7 @@ func (d *upDashboard) HandleLog(subdomain string, level slog.Level, msg string, 
 			d.wsConns[subdomain+"|"+streamID] = upDashboardWS{
 				Subdomain:   subdomain,
 				StreamID:    streamID,
-				Path:        attrString(attrMap, "path"),
+				Path:        config.SanitizeTerminalString(attrString(attrMap, "path")),
 				Fingerprint: fp,
 				OpenedAt:    now,
 			}
@@ -1211,7 +1212,7 @@ func summarizeDashboardEvent(msg string, attrs map[string]slog.Value) string {
 	switch msg {
 	case "tunnel ready":
 		if u := attrString(attrs, "public_url"); u != "" {
-			return msg + " " + u
+			return msg + " " + config.SanitizeTerminalString(u)
 		}
 	case "client disconnected; reconnecting", "tunnel register failed", "tunnel register failed while waiting for TLS certificate provisioning":
 		if e := attrString(attrs, "err"); e != "" {
@@ -1386,5 +1387,6 @@ func truncateRight(s string, n int) string {
 
 func shortenDashboardText(s string, max int) string {
 	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	s = config.SanitizeTerminalString(s)
 	return truncateRight(s, max)
 }

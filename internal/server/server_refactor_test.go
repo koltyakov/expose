@@ -31,6 +31,10 @@ func (s *stubServerStore) ActiveTunnelCountByKey(context.Context, string) (int, 
 	return 0, nil
 }
 
+func (s *stubServerStore) ReservedTunnelCountByKey(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+
 func (s *stubServerStore) GetAPIKeyTunnelLimit(context.Context, string) (int, error) {
 	return -1, nil
 }

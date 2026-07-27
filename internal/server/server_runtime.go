@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,7 @@ func (s *Server) Run(ctx context.Context) error {
 				return shouldInspectWAFBody(r)
 			},
 			ShouldIgnorePathRule: s.shouldIgnoreWAFPathRule,
+			ClientAddr:           s.clientIP,
 			OnBlock:              s.recordWAFBlock,
 		}, s.log)(handler)
 		s.log.Info("WAF enabled")
@@ -202,10 +204,73 @@ func (s *Server) authorizeACMEHost(ctx context.Context, host string) error {
 		}
 		return errors.New("failed to authorize host")
 	}
-	if snap.route.Domain.Status == domain.DomainStatusActive {
-		return nil
+	if snap.route.Domain.Status != domain.DomainStatusActive {
+		return errors.New("host not allowed")
 	}
-	return errors.New("host not allowed")
+	if snap.session == nil {
+		return errors.New("host not allowed")
+	}
+	if !s.allowACMEIssuance(host) {
+		s.log.Warn("ACME issuance rate limit exceeded; refusing new certificate request", "host", host)
+		return errors.New("certificate issuance rate limit exceeded")
+	}
+	return nil
+}
+
+// allowACMEIssuance gates first-time certificate issuance so one API key
+// registering many junk subdomains cannot burn the base domain's ACME weekly
+// quota. Hosts with an already-cached certificate bypass the limiter:
+// autocert consults HostPolicy on every handshake (before its own cache), so
+// counting those would break existing tunnels and drain the budget on normal
+// traffic.
+func (s *Server) allowACMEIssuance(host string) bool {
+	if s.acmeIssueLimiter == nil {
+		return true
+	}
+	if s.hasCachedACMECert(host) {
+		s.acmeIssueMu.Lock()
+		delete(s.acmeIssueHosts, host)
+		s.acmeIssueMu.Unlock()
+		return true
+	}
+	now := time.Now()
+	s.acmeIssueMu.Lock()
+	defer s.acmeIssueMu.Unlock()
+	if s.acmeIssueHosts == nil {
+		s.acmeIssueHosts = make(map[string]time.Time)
+	}
+	if expiresAt, ok := s.acmeIssueHosts[host]; ok && now.Before(expiresAt) {
+		return true
+	}
+	if !s.acmeIssueLimiter.allow("acme-issuance") {
+		return false
+	}
+	s.acmeIssueHosts[host] = now.Add(acmeIssueAdmissionTTL)
+	return true
+}
+
+func (s *Server) cleanupACMEIssueAdmissions() {
+	now := time.Now()
+	s.acmeIssueMu.Lock()
+	for host, expiresAt := range s.acmeIssueHosts {
+		if !now.Before(expiresAt) {
+			delete(s.acmeIssueHosts, host)
+		}
+	}
+	s.acmeIssueMu.Unlock()
+}
+
+func (s *Server) hasCachedACMECert(host string) bool {
+	dir := strings.TrimSpace(s.cfg.CertCacheDir)
+	if dir == "" || host == "" {
+		return false
+	}
+	for _, name := range []string{host, host + "+rsa"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) http.Handler {

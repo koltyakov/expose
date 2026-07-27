@@ -244,23 +244,6 @@ func TestLoadServerInitDefaultsEnvOverridesFile(t *testing.T) {
 	}
 }
 
-func TestParseDarwinIOPlatformUUID(t *testing.T) {
-	raw := `
-{
-  "IOPlatformUUID" = "4A1E0F6D-3E34-53FC-8D79-A99B6A36C8D0"
-}
-`
-	got := parseDarwinIOPlatformUUID(raw)
-	want := "4A1E0F6D-3E34-53FC-8D79-A99B6A36C8D0"
-	if got != want {
-		t.Fatalf("expected %s, got %s", want, got)
-	}
-
-	if got := parseDarwinIOPlatformUUID("no uuid here"); got != "" {
-		t.Fatalf("expected empty result for missing uuid, got %s", got)
-	}
-}
-
 func TestResolveInitPepperDefaultFromDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "expose.db")
 	store, err := sqlite.Open(dbPath)
@@ -286,6 +269,26 @@ func TestResolveInitPepperDefaultFallback(t *testing.T) {
 	got := resolveInitPepperDefault(ctx, filepath.Join(t.TempDir(), "missing.db"), "fallback-pepper")
 	if got != "fallback-pepper" {
 		t.Fatalf("expected fallback pepper, got %q", got)
+	}
+}
+
+func TestCreateInitAPIKeyUsesDefaultTunnelLimit(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "init-limit.db")
+	if _, err := createInitAPIKey(ctx, dbPath, "pepper", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	keys, err := store.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].TunnelLimit != defaultTunnelLimit {
+		t.Fatalf("initial API key limit = %+v, want %d", keys, defaultTunnelLimit)
 	}
 }
 

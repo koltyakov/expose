@@ -73,7 +73,8 @@ func runUpInit(ctx context.Context, args []string) int {
 }
 
 func runUpFromFile(ctx context.Context, path string) int {
-	loadClientEnvFromDotEnv(".env")
+	preEnvServer, preEnvAPIKey := capturePreDotEnv()
+	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
 	cfg, err := loadUpConfigFile(path)
 	if err != nil {
@@ -87,6 +88,27 @@ func runUpFromFile(ctx context.Context, path string) int {
 		return 2
 	}
 	cfg.Access = resolvedAccess
+
+	// Resolve credentials once for the whole run: every tunnel below shares
+	// them, so trust-checking inside the per-subdomain loop would repeat the
+	// same warning (and confirmation prompt) for each tunnel.
+	credCfg := config.ClientConfig{
+		ServerURL: envOr("EXPOSE_DOMAIN", ""),
+		APIKey:    envOr("EXPOSE_API_KEY", ""),
+	}
+	credSrc := captureClientCredSources(nil, dotEnvKeys, preEnvServer, preEnvAPIKey)
+	if strings.TrimSpace(cfg.Server) != "" {
+		credCfg.ServerURL = cfg.Server
+		credSrc.serverConfigFile = true
+	}
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		credCfg.APIKey = cfg.APIKey
+		credSrc.apiKeyConfigFile = true
+	}
+	if err := resolveClientCredentials(ctx, &credCfg, credSrc); err != nil {
+		fmt.Fprintln(os.Stderr, "up config error:", err)
+		return 2
+	}
 
 	configDir := "."
 	if absConfigPath, err := filepath.Abs(path); err == nil {
@@ -172,21 +194,11 @@ func runUpFromFile(ctx context.Context, path string) int {
 			cancel()
 			return 2
 		}
-		if cfg.Server != "" {
-			clientCfg.ServerURL = cfg.Server
-		}
-		if cfg.APIKey != "" {
-			clientCfg.APIKey = cfg.APIKey
-		}
+		clientCfg.ServerURL = credCfg.ServerURL
+		clientCfg.APIKey = credCfg.APIKey
 		clientCfg.Protect = cfg.Access.Protect
 		clientCfg.User = cfg.Access.User
 		clientCfg.Password = cfg.Access.Password
-
-		if err := mergeClientSettings(&clientCfg); err != nil {
-			fmt.Fprintln(os.Stderr, "up config error:", err)
-			cancel()
-			return 2
-		}
 
 		c := client.New(clientCfg, nil)
 		c.SetVersion(Version)

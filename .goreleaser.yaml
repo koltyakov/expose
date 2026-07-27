@@ -42,6 +42,22 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# Keyless signing with cosign via GitHub Actions OIDC (requires id-token: write
+# in the release workflow). Signing checksums.txt authenticates every artifact
+# in the release, since it carries each archive's SHA-256 digest.
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - --yes
+      - ${artifact}
+    artifacts: checksum
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 

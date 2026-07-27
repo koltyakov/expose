@@ -91,6 +91,9 @@ func (c *Client) connectSessionTransport(ctx context.Context, reg domain.Registe
 }
 
 func (c *Client) connectWebSocketTransport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
+	if err := validateSecureTransportURL(reg.WSURL, "wss", "ws"); err != nil {
+		return sessionTransportConn{}, err
+	}
 	dialer := websocket.Dialer{
 		HandshakeTimeout: wsHandshakeTimeout,
 		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
@@ -98,7 +101,8 @@ func (c *Client) connectWebSocketTransport(ctx context.Context, reg domain.Regis
 		WriteBufferSize:  tunnelWSWriteBufferSize,
 		WriteBufferPool:  wsWriteBufferPool,
 	}
-	conn, _, err := dialer.DialContext(ctx, reg.WSURL, nil)
+	dialURL, token := splitConnectToken(reg.WSURL, reg)
+	conn, _, err := dialer.DialContext(ctx, dialURL, connectAuthHeader(token))
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("ws connect: %w", err)
 	}
@@ -111,7 +115,11 @@ func (c *Client) connectWebSocketTransport(ctx context.Context, reg domain.Regis
 }
 
 func (c *Client) connectHTTP3Transport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
-	target, err := url.Parse(strings.TrimSpace(reg.H3URL))
+	if err := validateSecureTransportURL(reg.H3URL, "https", ""); err != nil {
+		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
+	}
+	h3URL, token := splitConnectToken(reg.H3URL, reg)
+	target, err := url.Parse(strings.TrimSpace(h3URL))
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
 	}
@@ -130,6 +138,9 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg domain.RegisterR
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if err := stream.SendRequestHeader(req); err != nil {
 		_ = h3Transport.Close()
@@ -174,7 +185,11 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg domain.RegisterR
 }
 
 func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
-	target, err := url.Parse(strings.TrimSpace(reg.H3URL))
+	if err := validateSecureTransportURL(reg.H3URL, "https", ""); err != nil {
+		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
+	}
+	h3URL, token := splitConnectToken(reg.H3URL, reg)
+	target, err := url.Parse(strings.TrimSpace(h3URL))
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("invalid h3_url: %w", err)
 	}
@@ -201,6 +216,9 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domai
 		mode = "multistream-v2"
 	}
 	req.Header.Set("X-Expose-H3-Mode", mode)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	if err := stream.SendRequestHeader(req); err != nil {
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
@@ -302,6 +320,67 @@ func http3DialAuthority(u *url.URL) string {
 		port = "443"
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// splitConnectToken moves the connect token out of the connect URL and into a
+// value the caller sends as `Authorization: Bearer`, so the token never
+// appears in a request line that proxies and gateways routinely log. Servers
+// that do not advertise CapabilityConnectTokenHeader only read the query
+// parameter, so for them the URL is returned untouched.
+func splitConnectToken(rawURL string, reg domain.RegisterResponse) (string, string) {
+	if !hasTunnelCapability(reg.Capabilities, domain.CapabilityConnectTokenHeader) {
+		return rawURL, ""
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return rawURL, ""
+	}
+	query := u.Query()
+	token := strings.TrimSpace(query.Get("token"))
+	if token == "" {
+		return rawURL, ""
+	}
+	query.Del("token")
+	u.RawQuery = query.Encode()
+	return u.String(), token
+}
+
+// connectAuthHeader builds the bearer header for a connect token, or nil when
+// the token stays in the URL.
+func connectAuthHeader(token string) http.Header {
+	if token == "" {
+		return nil
+	}
+	return http.Header{"Authorization": []string{"Bearer " + token}}
+}
+
+// validateSecureTransportURL rejects plaintext tunnel transport URLs before
+// dialing. ws_url must use wss:// and h3_url must use https://. Plaintext
+// schemes to loopback hosts are tolerated for local development.
+func validateSecureTransportURL(rawURL, wantScheme, plaintextScheme string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid tunnel transport URL: %w", err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme == wantScheme {
+		return nil
+	}
+	if plaintextScheme != "" && scheme == plaintextScheme && isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("insecure tunnel transport URL %q: scheme must be %s://", rawURL, wantScheme)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func canUseH3Compat(reg domain.RegisterResponse) bool {

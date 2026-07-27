@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +119,46 @@ func TestSaveReplacesPermissiveFileWithSecurePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("settings file perms = %o, want 600", got)
+	}
+}
+
+func TestLoadCheckedWarnsOnBroadPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := Save(Credentials{ServerURL: "https://example.com", APIKey: "secret"}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := os.Chmod(Path(), 0o644); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	creds, warning, err := LoadChecked()
+	if err != nil {
+		t.Fatalf("LoadChecked() error = %v", err)
+	}
+	if creds.APIKey != "secret" {
+		t.Fatalf("LoadChecked() APIKey = %q, want %q", creds.APIKey, "secret")
+	}
+	if warning == "" {
+		t.Fatal("LoadChecked() warning = empty, want permission warning")
+	}
+	if !strings.Contains(warning, "0644") {
+		t.Fatalf("LoadChecked() warning = %q, want it to mention the mode", warning)
+	}
+
+	if err := os.Chmod(Path(), 0o600); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	_, warning, err = LoadChecked()
+	if err != nil {
+		t.Fatalf("LoadChecked() error = %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("LoadChecked() warning = %q, want empty for 0600", warning)
 	}
 }
 

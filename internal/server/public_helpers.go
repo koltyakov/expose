@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -96,7 +97,7 @@ func (s *Server) allowPublicRouteLookup(host string, r *http.Request) bool {
 	if _, _, cached := s.routes.lookup(host); cached {
 		return true
 	}
-	return s.lookupLimiter == nil || s.lookupLimiter.allow(clientIPFromRemoteAddr(r.RemoteAddr))
+	return s.lookupLimiter == nil || s.lookupLimiter.allow(s.clientIP(r))
 }
 
 func (s *Server) resolvePublicSession(snap liveRouteSnapshot) (*session, int, string, bool) {
@@ -118,7 +119,7 @@ func (s *Server) allowPublicRequest(route domain.TunnelRoute, r *http.Request) b
 	if s.publicLimiter == nil {
 		return true
 	}
-	return s.publicLimiter.allow(publicRateLimitKey(route.Domain.Hostname, clientIPFromRemoteAddr(r.RemoteAddr)))
+	return s.publicLimiter.allow(publicRateLimitKey(route.Domain.Hostname, s.clientIP(r)))
 }
 
 func publicRateLimitKey(host, clientIP string) string {
@@ -135,6 +136,64 @@ func publicRateLimitKey(host, clientIP string) string {
 
 func clientIPFromRemoteAddr(remoteAddr string) string {
 	return netutil.NormalizeHost(remoteAddr)
+}
+
+// clientIP resolves the client address used for rate-limit keys. When the
+// direct peer falls inside a configured trusted proxy CIDR, the client is
+// taken from X-Forwarded-For (rightmost untrusted hop); otherwise the header
+// is ignored so direct clients cannot spoof their rate-limit identity.
+func (s *Server) clientIP(r *http.Request) string {
+	remote := clientIPFromRemoteAddr(r.RemoteAddr)
+	if len(s.trustedProxies) == 0 {
+		return remote
+	}
+	remoteIP, err := netip.ParseAddr(remote)
+	if err != nil || !ipInTrustedProxies(remoteIP, s.trustedProxies) {
+		return remote
+	}
+	// Join every X-Forwarded-For header, not just the first: a client can
+	// send several, and a proxy that forwards them verbatim instead of
+	// collapsing them would otherwise leave the trusted-hop walk running
+	// over an entirely client-controlled header.
+	if forwarded := clientIPFromXFF(strings.Join(r.Header.Values("X-Forwarded-For"), ","), s.trustedProxies); forwarded != "" {
+		return forwarded
+	}
+	return remote
+}
+
+func ipInTrustedProxies(ip netip.Addr, trusted []netip.Prefix) bool {
+	for _, prefix := range trusted {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIPFromXFF walks X-Forwarded-For right to left and returns the first
+// hop that is not itself a trusted proxy: trusted proxies append the real
+// peer address to the right, so client-supplied spoofed entries on the left
+// are never selected. If every hop is trusted, the leftmost (closest to the
+// original client) is returned. A malformed hop fails closed to "" so the
+// caller falls back to the direct peer address.
+func clientIPFromXFF(xff string, trusted []netip.Prefix) string {
+	parts := strings.Split(xff, ",")
+	leftmost := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if part == "" {
+			continue
+		}
+		ip, err := netip.ParseAddr(part)
+		if err != nil {
+			return ""
+		}
+		if !ipInTrustedProxies(ip, trusted) {
+			return ip.String()
+		}
+		leftmost = ip.String()
+	}
+	return leftmost
 }
 
 func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {

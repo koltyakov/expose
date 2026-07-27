@@ -1,11 +1,14 @@
 package waf
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -117,11 +120,33 @@ func TestPathTraversal(t *testing.T) {
 		{"encoded slash", "/static/..%2f..%2f..%2fetc/passwd"},
 		{"encoded backslash", "/static/..%5c..%5c..%5cwindows/system32"},
 		{"null byte", "/file%00.php"},
+		{"encoded dots literal slash", "/static/%2e%2e/%2e%2e/etc/passwd"},
+		{"fully encoded traversal", "/static/%2e%2e%2f%2e%2e%2fetc/passwd"},
+		{"fully encoded traversal uppercase", "/static/%2E%2E%2F%2E%2E%2Fetc/passwd"},
+		{"double encoded traversal", "/static/%252e%252e%252f%252e%252e%252fetc/passwd"},
+		{"encoded traversal in query", "/download?file=%2e%2e%2f%2e%2e%2fetc/passwd"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, tt.uri, nil)
 			assertBlocked(t, handler, r)
+		})
+	}
+}
+
+func TestEncodedBenignPathsAllowed(t *testing.T) {
+	handler := newTestMiddleware(t)
+	paths := []string{
+		"/foo%20bar",
+		"/a%2fb",
+		"/a%2Fb",
+		"/files/report%202024.pdf",
+		"/search?q=100%25+sure",
+	}
+	for _, p := range paths {
+		t.Run(p, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, p, nil)
+			assertAllowed(t, handler, r)
 		})
 	}
 }
@@ -445,6 +470,25 @@ func TestAuditOnlyMode(t *testing.T) {
 	}
 }
 
+func TestWAFUsesConfiguredClientAddressResolver(t *testing.T) {
+	var remote string
+	handler := NewMiddleware(Config{
+		Enabled: true,
+		ClientAddr: func(*http.Request) string {
+			return "198.51.100.10"
+		},
+		OnBlock: func(evt BlockEvent) {
+			remote = evt.RemoteAddr
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))(dummyHandler)
+	r := httptest.NewRequest(http.MethodGet, "/search?q=1+UNION+SELECT+*+FROM+users", nil)
+	r.Header.Set("X-Forwarded-For", "203.0.113.99")
+	handler.ServeHTTP(httptest.NewRecorder(), r)
+	if remote != "198.51.100.10" {
+		t.Fatalf("WAF audit remote = %q, want configured resolver", remote)
+	}
+}
+
 func TestWAFBlocksMaliciousJSONBody(t *testing.T) {
 	handler := newTestMiddlewareWithConfig(t, Config{
 		Enabled:          true,
@@ -496,15 +540,120 @@ func TestWAFRestoresBodyForDownstreamHandler(t *testing.T) {
 	}
 }
 
-func TestWAFSkipsSensitiveBodyFields(t *testing.T) {
+func TestWAFScansSensitiveBodyFields(t *testing.T) {
 	handler := newTestMiddlewareWithConfig(t, Config{
 		Enabled:          true,
 		BodyInspectLimit: 16 * 1024,
 	})
 
-	form := "username=admin&password=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
-	r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	t.Run("sqli in password form field", func(t *testing.T) {
+		form := "username=admin&password=%27+OR+%271%27%3D%271"
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		assertBlocked(t, handler, r)
+	})
+
+	t.Run("xss in password form field", func(t *testing.T) {
+		form := "username=admin&password=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		assertBlocked(t, handler, r)
+	})
+
+	t.Run("sqli in password json field", func(t *testing.T) {
+		body := `{"username":"admin","password":"1 UNION SELECT password FROM users"}`
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		assertBlocked(t, handler, r)
+	})
+
+	t.Run("benign passwords allowed", func(t *testing.T) {
+		for _, pw := range []string{"CorrectHorse123!", "p@ss w0rd"} {
+			form := "username=admin&password=" + url.QueryEscape(pw)
+			r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			assertAllowed(t, handler, r)
+		}
+	})
+}
+
+func multipartRequest(t *testing.T, target string, build func(w *multipart.Writer)) *http.Request {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	build(w)
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing multipart writer: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodPost, target, &buf)
+	r.Header.Set("Content-Type", w.FormDataContentType())
+	return r
+}
+
+func TestWAFBlocksMaliciousMultipartBody(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+	})
+
+	t.Run("sqli in form field", func(t *testing.T) {
+		r := multipartRequest(t, "/upload", func(w *multipart.Writer) {
+			fw, err := w.CreateFormField("comment")
+			if err != nil {
+				t.Fatalf("creating form field: %v", err)
+			}
+			_, _ = fw.Write([]byte("1 UNION SELECT password FROM users"))
+		})
+		assertBlocked(t, handler, r)
+	})
+
+	t.Run("xss in form field", func(t *testing.T) {
+		r := multipartRequest(t, "/upload", func(w *multipart.Writer) {
+			fw, err := w.CreateFormField("bio")
+			if err != nil {
+				t.Fatalf("creating form field: %v", err)
+			}
+			_, _ = fw.Write([]byte("<script>alert(1)</script>"))
+		})
+		assertBlocked(t, handler, r)
+	})
+
+	t.Run("xss in filename", func(t *testing.T) {
+		r := multipartRequest(t, "/upload", func(w *multipart.Writer) {
+			fw, err := w.CreateFormFile("upload", "x><script>alert(1)</script>.png")
+			if err != nil {
+				t.Fatalf("creating form file: %v", err)
+			}
+			_, _ = fw.Write([]byte("fake image bytes"))
+		})
+		assertBlocked(t, handler, r)
+	})
+
+	t.Run("malformed multipart with attack payload", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("1 UNION SELECT password FROM users"))
+		r.Header.Set("Content-Type", "multipart/form-data; boundary=notarealboundary")
+		assertBlocked(t, handler, r)
+	})
+}
+
+func TestWAFAllowsBenignMultipartUpload(t *testing.T) {
+	handler := newTestMiddlewareWithConfig(t, Config{
+		Enabled:          true,
+		BodyInspectLimit: 16 * 1024,
+	})
+
+	r := multipartRequest(t, "/upload", func(w *multipart.Writer) {
+		fw, err := w.CreateFormField("description")
+		if err != nil {
+			t.Fatalf("creating form field: %v", err)
+		}
+		_, _ = fw.Write([]byte("Holiday photo from the beach"))
+		ff, err := w.CreateFormFile("photo", "beach.png")
+		if err != nil {
+			t.Fatalf("creating form file: %v", err)
+		}
+		_, _ = ff.Write([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"))
+	})
 	assertAllowed(t, handler, r)
 }
 

@@ -402,6 +402,46 @@ func TestPurgeStaleConnectTokens(t *testing.T) {
 	}
 }
 
+func TestExpiredConnectTokenClosesNeverConnectedRegistration(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	key, err := store.CreateAPIKeyWithLimit(ctx, "orphan", "hash_orphan_token", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tunnel, err := store.AllocateDomainAndTunnel(ctx, key.ID, "temporary", "orphan-token", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := store.CreateConnectToken(ctx, tunnel.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumeConnectToken(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if reserved, err := store.ReservedTunnelCountByKey(ctx, key.ID, time.Now()); err != nil || reserved != 1 {
+		t.Fatalf("used but unexpired token reservation = %d, err=%v, want 1", reserved, err)
+	}
+
+	future := time.Now().Add(2 * time.Minute)
+	if _, err := store.PurgeStaleConnectTokens(ctx, future, future.Add(-time.Hour), 100); err != nil {
+		t.Fatal(err)
+	}
+	route, err := store.FindRouteByTunnelID(ctx, tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Tunnel.State != domain.TunnelStateClosed || route.Domain.Status != domain.DomainStatusInactive {
+		t.Fatalf("expired registration remained active: tunnel=%s domain=%s", route.Tunnel.State, route.Domain.Status)
+	}
+}
+
 func TestOpenCreatesParentDirectory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "nested", "path", "expose.db")
 
@@ -1602,5 +1642,44 @@ func assertStoreWritableAfterError(t *testing.T, store *Store, tunnelID string) 
 	defer cancel()
 	if _, err := store.CreateConnectToken(ctx, tunnelID, time.Minute); err != nil {
 		t.Fatalf("store should remain writable after tx error path: %v", err)
+	}
+}
+
+func TestResolveAccessCookieSecretPersistsAndAdoptsStored(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	if _, exists, err := store.GetAccessCookieSecret(ctx); err != nil || exists {
+		t.Fatalf("expected no persisted secret yet, got exists=%v err=%v", exists, err)
+	}
+	if _, err := store.ResolveAccessCookieSecret(ctx, ""); err == nil {
+		t.Fatal("expected empty secret suggestion to be rejected")
+	}
+
+	resolved, err := store.ResolveAccessCookieSecret(ctx, "first-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != "first-secret" {
+		t.Fatalf("expected suggested secret on first resolve, got %q", resolved)
+	}
+
+	// A conflicting suggestion adopts the persisted value instead of erroring
+	// so every replica signs cookies with one shared secret.
+	resolved, err = store.ResolveAccessCookieSecret(ctx, "second-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != "first-secret" {
+		t.Fatalf("expected persisted secret to win, got %q", resolved)
+	}
+
+	current, exists, err := store.GetAccessCookieSecret(ctx)
+	if err != nil || !exists || current != "first-secret" {
+		t.Fatalf("expected persisted first-secret, got exists=%v value=%q err=%v", exists, current, err)
 	}
 }

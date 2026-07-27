@@ -52,6 +52,20 @@ func (b *readErrorAfterFirstBody) Close() error {
 	return nil
 }
 
+func retainTestMessage(msg tunnelproto.Message) tunnelproto.Message {
+	if msg.Response != nil {
+		response := *msg.Response
+		response.Body = append([]byte(nil), response.Body...)
+		msg.Response = &response
+	}
+	if msg.BodyChunk != nil {
+		chunk := *msg.BodyChunk
+		chunk.Data = append([]byte(nil), chunk.Data...)
+		msg.BodyChunk = &chunk
+	}
+	return msg
+}
+
 func (r *testTrafficRecorder) RecordTraffic(direction traffic.Direction, bytes int64) {
 	switch direction {
 	case traffic.DirectionInbound:
@@ -1219,7 +1233,7 @@ func TestForwardAndSendSmallResponseInline(t *testing.T) {
 
 	var msgs []tunnelproto.Message
 	writeMsg := func(msg tunnelproto.Message) error {
-		msgs = append(msgs, msg)
+		msgs = append(msgs, retainTestMessage(msg))
 		return nil
 	}
 
@@ -1322,7 +1336,7 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 
 	var msgs []tunnelproto.Message
 	writeMsg := func(msg tunnelproto.Message) error {
-		msgs = append(msgs, msg)
+		msgs = append(msgs, retainTestMessage(msg))
 		return nil
 	}
 
@@ -1409,7 +1423,7 @@ func TestForwardAndSendLargeResponseReadErrorSendsAbortEnd(t *testing.T) {
 		Method: http.MethodGet,
 		Path:   "/download",
 	}, nil, func(msg tunnelproto.Message) error {
-		msgs = append(msgs, msg)
+		msgs = append(msgs, retainTestMessage(msg))
 		return nil
 	}, nil)
 
@@ -1460,7 +1474,7 @@ func TestForwardAndSendStreamedRequestBody(t *testing.T) {
 
 	var msgs []tunnelproto.Message
 	writeMsg := func(msg tunnelproto.Message) error {
-		msgs = append(msgs, msg)
+		msgs = append(msgs, retainTestMessage(msg))
 		return nil
 	}
 
@@ -1516,7 +1530,7 @@ func TestForwardAndSendUpstreamUnavailable(t *testing.T) {
 
 	var msgs []tunnelproto.Message
 	writeMsg := func(msg tunnelproto.Message) error {
-		msgs = append(msgs, msg)
+		msgs = append(msgs, retainTestMessage(msg))
 		return nil
 	}
 

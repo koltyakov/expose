@@ -5,10 +5,30 @@ How **expose** routes public HTTPS traffic to your local machine through a tunne
 ## High-Level Flow
 
 ```mermaid
-flowchart LR
-    Browser["Browser"] -- "HTTPS request<br/>myapp.example.com" --> Server
-    Server["expose server<br/>(TLS + routing)"] -- "WebSocket or HTTP/3<br/>tunnel" <--> Client["expose client"]
-    Client -- "HTTP<br/>127.0.0.1:PORT" --> App["Local app"]
+flowchart TB
+    App["💻 Local app<br/>127.0.0.1:PORT"]
+
+    subgraph client["expose client"]
+        Fwd["Forward"] --> Conn["Connect"] --> Reg["Register"]
+    end
+
+    subgraph server["expose server"]
+        Hub{{"Session hub"}}
+        Route["Route by hostname"]
+        TLS["TLS · WAF"]
+        DB[("SQLite")]
+
+        Hub --> Route --> TLS
+        Route -. resolve .-> DB
+    end
+
+    Browser["🌐 Browser"]
+
+    App -- "HTTP" --> Fwd
+    Hub <-- "WebSocket or HTTP/3 tunnel" --> Conn
+    Conn -- "token" --> Hub
+    Reg -- "API key" --> Route
+    TLS -- "HTTPS *.domain" --> Browser
 ```
 
 ## Request Lifecycle

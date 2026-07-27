@@ -25,32 +25,7 @@
 
 ## How It Works
 
-```mermaid
-flowchart TB
-    App["💻 Local app<br/>127.0.0.1:PORT"]
-
-    subgraph client["expose client"]
-        Fwd["Forward"] --> Conn["Connect"] --> Reg["Register"]
-    end
-
-    subgraph server["expose server"]
-        Hub{{"Session hub"}}
-        Route["Route by hostname"]
-        TLS["TLS · WAF"]
-        DB[("SQLite")]
-
-        Hub --> Route --> TLS
-        Route -. resolve .-> DB
-    end
-
-    Browser["🌐 Browser"]
-
-    App -- "HTTP" --> Fwd
-    Hub <-- "WebSocket or HTTP/3 tunnel" --> Conn
-    Conn -- "token" --> Hub
-    Reg -- "API key" --> Route
-    TLS -- "HTTPS *.domain" --> Browser
-```
+![expose architecture](./assets/architecture.jpg)
 
 1. The **server** terminates TLS, runs WAF inspection, and routes requests by hostname to the correct tunnel
 2. The **client** registers via API key, then opens a persistent WebSocket or HTTP/3 tunnel to the server

@@ -8,7 +8,7 @@ Recent runtime changes shifted the hot path to a unified binary frame codec, a s
 - WebSocket versus HTTP/3 compatibility framing costs
 - store mutation latency under connect/disconnect churn
 
-For live diagnosis, you can enable `pprof` on either process with `EXPOSE_PPROF_LISTEN=127.0.0.1:6060` and inspect `/debug/pprof/` while a load or soak run is active. The server also exposes Prometheus text metrics at `/debug/metrics` on that same loopback-protected listener.
+For live diagnosis, you can enable `pprof` on either process with `EXPOSE_PPROF_LISTEN=127.0.0.1:6060` and inspect `/debug/pprof/` while a load or soak run is active. The server also exposes Prometheus text metrics at `/debug/metrics` on that listener. `/debug/metrics` has no application authentication, so keep the listener on loopback or restrict access at the network boundary.
 
 ## Run Everything
 
@@ -71,7 +71,8 @@ make bench-transport
 
 That refreshes [docs/benchmark.md](benchmark.md) with normalized metrics that
 call out which direction is better for each column, while keeping the
-`internal/server` benchmark itself lightweight by default.
+`internal/server` benchmark itself lightweight by default. Report generation
+also requires `prettier` on `PATH`, or `npx` with Node.js so it can run Prettier.
 
 Multi-tunnel connection soak:
 

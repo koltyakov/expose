@@ -11,7 +11,7 @@ This guide covers:
 ## Prerequisites
 
 - macOS/Linux shell
-- Go 1.23+
+- Go 1.26+
 - `mkcert` installed
 
 ## 1) Start local app

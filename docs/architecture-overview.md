@@ -44,7 +44,7 @@ sequenceDiagram
     S-->>C: tunnel_id + ws_url + h3_url + capabilities
     C->>S: WebSocket connect /v1/tunnels/connect
     C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_compat)
-    C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_multistream control, X-Expose-H3-Mode: multistream)
+    C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_multistream_v2/h3_multistream control)
     C->>S: HTTP/3 POST /v1/tunnels/connect-h3/stream (worker, X-Expose-H3-Session)
 
     B->>S: HTTPS GET myapp.example.com/path
@@ -77,13 +77,13 @@ sequenceDiagram
 ## HTTP/3 Protocol Versions
 
 - `h3_compat`: single HTTP/3 stream carrying the same binary frame protocol used by WebSocket compatibility mode, wrapped in a length-prefixed stream record.
-- `h3_multistream`: negotiated multi-stream mode with:
-  - one long-lived control stream for keepalive and lifecycle.
-  - many short-lived worker streams where each forwarded HTTP request or proxied websocket uses a distinct HTTP/3 stream.
-- Registration currently advertises `ws_v1`, `h3_compat`, and `h3_multistream` capabilities.
+- `h3_multistream_v2`: preferred multi-stream mode using the v2 stream codec.
+- `h3_multistream`: legacy variant of the multi-stream protocol.
+- Both multi-stream modes use one long-lived control stream for keepalive/lifecycle and short-lived worker streams for individual forwarded HTTP requests or proxied WebSockets.
+- Registration currently advertises `ws_v1`, `h3_compat`, `h3_multistream_v2`, `h3_multistream`, `waf_ignore_paths_v1` (per-tunnel WAF paths), and `connect_token_header_v1` (bearer authentication for tunnel connect) capabilities.
 - Client transport selection:
   - `--transport=ws` (default): `ws_v1`
-  - `--transport=quic`: `h3_multistream` -> `h3_compat` (no WebSocket fallback)
+  - `--transport=quic`: `h3_multistream_v2` when advertised, otherwise legacy `h3_multistream`; if the selected multi-stream connection fails, try `h3_compat` (no WebSocket fallback)
 
 The server accepts HTTP/3 `POST` and `CONNECT` on H3 endpoints for compatibility. The built-in client uses `POST`.
 
@@ -100,13 +100,13 @@ The server injects standard reverse-proxy headers before forwarding requests thr
 
 | Header              | Value                                                        |
 | ------------------- | ------------------------------------------------------------ |
-| `X-Forwarded-For`   | Original client IP (appended to existing chain if present)   |
-| `X-Forwarded-Proto` | `https` (the protocol used by the public request)            |
-| `X-Forwarded-Host`  | Public hostname (e.g. `myapp.example.com`)                   |
-| `X-Forwarded-Port`  | Public port (e.g. `443`)                                     |
-| `Host`              | Rewritten to match the public hostname                       |
+| `X-Forwarded-For`   | Existing chain, with the immediate public peer IP appended    |
+| `X-Forwarded-Proto` | Public request protocol (`http` or `https`)                   |
+| `X-Forwarded-Host`  | Public request host, including an explicit port when present  |
+| `X-Forwarded-Port`  | Explicit public port, or the protocol default (`80`/`443`)    |
+| `Host`              | Rewritten to the public request host                          |
 
-Any pre-existing values for these headers in the incoming request are replaced to prevent spoofing.
+Pre-existing `Host`, `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-Port` values are replaced. Existing `X-Forwarded-For` values are normalized and preserved before the immediate peer IP is appended.
 
 ## Security
 

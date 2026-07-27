@@ -478,7 +478,7 @@ func renderMarkdown(input markdownInput) string {
 	}
 	buf.WriteString("3. **Worker-pool contention** — The server-side `h3StreamPool` and client-side `h3WorkerManager` add acquire/release overhead and contention under load.\n")
 	fmt.Fprintf(&buf, "4. **Throughput ceiling** — QUIC ranges from ~%sK to ~%sK req/s, while WebSocket ranges from ~%sK to ~%sK req/s across this matrix.\n\n", formatFloat(quicReqMin/1000, 1), formatFloat(quicReqMax/1000, 1), formatFloat(wsReqMin/1000, 1), formatFloat(wsReqMax/1000, 1))
-	buf.WriteString("### Where QUIC Wins\n\n")
+	buf.WriteString("### Memory and Network Trade-offs\n\n")
 	if quicKiBAvg <= wsKiBAvg {
 		fmt.Fprintf(&buf, "- **Memory per request**: QUIC uses less heap memory on average (%s–%s KiB vs %s–%s KiB for WebSocket).\n", formatFloat(quicKiBMin, 0), formatFloat(quicKiBMax, 0), formatFloat(wsKiBMin, 0), formatFloat(wsKiBMax, 0))
 	} else {

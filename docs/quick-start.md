@@ -4,7 +4,7 @@ Get a local HTTP service publicly accessible in under 5 minutes.
 
 ## Prerequisites
 
-- Go 1.23+ (to build from source)
+- Go 1.26+ (to build from source)
 - A domain you control (e.g. `example.com`)
 - A server with a public IP (VPS, home server, etc.)
 
@@ -30,7 +30,7 @@ export EXPOSE_TLS_MODE=auto
 ./bin/expose server
 ```
 
-> Ports `10443/tcp` (HTTPS) and `10080/tcp` (ACME HTTP-01) must be reachable from the internet. For HTTP/3/QUIC transport, open `10443/udp` as well. See [Port Forwarding](port-forwarding.md) if you're behind a router.
+> Forward public `443/tcp` to the server's default `10443/tcp` listener and public `80/tcp` to `10080/tcp` for ACME HTTP-01. For HTTP/3/QUIC, also forward public `443/udp` to `10443/udp`. Alternatively, bind directly to public ports with `EXPOSE_LISTEN_HTTPS=:443` and `EXPOSE_LISTEN_HTTP_CHALLENGE=:80`. See [Port Forwarding](port-forwarding.md) if you're behind a router.
 
 ## 2 - Create an API key
 

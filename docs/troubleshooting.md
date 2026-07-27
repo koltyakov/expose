@@ -28,7 +28,7 @@ flowchart TD
     Port80 -- No --> Fix1["Open port 80 for<br/>HTTP-01 challenges"]
     Port80 -- Yes --> DNS{"DNS correct?"}
     DNS -- No --> Fix2["Fix A records:<br/>@ and * → server IP"]
-    DNS -- Yes --> Rate["Let's Encrypt<br/>rate limit? Wait 1h"]
+    DNS -- Yes --> Rate["ACME rate limit?<br/>Use provider reset time"]
     Cert --> Files{"Cert files<br/>exist & readable?"}
     Files -- No --> Fix3["Check EXPOSE_TLS_CERT_FILE<br/>and EXPOSE_TLS_KEY_FILE paths"]
     Files -- Yes --> SANs["Cert covers<br/>*.domain?"]
@@ -85,7 +85,7 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 
 **Symptom**: Client gets `429 Too Many Requests` with error code `tunnel_limit`.
 
-- Active tunnel limits are configured per API key. By default, API keys have an **unlimited** tunnel limit.
+- Active tunnel limits are configured per API key. New API keys default to **50 concurrent tunnels**; `-1` is explicitly unlimited.
 - If a limit has been set for the key in use, the client cannot open more than that number of simultaneous active tunnels.
 - List active tunnels or disconnect unused ones.
 - Increase the key's tunnel limit or create additional API keys if you need more concurrent tunnels.
@@ -110,11 +110,11 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 
 ## ACME rate limits
 
-Let's Encrypt allows **50 certificates per registered domain per week**. If you hit this limit with `auto` or `dynamic` mode:
+If your ACME provider reports a rate limit while using `auto` or `dynamic` mode:
 
 - Switch to `EXPOSE_TLS_MODE=wildcard` with a pre-obtained wildcard cert
 - Use `--domain` to reuse named subdomains instead of generating temporary ones
-- Wait for the rate limit window to reset (weekly rolling)
+- Wait until the reset time reported by the ACME provider; do not assume a fixed one-hour or weekly wait
 
 ## Debug logging
 

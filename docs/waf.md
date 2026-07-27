@@ -7,8 +7,8 @@ before they reach your local application.
 ## How It Works
 
 The WAF sits in the HTTP handler chain on the server, **after** TLS
-termination and **before** the request is forwarded through the WebSocket
-tunnel. When a request matches a rule it is immediately rejected with
+termination and **before** the request is forwarded through the WebSocket or
+HTTP/3 tunnel. When a request matches a rule it is immediately rejected with
 **403 Forbidden** and a JSON body:
 
 ```json
@@ -58,7 +58,7 @@ export EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
 | **XXE**                  | Query string, headers, body       | `<!DOCTYPE … [`, `<!ENTITY`, `SYSTEM "file://…"`                            |
 | **SSTI**                 | Query string, headers, body       | `{{config}}`, `{{''.__class__}}`, `<#assign`, `${T(…)}`                     |
 | **URI Too Long**         | Request URI length                | URI exceeding 8 KiB (buffer-overflow / smuggling defence)                   |
-| **Too Many Headers**     | Header count                      | More than 64 non-exempt headers (header-stuffing defence)                   |
+| **Too Many Headers**     | Header value count                | More than 64 non-exempt header values (header-stuffing defence)             |
 
 Rules use pre-compiled regular expressions and inspect both raw and
 URL-decoded values (including `+` → space decoding and **double-decoded**
@@ -78,24 +78,23 @@ Each rule targets one or more of:
 - **URI** - the full `RequestURI`
 - **User-Agent** - the `User-Agent` header
 - **Headers** - all header values except a safe-list of structural / browser-controlled headers (e.g. `Host`, `Accept`, `Authorization`, `Content-Type`, WebSocket headers, `Sec-*`)
-- **Body** - up to `EXPOSE_WAF_BODY_INSPECT_LIMIT` bytes of eligible **public** request bodies. JSON, URL-encoded forms, and UTF-8 text/XML-like payloads are normalized and inspected; `multipart/*` and `application/octet-stream` are skipped.
+- **Body** - up to `EXPOSE_WAF_BODY_INSPECT_LIMIT` bytes of eligible **public** request bodies. URL-encoded form keys and values are normalized and inspected. JSON object keys plus string and numeric values are inspected; encoded variants of JSON string values are normalized. Multipart field names, filenames, form values, and UTF-8 file content are scanned. UTF-8 text/XML-like and `application/octet-stream` payloads are also scanned; non-text binary content is skipped.
 
-Form and JSON fields with password-like names (`password`, `passwd`, `passphrase`, `passcode`, `pin`, `*_pin`, `*-pin`) are excluded from value scanning to reduce false positives on normal login flows.
+Password-like form and JSON fields are inspected like all other keys and values. A password containing a rule-matching value can therefore be blocked.
 
 ## Client Dashboard
 
-When the WAF is active the client's terminal dashboard shows:
+When the WAF is active, the client's terminal dashboard shows:
 
-- **`(+WAF)`** next to the server version, indicating the server has WAF enabled
-- A **WAF blocked** counter that updates in real time via keepalive pongs,
-  showing how many malicious requests the server has stopped for your tunnel
+- **`WAF: On`** in the metadata next to the server version
+- A **`blocked N`** count in the HTTP Requests summary, updated in real time via keepalive pongs
 
 Example:
 
 ```
-  Server  v0.9.0 (+WAF)
+  Server  v0.9.0 (WAF: On, TLS: Dynamic, Transport: WS)
   …
-  WAF blocked  12
+  HTTP Requests      25 total, blocked 12
 ```
 
 ## Architecture
@@ -106,7 +105,7 @@ flowchart LR
     TLS --> WAF["WAF middleware"]
     WAF -- "blocked → 403" --> Browser
     WAF -- "allowed" --> Router["Tunnel router"]
-    Router -- "WebSocket" --> Client["expose client"]
+    Router -- "WebSocket or HTTP/3" --> Client["expose client"]
     Client -- "HTTP" --> App["Local app"]
 ```
 
@@ -121,7 +120,7 @@ stops on the first match.
 - Double-decoded variant is computed once and only tested when it differs from
   the single-decoded value.
 - Safe headers are skipped via a hash-set lookup.
-- Structural limits (URI length, header count) are checked before regex
+- Structural limits (URI length, header-value count) are checked before regex
   evaluation for fast-path rejection.
 - Re-run `go test ./internal/waf -bench .` after changing rules or body
   inspection limits to measure the actual overhead in your environment.
@@ -139,6 +138,7 @@ fire before switching to enforcement mode.
 - The WAF applies a **fixed ruleset** - custom rules are not yet supported.
 - Body inspection is **bounded**. Only the first
   `EXPOSE_WAF_BODY_INSPECT_LIMIT` bytes of eligible public request bodies are
-  scanned, and binary / multipart bodies are skipped.
+  scanned. Non-UTF-8 binary file content is skipped, while multipart metadata,
+  fields, and UTF-8 file content are inspected.
 - The WAF is a defence-in-depth layer, not a replacement for input validation
   and authentication in your application.

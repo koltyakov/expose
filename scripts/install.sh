@@ -105,16 +105,14 @@ verify_signature() {
     echo "warning: trusting checksums.txt from the same origin (checksum-only)" >&2
     return 0
   fi
-  sig="$checksums_path.sig"
-  pem="$checksums_path.pem"
-  if ! download "$base_url/checksums.txt.sig" "$sig" || ! download "$base_url/checksums.txt.pem" "$pem"; then
-    echo "error: cosign is installed but release signature assets could not be downloaded" >&2
+  bundle="$checksums_path.sigstore.json"
+  if ! download "$base_url/checksums.txt.sigstore.json" "$bundle"; then
+    echo "error: cosign is installed but the release signature bundle could not be downloaded" >&2
     echo "error: refusing to downgrade to checksum-only verification" >&2
     exit 1
   fi
   cosign verify-blob \
-    --signature "$sig" \
-    --certificate "$pem" \
+    --bundle "$bundle" \
     --certificate-identity-regexp "^https://github\.com/${repo}/\.github/workflows/release\.yml@refs/tags/.*$" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
     "$checksums_path"

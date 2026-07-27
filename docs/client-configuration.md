@@ -11,28 +11,39 @@ Complete reference for all client flags, environment variables, and credential m
 | `expose http --protect <port>`      | Expose with password protection                   |
 | `expose static [dir]`               | Expose a static directory                         |
 | `expose soak --port 3000`           | Run many temporary clients against one local port |
+| `expose auth curl --url <url>`       | Authenticate curl against an access-form route    |
 | `expose login`                      | Save server URL and API key                       |
 | `expose up`                         | Start routes from `expose.yml`                    |
 | `expose up init`                    | Create `expose.yml` via wizard                    |
 | `expose update`                     | Update to the latest release                      |
 
-## Flags & Environment Variables
+## Shared Tunnel Flags & Environment Variables
 
-| Flag                | Env Variable                     | Description                                                                          |
-| ------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
-| `--port`         | `EXPOSE_PORT`                    | Local HTTP port on `127.0.0.1` (positional arg)                                      |
+| Flag             | Env Variable                     | Description                                                                          |
+| ---------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `--domain`       | `EXPOSE_SUBDOMAIN`               | Requested subdomain label (e.g. `myapp`)                                             |
 | `--server`       | `EXPOSE_DOMAIN`                  | Server URL (e.g. `example.com`)                                                      |
 | `--api-key`      | `EXPOSE_API_KEY`                 | API key for authentication                                                           |
 | `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `ws` (default), `quic`                                             |
-| `--pprof-listen` | `EXPOSE_PPROF_LISTEN`            | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
 | `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
-| `--allow`        | -                                | Allow blocked static paths matching a glob pattern                                   |
-| -                   | `EXPOSE_WAF_IGNORE_PATHS`        | Comma-separated path prefixes ignored by the WAF sensitive-file rule                     |
 | -                | `EXPOSE_USER`                    | Access-form username (default: `admin`)                                              |
 | -                | `EXPOSE_PASSWORD`                | Access-form password                                                                 |
+| -                | `EXPOSE_CLIENT_MACHINE_ID`       | Stable client machine ID override used for registration and default static hostnames |
+| -                | `EXPOSE_WAF_IGNORE_PATHS`        | Comma-separated path prefixes ignored by the WAF sensitive-file rule                 |
 | -                | `EXPOSE_MAX_CONCURRENT_FORWARDS` | Max concurrent local upstream forwards per client process (default: `128`)           |
-| -                | `EXPOSE_AUTOUPDATE`              | Enable automatic self-update (`true`/`1`/`yes`)                                      |
+| -                | `EXPOSE_PPROF_LISTEN`            | Optional pprof address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`)        |
+| -                | `EXPOSE_PPROF_ALLOW_REMOTE`      | Allow an unauthenticated pprof listener on a non-loopback address                     |
+| -                | `EXPOSE_AUTOUPDATE`              | Enable automatic self-update for `http` and `static` (`true`/`1`/`yes`)              |
+
+## Command-Specific Flags
+
+| Command            | Useful flags                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `http`             | `--port` (or positional port / `EXPOSE_PORT`)                                                                 |
+| `static`           | `--dir`, `--folders`, `--spa`, and repeatable `--allow <glob>`; `--allow` is static-only                      |
+| `up`, `up init`    | `-f` / `--file` to select the config path; `up init` requires an interactive terminal                        |
+| `auth curl`        | `--url`, `--user`, `--password`, `--insecure`, and `--format curl\|header\|cookie`                           |
+| `soak`             | `--port`, `--count`, `--duration`, `--ramp`, `--report-interval`, `--churn-interval`, `--churn-batch`, `--prefix`, `--pprof-listen` |
 
 ## Per-Tunnel WAF Paths
 
@@ -140,6 +151,11 @@ expose http --domain=myapp 3000
 # → https://myapp.example.com
 ```
 
+The requested name is always relative to the server's configured base domain;
+it is not an arbitrary custom hostname. Multi-label names such as `foo.bar`
+become `foo.bar.example.com` and may require a certificate broader than the
+usual `*.example.com` wildcard.
+
 ## Password Protection
 
 Add protection in front of your tunnel:
@@ -218,11 +234,12 @@ See [Client Dashboard](client-dashboard.md) for details.
 | Key      | Action                |
 | -------- | --------------------- |
 | `Ctrl+C` | Quit                  |
+| `Ctrl+I` | Toggle session details |
 | `Ctrl+U` | Trigger manual update |
 
 ## Auto-Update
 
-When `EXPOSE_AUTOUPDATE=true`, the client checks for updates on startup and periodically (every 30 minutes). Updates are downloaded and applied automatically, then the process restarts.
+For `expose http` and `expose static`, `EXPOSE_AUTOUPDATE=true` checks for updates on startup and periodically (every 30 minutes). Updates are downloaded and applied automatically, then the process restarts.
 
 See [Auto-Update](auto-update.md) for configuration details.
 
@@ -230,7 +247,7 @@ See [Auto-Update](auto-update.md) for configuration details.
 
 The client automatically reconnects when the connection drops:
 
-- Exponential backoff between retry attempts
+- Staged retry delays of 2 seconds, 5 seconds, then 15 seconds
 - Periodic keepalive pings maintain the connection
 - Server version changes trigger an update check (when auto-update is enabled)
 

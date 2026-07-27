@@ -14,7 +14,7 @@ Session     online for 2h 15m (ID: abc123)
 Server      v1.0.0 (WAF: On, TLS: Auto)
 Update      v1.1.0 available - run expose update or press Ctrl+U
 Latency     12ms
-Forwarding  https://myapp.example.com → http://127.0.0.1:3000 (healthy)
+Forwarding  https://myapp.example.com → http://127.0.0.1:3000 ●
 Notice      tunnel register failed, connect: connection refused; retrying in 2s
 Traffic     In 1.5 MB total (180 KB/s) | Out 980 KB total (96 KB/s)
 Clients     2 active, 5 total
@@ -38,7 +38,7 @@ Latency         P50 8ms | P90 15ms | P95 22ms | P99 45ms
 | **Server**     | Server version with WAF and TLS mode indicators                               |
 | **Update**     | Shown when a newer version is available                                       |
 | **Latency**    | Current round-trip latency to the server (from keepalive pings)               |
-| **Forwarding** | Public URL → local target, with health status of local port                   |
+| **Forwarding** | Public URL → local target, with a colored local-port status dot                |
 | **Notice**     | Most recent client-side warning/info message (retries, provisioning, updates) |
 | **Clients**    | Active and total unique visitor count                                         |
 | **Traffic**    | Combined inbound/downloaded and outbound/uploaded totals with live 1-second rolling rates |
@@ -82,9 +82,10 @@ When the server has WAF enabled:
 
 ## Local Port Health
 
-The Forwarding line shows the health status of your local target:
+The Forwarding line shows a colored dot after the local target:
 
-- **healthy** - local port is responding
+- **Green dot** - local port is responding
+- **Red dot** - local port is unavailable
 - Status is checked automatically
 
 ## Keyboard Shortcuts

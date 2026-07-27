@@ -28,7 +28,7 @@ Static mode starts a local loopback web server, then tunnels it the same way `ex
 | `--api-key` | API key                                                          |
 | `--protect` | Enable tunnel protection (`form` by default, `basic` via `--protect=basic`) |
 | `--allow`   | Allow blocked paths matching a glob pattern                      |
-| `--folders` | Enable directory listings when no `index.html` exists            |
+| `--folders` | Enable directory listings when no directory index exists         |
 | `--spa`     | Fallback unresolved `GET`/`HEAD` routes to the root `index.html` |
 
 Examples:
@@ -84,9 +84,12 @@ serving a hidden static path.
 
 ## Folder Behavior
 
-- If a requested directory contains `index.html`, that file is served.
+- Directory indexes are selected in this order: `index.html`, `README.md`, then `README.markdown`.
+- A README selected as the directory index is rendered as Markdown.
 - Directory listings are disabled by default.
-- Use `--folders` to enable listings when no `index.html` exists.
+- Use `--folders` to enable listings when no directory index exists.
+
+Symlinks are resolved within the published root. A symlink cannot be used to serve a target outside that root.
 
 ## SPA Behavior
 
@@ -99,7 +102,7 @@ expose static --spa ./dist
 With `--spa`, unresolved `GET` and `HEAD` requests fall back to the root `index.html`, unless the path already resolves to:
 
 - a real file
-- a directory with its own `index.html`
+- a directory with its own directory index
 
 ## Markdown Rendering
 
@@ -112,6 +115,9 @@ Supported behavior includes:
 - language-aware fenced code block formatting for common languages
 - Mermaid rendering for fenced `mermaid` blocks
 - first `#` heading used as the page title
+- allowlisted raw HTML with sanitized tags, attributes, and URL schemes; unsafe HTML is not emitted as active markup
+
+Rendered Markdown pages inherit the nearest favicon found in their directory or a parent directory. Recognized names include `favicon.svg`, `favicon.png`, `favicon.ico`, common JPEG/WebP variants, and `apple-touch-icon.png`. If none exists, `/favicon.ico` uses expose's embedded fallback icon.
 
 ## Related Guides
 

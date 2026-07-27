@@ -4,7 +4,7 @@
   <img src="./assets/logo.png" alt="expose logo" width="220" />
 </p>
 
-**expose** is a self-hosted HTTP tunnel. Run your own server, then expose local HTTP ports from any machine - no third-party services required.
+**expose** is a self-hosted HTTP tunnel. Run your own server, then expose local HTTP ports from any machine - no third-party tunnel service required.
 
 ![expose client](./assets/client-tunnel.png)
 
@@ -15,7 +15,7 @@
 - **Static site publishing** via `expose static` for quick docs, SPAs, and local folders
 - **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
-- **Auto-update** - server and client can self-update in the background with zero downtime
+- **Auto-update** - server and client can self-update in the background with automatic restart and client reconnection
 - **Password-protected tunnels** with a built-in access form and edge session cookie (per-tunnel or per-config)
 - **Env-first configuration** - minimal CLI flags, `.env` support, and interactive setup wizards
 - **Rate limiting** on tunnel registration plus optional public traffic throttling per hostname+client IP
@@ -41,6 +41,7 @@ For transport mode details (`ws|quic`) and QUIC requirements, see [Client Config
 - A **server or VPS** with a public IP - or a home server with [port forwarding](docs/port-forwarding.md) configured
 - A **domain** you control (e.g. `example.com`)
 - A **DNS wildcard A record** (`*.example.com`) pointing to your server's public IP
+- **Port mappings** from public `443/tcp` to internal `10443/tcp` for normal HTTPS URLs, public `80/tcp` to internal `10080/tcp` for ACME HTTP-01, and public `443/udp` to internal `10443/udp` for QUIC
 
 ### 1. Install
 
@@ -68,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/unins
 irm https://raw.githubusercontent.com/koltyakov/expose/main/scripts/uninstall.ps1 | iex
 ```
 
-Or install from source with Go:
+Or install from source with Go 1.26 or newer:
 
 ```bash
 go install github.com/koltyakov/expose/cmd/expose@latest

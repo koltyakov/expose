@@ -10,7 +10,9 @@ Interactive setup (recommended for first time):
 expose server init
 ```
 
-The init wizard asks for each parameter, writes a `.env` file, and optionally creates your first API key.
+The init wizard asks for each parameter, writes a `.env` file, and optionally creates your first API key. Use `expose server init --env-file /path/to/server.env` to choose a different output path.
+
+The wizard accepts `dynamic` and `wildcard` TLS modes and defaults to `dynamic`. The normal `expose server` runtime also accepts `auto`, and defaults to `auto` when `EXPOSE_TLS_MODE` is unset.
 
 Manual start:
 
@@ -29,6 +31,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--listen`                | `EXPOSE_LISTEN_HTTPS`            | `:10443`      | HTTPS listen address                                           |
 | `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE`   | `:10080`      | ACME HTTP-01 challenge listener                                |
 | `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`            | -             | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
+| -                         | `EXPOSE_PPROF_ALLOW_REMOTE`      | `false`       | Allow an unauthenticated pprof listener on a non-loopback address |
 | `--db`                    | `EXPOSE_DB_PATH`                 | `./expose.db` | SQLite database path                                           |
 | `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`       | `10`          | SQLite max open connections                                    |
 | `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`       | `10`          | SQLite max idle connections                                    |
@@ -36,15 +39,19 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--cert-cache-dir`        | `EXPOSE_CERT_CACHE_DIR`          | `./cert`      | ACME certificate cache directory                               |
 | `--tls-cert-file`         | `EXPOSE_TLS_CERT_FILE`           | -             | Static PEM certificate (for wildcard/auto)                     |
 | `--tls-key-file`          | `EXPOSE_TLS_KEY_FILE`            | -             | Static PEM private key (for wildcard/auto)                     |
-| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | -             | Explicit pepper for API key hashing                            |
-| `--access-cookie-secret`  | `EXPOSE_ACCESS_COOKIE_SECRET`    | auto-derived  | Secret used to sign protected-route access cookies             |
+| `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | random, persisted | Explicit pepper for API key hashing                         |
+| `--access-cookie-secret`  | `EXPOSE_ACCESS_COOKIE_SECRET`    | random, persisted | Secret used to sign protected-route access cookies          |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`               | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`                |
 | -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |
 | -                         | `EXPOSE_WAF_AUDIT_ONLY`          | `false`       | Evaluate WAF rules without blocking requests                   |
 | -                         | `EXPOSE_WAF_BODY_INSPECT_LIMIT`  | `16384`       | Max public request-body bytes the WAF inspects (`0` disables)  |
+| -                         | `EXPOSE_WAF_MAX_URI_LENGTH`      | `8192`        | Maximum request URI length before the WAF blocks it             |
+| -                         | `EXPOSE_WAF_MAX_HEADER_COUNT`    | `64`          | Maximum non-exempt header-value count before the WAF blocks it  |
 | -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`  | `128`         | Max in-flight public HTTP requests per active tunnel           |
 | -                         | `EXPOSE_PUBLIC_RATE_LIMIT_RPS`   | `0`           | Optional public request rate limit per hostname+client IP      |
 | -                         | `EXPOSE_PUBLIC_RATE_LIMIT_BURST` | `0`           | Burst for the public request limit (`0` auto-derives from RPS) |
+| -                         | `EXPOSE_ACME_ISSUE_RATE_PER_HOUR` | `10`         | Max new ACME issuances per hour (`0` disables this limiter)    |
+| -                         | `EXPOSE_TRUSTED_PROXY_CIDRS`     | -             | Comma-separated proxy CIDRs trusted when resolving client IP   |
 | -                         | `EXPOSE_ROUTE_CACHE_TTL`         | `1m`          | Positive hostname route cache TTL before DB revalidation       |
 | -                         | `EXPOSE_WAF_COUNTER_RETENTION`   | `1h`          | Retention window for in-memory per-host WAF counters           |
 | -                         | `EXPOSE_AUTOUPDATE`              | `false`       | Enable automatic self-update (`true`/`1`/`yes`)                |
@@ -74,8 +81,12 @@ EXPOSE_LOG_LEVEL=info
 EXPOSE_WAF_ENABLE=true
 EXPOSE_WAF_AUDIT_ONLY=false
 EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
+EXPOSE_WAF_MAX_URI_LENGTH=8192
+EXPOSE_WAF_MAX_HEADER_COUNT=64
 EXPOSE_PUBLIC_RATE_LIMIT_RPS=0
 EXPOSE_PUBLIC_RATE_LIMIT_BURST=0
+EXPOSE_ACME_ISSUE_RATE_PER_HOUR=10
+EXPOSE_TRUSTED_PROXY_CIDRS=
 EXPOSE_AUTOUPDATE=true
 ```
 
@@ -119,24 +130,24 @@ export EXPOSE_LISTEN_HTTP_CHALLENGE=:80
 | Mode       | How it works                            | Best for                             |
 | ---------- | --------------------------------------- | ------------------------------------ |
 | `auto`     | Static wildcard cert + ACME fallback    | General use                          |
-| `dynamic`  | Per-host ACME only (ignores cert files) | Simple setups, low tunnel churn      |
+| `dynamic`  | Per-host ACME HTTP-01 only (ignores cert files) | Simple setups, low tunnel churn |
 | `wildcard` | Static wildcard cert, no ACME           | Many short-lived tunnels, air-gapped |
 
 See [TLS Modes](tls-modes.md) for the full comparison and decision guide.
 
 ## API Key Pepper
 
-API keys are hashed with SHA-256 plus a pepper for additional security. See [API Keys - Pepper](api-keys.md#pepper) for details on pepper derivation, persistence, and migration.
+API keys are hashed with SHA-256 plus a pepper for additional security. If no pepper is configured, the server generates a random value on first use and persists it in SQLite. A configured pepper must match the persisted value. See [API Keys - Pepper](api-keys.md#pepper) for details.
 
-**Production recommendation**: always set `EXPOSE_API_KEY_PEPPER` explicitly.
+Back up the SQLite database to retain the generated pepper. If you configure `EXPOSE_API_KEY_PEPPER` explicitly, keep it stable and synchronized with that database.
 
 ## Access Cookie Secret
 
 Protected routes in `form` mode issue a signed edge-session cookie after a successful login. That cookie is now signed with `EXPOSE_ACCESS_COOKIE_SECRET`, not with the stored password hash.
 
-- **Production recommendation**: set `EXPOSE_ACCESS_COOKIE_SECRET` explicitly.
-- If omitted, the server derives a machine-bound fallback when possible.
-- If neither an explicit secret nor a stable machine ID is available, the server generates an ephemeral secret at startup and all form-login sessions are invalidated on restart.
+- If omitted, the server generates a cryptographically random secret on first use, persists it in SQLite, and reuses it after restarts.
+- Set `EXPOSE_ACCESS_COOKIE_SECRET` when you want to manage the secret explicitly instead.
+- The generated secret is ephemeral only if the database cannot be read or written; in that failure case, form-login sessions are invalidated on restart.
 
 ## Health Check
 
@@ -156,7 +167,9 @@ This exposes the standard profiles under `/debug/pprof/`. For example:
 go tool pprof http://127.0.0.1:6060/debug/pprof/heap
 ```
 
-Bind this only to trusted interfaces. The profiles can expose sensitive runtime information.
+The server also publishes Prometheus text metrics at `/debug/metrics` on the
+same listener. Neither endpoint has application authentication, so keep this
+listener on loopback or restrict it at the network boundary.
 
 ## Rate Limiting
 
@@ -176,7 +189,7 @@ That limiter is applied per `hostname + client IP` before the request reaches tu
 
 ## Active Tunnel Limit
 
-Each API key has a configurable tunnel limit that controls how many active tunnels it can have simultaneously. The default is **unlimited** (`-1`).
+Each API key has a configurable tunnel limit that controls how many active tunnels it can have simultaneously. New keys default to **50** active tunnels.
 
 ### Setting during key creation
 
@@ -201,7 +214,6 @@ The server runs a background janitor that automatically:
 - Expires stale WebSocket sessions
 - Cleans up temporary tunnel domains after a retention period
 - Purges old entries from the ACME certificate cache
-- Persists the effective API key pepper in the database (`server_settings` table)
 
 ## See Also
 

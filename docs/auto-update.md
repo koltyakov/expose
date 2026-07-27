@@ -33,7 +33,7 @@ export EXPOSE_AUTOUPDATE=true
 
 Accepted values: `true`, `1`, `yes` (case-insensitive).
 
-This works for both `expose server` and `expose http` / `expose up`.
+This works for `expose server`, `expose http`, and `expose static`. It is not supported by `expose up`.
 
 ### In a systemd service
 
@@ -42,7 +42,7 @@ This works for both `expose server` and `expose http` / `expose up`.
 Environment=EXPOSE_AUTOUPDATE=true
 ```
 
-> **Note on file capabilities**: If you use `setcap` for binding to privileged ports, those capabilities are lost when the binary is replaced. Use systemd `AmbientCapabilities=CAP_NET_BIND_SERVICE` instead - it survives binary replacement.
+> **Note on file capabilities**: On Linux, the updater preserves file capabilities when `getcap` and `setcap` are available and permitted. Otherwise, capabilities such as `cap_net_bind_service` may need to be reapplied after an update. Systemd `AmbientCapabilities=CAP_NET_BIND_SERVICE` avoids tying the capability to the replaced file.
 
 ## Manual Update
 
@@ -72,7 +72,7 @@ For auto-update to work, the binary must be in a directory where the running use
 
 | Placement            | Auto-update works? | Notes                             |
 | -------------------- | ------------------ | --------------------------------- |
-| `/opt/expose/bin/`   | Yes                | Recommended for systemd services  |
+| `/opt/expose/.local/bin/` | Yes           | Recommended for systemd services  |
 | `./bin/expose`       | Yes                | Local development                 |
 | `/usr/local/bin/`    | Only as root       | Not recommended with auto-update  |
 

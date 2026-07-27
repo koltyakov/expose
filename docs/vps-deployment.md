@@ -26,23 +26,30 @@ Any Linux VPS with a public IPv4 works. Minimum specs:
 
 ## 2 - Install expose
 
-SSH into your VPS and build from source:
+SSH into your VPS, create the service account and writable installation directories, then run the release installer as that account:
 
 ```bash
-# Install Go (if not present)
-sudo apt update && sudo apt install -y golang-go git
-
-# Clone and build
-git clone https://github.com/koltyakov/expose.git
-cd expose
-sudo mkdir -p /opt/expose/bin
-go build -trimpath -ldflags "-s -w" -o /opt/expose/bin/expose ./cmd/expose
+sudo useradd -r -d /opt/expose -s /usr/sbin/nologin expose
+sudo install -d -o expose -g expose /opt/expose /opt/expose/.local/bin /opt/expose/cert
+sudo -u expose env HOME=/opt/expose sh -c \
+  'curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.sh | sh'
 ```
 
-Or download a prebuilt binary from the [releases page](https://github.com/koltyakov/expose/releases) into `/opt/expose/bin/`.
+This installs the prebuilt release to `/opt/expose/.local/bin/expose`. To build from source instead, install **Go 1.26 or newer** and Git, then build entirely through paths writable by the service account:
+
+```bash
+sudo -u expose git clone https://github.com/koltyakov/expose.git /opt/expose/src
+sudo -u expose env HOME=/opt/expose go -C /opt/expose/src build \
+  -trimpath -ldflags "-s -w" -o /opt/expose/.local/bin/expose ./cmd/expose
+```
+
+Source builds identify themselves as development versions, so automatic update
+checks are disabled for them. Update a source build manually, or use the
+prebuilt release installer above when enabling `EXPOSE_AUTOUPDATE` in the
+service unit.
 
 > **Important**: The binary must live inside a directory the `expose` service
-> user can write to (e.g. `/opt/expose/bin/`). Auto-update needs to create a
+> user can write to (e.g. `/opt/expose/.local/bin/`). Auto-update needs to create a
 > temp file, remove the old binary, and write the new one - all of which
 > require directory write permission. Do **not** place it in `/usr/local/bin/`
 > unless you run the service as root.
@@ -51,13 +58,13 @@ If you are **not** using auto-update, you can optionally set file capabilities
 for binding to privileged ports:
 
 ```bash
-sudo setcap 'cap_net_bind_service=+ep' /opt/expose/bin/expose
+sudo setcap 'cap_net_bind_service=+ep' /opt/expose/.local/bin/expose
 ```
 
-> **Note**: File capabilities set via `setcap` are lost when the binary is
-> replaced (e.g. by `EXPOSE_AUTOUPDATE`). If you use auto-update, rely on
-> systemd `AmbientCapabilities` instead (see the service unit below) - they
-> survive binary replacement and process restarts.
+> **Note**: On Linux, auto-update preserves file capabilities when `getcap` and
+> `setcap` are available and permitted. Otherwise, they may need to be
+> reapplied after replacement. The systemd `AmbientCapabilities` setting below
+> avoids tying the capability to the binary file.
 
 ## 3 - Configure DNS
 
@@ -96,7 +103,7 @@ Type=simple
 User=expose
 Group=expose
 WorkingDirectory=/opt/expose
-ExecStart=/opt/expose/bin/expose server
+ExecStart=/opt/expose/.local/bin/expose server
 Restart=always
 RestartSec=5
 
@@ -112,7 +119,7 @@ Environment=EXPOSE_LISTEN_HTTPS=:443
 Environment=EXPOSE_LISTEN_HTTP_CHALLENGE=:80
 Environment=EXPOSE_DB_PATH=/opt/expose/expose.db
 Environment=EXPOSE_CERT_CACHE_DIR=/opt/expose/cert
-Environment=EXPOSE_API_KEY_PEPPER=<your-secret-pepper>
+# Supported for binaries installed from a release, not development builds.
 Environment=EXPOSE_AUTOUPDATE=true
 
 [Install]
@@ -120,15 +127,7 @@ WantedBy=multi-user.target
 EOF
 ```
 
-## 6 - Create user and data directory
-
-```bash
-sudo useradd -r -s /usr/sbin/nologin expose
-sudo mkdir -p /opt/expose/bin /opt/expose/cert
-sudo chown -R expose:expose /opt/expose
-```
-
-## 7 - Start the service
+## 6 - Start the service
 
 ```bash
 sudo systemctl daemon-reload
@@ -140,12 +139,13 @@ sudo systemctl status expose
 sudo journalctl -u expose -f
 ```
 
-## 8 - Create API key and connect
+## 7 - Create API key and connect
 
 On the VPS:
 
 ```bash
-sudo -u expose /opt/expose/bin/expose apikey create --name default
+sudo -u expose /opt/expose/.local/bin/expose apikey create \
+  --db /opt/expose/expose.db --name default
 ```
 
 On your local machine:
@@ -164,36 +164,18 @@ expose http 3000
 | **AWS Lightsail** | Networking tab → Firewall | Simplest AWS option; add 80/tcp, 443/tcp, 443/udp |
 | **Linode/Akamai** | Cloud Firewall + `ufw`    | Select closest region to your clients             |
 
-## API Key Pepper & Server Migration
+## Server Secrets & Migration
 
-> **Important**: If `EXPOSE_API_KEY_PEPPER` is not set explicitly, the server derives a pepper from the machine's `/etc/machine-id` using `sha256("expose-pepper:" + machine-id)`. This pepper is persisted in the SQLite database on first run.
+When `EXPOSE_API_KEY_PEPPER` and `EXPOSE_ACCESS_COOKIE_SECRET` are unset, the server generates cryptographically random values on first use and persists them in SQLite's `server_settings` table. The access-cookie secret falls back to an ephemeral value only if SQLite cannot be read or written.
 
-This means:
-
-- **Moving the DB to a different server** (with a different `/etc/machine-id`) without setting `EXPOSE_API_KEY_PEPPER` will cause a pepper mismatch - the new server derives a different pepper, but the DB already has the old one persisted, and the server will reject the mismatch.
-- **Reprovisioning a VPS** (new machine-id) with the same DB has the same problem.
-
-To avoid this, **always set `EXPOSE_API_KEY_PEPPER` explicitly** in production:
-
-```bash
-# Generate a strong random pepper (do this once, save it securely)
-openssl rand -hex 32
-```
-
-Then add it to your systemd service or environment:
-
-```bash
-Environment=EXPOSE_API_KEY_PEPPER=<output-from-above>
-```
-
-With an explicit pepper, the DB is fully portable between servers.
+The persisted values travel with `/opt/expose/expose.db`, so restoring that database on another server preserves API-key validation and form-login sessions. If you explicitly configure `EXPOSE_API_KEY_PEPPER`, it must exactly match the value already persisted in the database or startup fails.
 
 ## Backup
 
-The only state file is the SQLite database. Back it up periodically:
+The SQLite database contains API keys and persisted server secrets. Back it up periodically:
 
 ```bash
 sqlite3 /opt/expose/expose.db ".backup /opt/expose/backup.db"
 ```
 
-When restoring on a different machine, ensure `EXPOSE_API_KEY_PEPPER` is set to the same value used when the keys were created.
+When restoring, copy the database and ensure any explicitly configured `EXPOSE_API_KEY_PEPPER` matches its persisted value.

@@ -18,18 +18,29 @@ flowchart LR
 expose apikey create --name my-laptop
 ```
 
+API-key administration uses `EXPOSE_DB_PATH` from the process environment or
+`./expose.db` by default. These commands do not load the server's `.env` file;
+when running outside its working directory, pass the database explicitly:
+
+```bash
+expose apikey create --db /opt/expose/expose.db --name my-laptop
+```
+
+`create` also accepts `--api-key-pepper` when the server uses an explicitly
+managed pepper. It must match the value already persisted in that database.
+
 Output:
 
 ```
 api_key: <RANDOM_KEY>
 id:      <KEY_ID>
 name:    my-laptop
-tunnel_limit: unlimited
+tunnel_limit: 50
 ```
 
-> **Copy the `api_key` immediately** - it is shown only once. The server stores a salted hash, not the raw key.
+> **Copy the `api_key` immediately** - it is shown only once. The server stores a peppered hash, not the raw key.
 
-To limit the number of concurrent tunnels a key can open:
+New keys default to at most **50 concurrent tunnels**. To choose a different limit:
 
 ```bash
 expose apikey create --name ci-runner --tunnel-limit 3
@@ -82,13 +93,12 @@ File permissions are set to `0600` (owner-only read/write).
 
 The server hashes API keys with a pepper for additional security:
 
-- Set `EXPOSE_API_KEY_PEPPER` env var to use a specific pepper
-- If unset, the server **derives a pepper from `/etc/machine-id`** (Linux) via `sha256("expose-pepper:" + machine-id)`
-- If neither env var nor machine-id is available, the server initializes with an empty pepper
-- The effective pepper is **persisted in the SQLite database** (`server_settings` table) on first run
-- Changing the pepper **invalidates all existing keys**
+- If the database has no pepper and `EXPOSE_API_KEY_PEPPER` is unset, the server generates a cryptographically random pepper on first use
+- The effective pepper is persisted in SQLite's `server_settings` table and reused on later starts
+- Set `EXPOSE_API_KEY_PEPPER` to provide a specific pepper; on first use it is persisted in the same way
+- Once a pepper is persisted, any configured `EXPOSE_API_KEY_PEPPER` must match it exactly or the server refuses to start
 
-> **Warning - server migration**: Because the auto-derived pepper is tied to `/etc/machine-id`, moving the database file to a different machine will cause a pepper mismatch error on startup. The new machine derives a different pepper, but the DB already stores the original one. **Always set `EXPOSE_API_KEY_PEPPER` explicitly** if you plan to migrate, back up, or run in containers.
+The pepper travels with the SQLite database, so moving or restoring the database does not require machine-specific migration steps. If you configure the pepper externally, keep that configuration synchronized with the database backup.
 
 ```bash
 # Generate a pepper once, store it securely
@@ -103,4 +113,5 @@ export EXPOSE_API_KEY_PEPPER=<generated-value>
 - Create **one key per client device** for easy revocation
 - Use descriptive `--name` values (e.g. `andrews-macbook`, `ci-runner`)
 - Revoke keys immediately when a device is lost or decommissioned
-- **Always set `EXPOSE_API_KEY_PEPPER` explicitly** in production - the auto-derived pepper is tied to `/etc/machine-id` and will differ across machines, containers, or VPS reprovisions
+- Back up the SQLite database, which contains the persisted pepper needed to verify existing keys
+- If you set `EXPOSE_API_KEY_PEPPER` explicitly, keep it stable and ensure it matches the persisted value

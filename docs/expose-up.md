@@ -34,8 +34,8 @@ expose up init
 version: 1
 
 protect:
+  protect: true
   user: admin
-  password: EXPOSE_PASSWORD
 
 tunnels:
   - name: frontend
@@ -51,7 +51,7 @@ tunnels:
     strip_prefix: true
 ```
 
-This publishes:
+With no `password` field, this mapping reads the password from `EXPOSE_PASSWORD`. It publishes:
 - `https://myapp.<base-domain>/` -> `http://127.0.0.1:3000/`
 - `https://myapp.<base-domain>/api/*` -> `http://127.0.0.1:8080/*` (prefix stripped)
 
@@ -88,12 +88,13 @@ Top-level fields:
 Applies the same built-in access form and edge session cookie to every tunnel started by this config.
 
 - `user` (optional, default `admin`)
+- `protect` (optional, default `false`) - enable protection when no literal password is stored in YAML
 - `password` (optional) - literal password or env var name
 
 Notes:
 - If `password` is uppercase (for example `EXPOSE_PASSWORD`) and an environment variable with that name exists, `expose up` uses the env var value.
 - If no environment variable exists with that name, the `password` value is used as the literal password.
-- If protection is enabled and no password is provided in YAML, `expose up` falls back to `EXPOSE_PASSWORD`.
+- To supply the password only through `EXPOSE_PASSWORD`, set `protect: true` and omit `password`; `expose up` then uses `EXPOSE_PASSWORD`.
 - Legacy `password_env` is still accepted for older configs, but `password` is the canonical field.
 - In interactive terminals, `expose up` prompts for a password if protection is enabled and none is available.
 
@@ -138,6 +139,10 @@ Credential sources:
 3. Saved credentials from `expose login` (`~/.expose/settings.json`)
 
 This means you can keep `expose.yml` non-secret and rely on `expose login` or `.env`.
+
+## Aggregate Dashboard
+
+In an interactive terminal, `expose up` renders one dashboard for all managed subdomains and routes. Session state, server metadata, forwarding targets, visitors, open WebSockets, WAF blocks, request history, and latency percentiles are combined in one view. The Traffic line aggregates inbound and outbound totals and current 1-second rates across every managed route.
 
 ## Common Patterns
 
@@ -207,4 +212,3 @@ tunnels:
 - `expose up init` requires an interactive terminal.
 - `expose up` is project-oriented; `expose http` is still the fastest path for one-off tunnels.
 - Tunnel protection here is per-config (shared across all routes), not per-route.
-- In interactive terminals, the `expose up` dashboard also shows aggregate proxied traffic on one line, with inbound and outbound totals plus current 1-second rates across all managed routes.

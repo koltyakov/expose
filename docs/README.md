@@ -20,6 +20,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 - [Static Sites](static-sites.md) - Expose folders, SPAs, and Markdown docs
 - [Client Dashboard](client-dashboard.md) - Real-time terminal UI, metrics, and keyboard shortcuts
 - [Web Application Firewall](waf.md) - Built-in WAF rules, configuration, and dashboard
+- [Security Model](security.md) - Authentication, encryption, and attack mitigation
 - [Auto-Update](auto-update.md) - Automatic and manual binary updates
 
 ## DNS Setup
@@ -38,6 +39,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 
 - [Local Testing](local-testing.md) - Single-machine E2E using `127.0.0.1.sslip.io`
 - [Performance Testing](performance-testing.md) - Focused benchmarks for server, client, store, and protocol hot paths
+- [Benchmark Report](benchmark.md) - Generated transport benchmark results
 
 ## Reference
 

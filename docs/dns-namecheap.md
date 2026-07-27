@@ -37,7 +37,8 @@ Configure Namecheap DNS so `example.com` and `*.example.com` point to your expos
 flowchart LR
     A["*.example.com"] -- "A record" --> IP["203.0.113.10"]
     B["example.com"] -- "A record" --> IP
-    IP --> Expose["expose server<br/>:10443"]
+    IP --> Edge["Public edge<br/>TCP/UDP :443"]
+    Edge -- "map/forward to :10443" --> Expose["expose server"]
 ```
 
 ## Verify

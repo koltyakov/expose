@@ -137,6 +137,9 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	if err := ensureParentDir(path); err != nil {
 		return nil, err
 	}
+	if err := secureDatabaseFile(path); err != nil {
+		return nil, fmt.Errorf("secure sqlite database: %w", err)
+	}
 	// Append per-connection PRAGMAs to the DSN so every pooled connection gets them.
 	sep := "?"
 	if strings.Contains(path, "?") {

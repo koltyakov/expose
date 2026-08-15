@@ -121,7 +121,7 @@ func TestVerifyClientCredentialTrust(t *testing.T) {
 			},
 		},
 		{
-			name:      "dotenv server made explicit by up config file warns only",
+			name:      "up config server with saved key fails non-interactively",
 			serverURL: "https://other.example.com",
 			src: clientCredSources{
 				settingsLoaded:   true,
@@ -129,6 +129,15 @@ func TestVerifyClientCredentialTrust(t *testing.T) {
 				serverDotEnv:     true,
 				serverConfigFile: true,
 				apiKeySettings:   true,
+			},
+			wantErr: true,
+		},
+		{
+			name:      "up config server and key are accepted together",
+			serverURL: "https://other.example.com",
+			src: clientCredSources{
+				serverConfigFile: true,
+				apiKeyConfigFile: true,
 			},
 		},
 	}

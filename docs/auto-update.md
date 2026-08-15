@@ -33,6 +33,17 @@ export EXPOSE_AUTOUPDATE=true
 
 Accepted values: `true`, `1`, `yes` (case-insensitive).
 
+For a fail-closed supply-chain policy, install `cosign` and also set:
+
+```bash
+export EXPOSE_REQUIRE_SIGNATURE=true
+```
+
+With this setting, updates are rejected unless the release checksum manifest
+has a valid Sigstore bundle issued to this repository's tagged release
+workflow. Startup fails rather than falling back to same-origin checksums when
+`cosign` or the signature bundle is unavailable.
+
 This works for `expose server`, `expose http`, and `expose static`. It is not supported by `expose up`.
 
 ### In a systemd service

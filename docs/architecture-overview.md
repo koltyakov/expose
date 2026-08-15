@@ -100,13 +100,13 @@ The server injects standard reverse-proxy headers before forwarding requests thr
 
 | Header              | Value                                                        |
 | ------------------- | ------------------------------------------------------------ |
-| `X-Forwarded-For`   | Existing chain, with the immediate public peer IP appended    |
+| `X-Forwarded-For`   | Client IP resolved using the configured trusted-proxy policy  |
 | `X-Forwarded-Proto` | Public request protocol (`http` or `https`)                   |
 | `X-Forwarded-Host`  | Public request host, including an explicit port when present  |
 | `X-Forwarded-Port`  | Explicit public port, or the protocol default (`80`/`443`)    |
 | `Host`              | Rewritten to the public request host                          |
 
-Pre-existing `Host`, `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-Port` values are replaced. Existing `X-Forwarded-For` values are normalized and preserved before the immediate peer IP is appended.
+Pre-existing `Host`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`, and `X-Forwarded-For` values are replaced. This prevents direct callers from spoofing proxy-derived identity headers.
 
 ## Security
 

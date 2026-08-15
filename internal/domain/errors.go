@@ -25,6 +25,10 @@ var (
 	// maximum number of concurrent tunnels.
 	ErrTunnelLimitReached = errors.New("active tunnel limit reached")
 
+	// ErrAPIKeyRevoked prevents issued connect tokens from establishing or
+	// retaining tunnel sessions after their API key has been revoked.
+	ErrAPIKeyRevoked = errors.New("api key revoked")
+
 	// ErrTunnelOffline means the tunnel exists but no client is connected.
 	ErrTunnelOffline = errors.New("tunnel offline")
 )

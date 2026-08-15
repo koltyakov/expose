@@ -212,7 +212,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	stripPublicAccessCookie(requestHeaders)
 	stripPublicAccessCredentials(requestHeaders, route)
 	injectForwardedProxyHeaders(requestHeaders, r)
-	injectForwardedFor(requestHeaders, r.RemoteAddr)
+	injectForwardedFor(requestHeaders, s.clientIP(r))
 
 	pending := newPendingRequest()
 	sess.pendingStore(reqID, pending)

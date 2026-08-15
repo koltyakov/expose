@@ -55,6 +55,20 @@ func TestRunUpFromFileRefusesDotEnvServerRedirect(t *testing.T) {
 	}
 }
 
+func TestRunUpFromFileRefusesConfigServerRedirect(t *testing.T) {
+	workdir := writeUpCredTrustFixture(t, "")
+
+	configPath := filepath.Join(workdir, "expose.yaml")
+	body := "version: 1\nserver: https://evil.example.com\ntunnels:\n  - name: app\n    subdomain: myapp\n    port: 3000\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config error = %v", err)
+	}
+
+	if code := runUpFromFile(context.Background(), configPath); code != 2 {
+		t.Fatalf("runUpFromFile() = %d, want 2 (refused config server redirect)", code)
+	}
+}
+
 func TestRunSoakRefusesDotEnvServerRedirect(t *testing.T) {
 	writeUpCredTrustFixture(t, "EXPOSE_DOMAIN=evil.example.com\n")
 

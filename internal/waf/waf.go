@@ -6,6 +6,9 @@ package waf
 import (
 	"log/slog"
 	"net/http"
+	"strings"
+
+	"github.com/koltyakov/expose/internal/config"
 )
 
 // BlockEvent carries context about a single WAF-blocked request so that
@@ -14,7 +17,7 @@ type BlockEvent struct {
 	Host       string // normalised hostname (port stripped, lowercased)
 	Rule       string // name of the WAF rule that matched
 	Method     string // HTTP method (GET, POST, …)
-	RequestURI string // full request URI including query string
+	RequestURI string // request URI with query values redacted
 	RemoteAddr string // client IP (from X-Forwarded-For or RemoteAddr)
 	UserAgent  string // User-Agent header value
 }
@@ -114,10 +117,11 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 					logMsg = "waf matched request (audit)"
 				}
 
+				requestURI := redactedRequestURI(r)
 				fw.log.Log(r.Context(), logLevel, logMsg,
 					"rule", ruleName,
 					"method", r.Method,
-					"uri", r.RequestURI,
+					"uri", requestURI,
 					"remote", clientIP,
 					"ua", userAgent,
 				)
@@ -127,7 +131,7 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 						Host:       host,
 						Rule:       ruleName,
 						Method:     r.Method,
-						RequestURI: r.RequestURI,
+						RequestURI: requestURI,
 						RemoteAddr: clientIP,
 						UserAgent:  userAgent,
 					})
@@ -150,4 +154,18 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func redactedRequestURI(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	path := r.URL.EscapedPath()
+	if strings.TrimSpace(path) == "" {
+		path = "/"
+	}
+	if r.URL.RawQuery != "" {
+		path += "?" + config.RedactQueryValues(r.URL.RawQuery)
+	}
+	return path
 }

@@ -21,6 +21,7 @@ type stubServerStore struct {
 	closeTemporaryTunnelFn   func(context.Context, string) (string, bool, error)
 	setTunnelsDisconnectedFn func(context.Context, []string) error
 	findRouteByHostFn        func(context.Context, string) (domain.TunnelRoute, error)
+	revokedTunnelIDsFn       func(context.Context) ([]string, error)
 }
 
 func (s *stubServerStore) ResetConnectedTunnels(context.Context) (int64, error) {
@@ -69,6 +70,13 @@ func (s *stubServerStore) SetTunnelConnected(context.Context, string) error {
 
 func (s *stubServerStore) TrySetTunnelConnected(context.Context, string) error {
 	return nil
+}
+
+func (s *stubServerStore) RevokedConnectedTunnelIDs(ctx context.Context) ([]string, error) {
+	if s.revokedTunnelIDsFn != nil {
+		return s.revokedTunnelIDsFn(ctx)
+	}
+	return nil, nil
 }
 
 func (s *stubServerStore) ResumeTunnelSession(context.Context, string, string, string) (domain.Domain, domain.Tunnel, error) {
@@ -218,6 +226,34 @@ func TestExpireStaleSessionsUsesCallerContext(t *testing.T) {
 	transport.mu.Unlock()
 	if closeCount != 1 {
 		t.Fatalf("expected stale session transport to close once, got %d", closeCount)
+	}
+}
+
+func TestDisconnectRevokedSessionsClosesCurrentTransport(t *testing.T) {
+	transport := &testTransport{}
+	sess := &session{tunnelID: "tun_revoked", transport: transport}
+	store := &stubServerStore{
+		revokedTunnelIDsFn: func(context.Context) ([]string, error) {
+			return []string{"tun_revoked"}, nil
+		},
+	}
+	srv := &Server{
+		cfg:   config.ServerConfig{RequestTimeout: time.Second},
+		store: store,
+		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		hub:   &hub{sessions: map[string]*session{"tun_revoked": sess}},
+	}
+
+	srv.disconnectRevokedSessions(context.Background())
+
+	transport.mu.Lock()
+	closeCount := transport.closeCount
+	transport.mu.Unlock()
+	if closeCount != 1 {
+		t.Fatalf("revoked session transport close count = %d, want 1", closeCount)
+	}
+	if !sess.closing.Load() {
+		t.Fatal("revoked session was not marked closing")
 	}
 }
 

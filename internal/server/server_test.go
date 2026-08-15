@@ -1176,8 +1176,8 @@ func TestInjectForwardedFor(t *testing.T) {
 		"X-Forwarded-For": {"1.2.3.4"},
 	}
 	injectForwardedFor(headers, "5.6.7.8:1234")
-	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4, 5.6.7.8" {
-		t.Fatalf("expected appended X-Forwarded-For, got %v", got)
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "5.6.7.8" {
+		t.Fatalf("expected spoofed X-Forwarded-For to be replaced, got %v", got)
 	}
 }
 
@@ -1189,8 +1189,8 @@ func TestInjectForwardedForCanonicalizesHeaderKey(t *testing.T) {
 	if _, ok := headers["x-forwarded-for"]; ok {
 		t.Fatal("expected non-canonical X-Forwarded-For key to be removed")
 	}
-	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "9.9.9.9, 8.8.8.8" {
-		t.Fatalf("expected canonicalized appended header, got %v", got)
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "8.8.8.8" {
+		t.Fatalf("expected canonicalized replacement header, got %v", got)
 	}
 }
 
@@ -1230,18 +1230,18 @@ func TestInjectForwardedProxyHeadersOverwritesSpoofedValues(t *testing.T) {
 
 	injectForwardedFor(headers, "5.6.7.8:1234")
 
-	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4, 5.6.7.8" {
-		t.Fatalf("expected incoming chain plus immediate peer, got %v", got)
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "5.6.7.8" {
+		t.Fatalf("expected incoming chain to be replaced by resolved peer, got %v", got)
 	}
 }
 
-func TestInjectForwardedForPreservesMultipleHeaderValues(t *testing.T) {
+func TestInjectForwardedForDropsMultipleUntrustedHeaderValues(t *testing.T) {
 	headers := map[string][]string{
 		"X-Forwarded-For": {"1.2.3.4", "5.6.7.8"},
 	}
 	injectForwardedFor(headers, "9.10.11.12:443")
-	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "1.2.3.4, 5.6.7.8, 9.10.11.12" {
-		t.Fatalf("expected all X-Forwarded-For values to be preserved, got %v", got)
+	if got := headers["X-Forwarded-For"]; len(got) != 1 || got[0] != "9.10.11.12" {
+		t.Fatalf("expected untrusted X-Forwarded-For values to be dropped, got %v", got)
 	}
 }
 

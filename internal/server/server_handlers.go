@@ -224,7 +224,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 	stripPublicAccessCookie(headers)
 	stripPublicAccessCredentials(headers, route)
 	injectForwardedProxyHeaders(headers, r)
-	injectForwardedFor(headers, r.RemoteAddr)
+	injectForwardedFor(headers, s.clientIP(r))
 	openMsg := tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpen,
 		WSOpen: &tunnelproto.WSOpen{

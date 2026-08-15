@@ -18,7 +18,8 @@ HTTP/3 tunnel. When a request matches a rule it is immediately rejected with
 The blocked request never reaches your local service.
 
 Blocked requests are logged server-side with the matched rule name, method,
-URI, remote IP, and User-Agent.
+URI, remote IP, and User-Agent. Query parameter names are retained, but their
+values are redacted.
 
 ## Enabling / Disabling
 

@@ -85,6 +85,16 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("refused tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
 			return
 		}
+		if errors.Is(err, domain.ErrAPIKeyRevoked) {
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, domain.ErrAPIKeyRevoked.Error()),
+				time.Now().Add(5*time.Second),
+			)
+			_ = conn.Close()
+			s.log.Warn("refused tunnel connect: api key revoked", "tunnel_id", tunnelID)
+			return
+		}
 		_ = conn.Close()
 		s.log.Error("failed to mark tunnel connected", "tunnel_id", tunnelID, "err", err)
 		return
@@ -149,6 +159,11 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, domain.ErrTunnelLimitReached) {
 			http.Error(w, domain.ErrTunnelLimitReached.Error(), http.StatusTooManyRequests)
 			s.log.Warn("refused http3 tunnel connect: active tunnel limit reached", "tunnel_id", tunnelID)
+			return
+		}
+		if errors.Is(err, domain.ErrAPIKeyRevoked) {
+			http.Error(w, domain.ErrAPIKeyRevoked.Error(), http.StatusUnauthorized)
+			s.log.Warn("refused http3 tunnel connect: api key revoked", "tunnel_id", tunnelID)
 			return
 		}
 		s.log.Error("failed to mark tunnel connected", "tunnel_id", tunnelID, "err", err)

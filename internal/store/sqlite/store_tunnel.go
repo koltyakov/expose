@@ -289,8 +289,16 @@ func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) erro
 
 		var keyID string
 		var state string
-		if err = tx.QueryRowContext(ctx, `SELECT api_key_id, state FROM tunnels WHERE id = ?`, tunnelID).Scan(&keyID, &state); err != nil {
+		var revokedAt sql.NullTime
+		if err = tx.QueryRowContext(ctx, `
+SELECT t.api_key_id, t.state, k.revoked_at
+FROM tunnels t
+JOIN api_keys k ON k.id = t.api_key_id
+WHERE t.id = ?`, tunnelID).Scan(&keyID, &state, &revokedAt); err != nil {
 			return err
+		}
+		if revokedAt.Valid {
+			return domain.ErrAPIKeyRevoked
 		}
 		if state == domain.TunnelStateConnected {
 			return tx.Commit()

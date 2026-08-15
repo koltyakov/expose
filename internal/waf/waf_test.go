@@ -470,6 +470,25 @@ func TestAuditOnlyMode(t *testing.T) {
 	}
 }
 
+func TestWAFRedactsQueryValuesInBlockEvent(t *testing.T) {
+	var requestURI string
+	handler := NewMiddleware(Config{
+		Enabled: true,
+		OnBlock: func(evt BlockEvent) {
+			requestURI = evt.RequestURI
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))(dummyHandler)
+	r := httptest.NewRequest(http.MethodGet, "/search?token=top-secret&q=UNION+SELECT", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), r)
+
+	if strings.Contains(requestURI, "top-secret") || strings.Contains(requestURI, "UNION") {
+		t.Fatalf("WAF block event leaked query values: %q", requestURI)
+	}
+	if requestURI != "/search?token=REDACTED&q=REDACTED" {
+		t.Fatalf("WAF block event URI = %q", requestURI)
+	}
+}
+
 func TestWAFUsesConfiguredClientAddressResolver(t *testing.T) {
 	var remote string
 	handler := NewMiddleware(Config{

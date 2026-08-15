@@ -70,7 +70,9 @@ Shows all keys with their ID, name, creation date, and revocation status.
 expose apikey revoke --id=<KEY_ID>
 ```
 
-Revoked keys are rejected immediately. Active tunnels using a revoked key will fail on next reconnect.
+Revoked keys and unused connect tokens issued to them are rejected immediately.
+The running server checks connected sessions on each heartbeat sweep (30
+seconds by default) and terminates tunnels owned by revoked keys.
 
 ## Client login
 

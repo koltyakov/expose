@@ -78,6 +78,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-heartbeatTicker.C:
+			s.disconnectRevokedSessions(ctx)
 			s.expireStaleSessions(ctx)
 		case <-cleanupTicker.C:
 			s.cleanupStaleTemporaryResources(ctx)
@@ -94,6 +95,32 @@ func (s *Server) runJanitor(ctx context.Context) {
 			if s.publicLimiter != nil {
 				s.publicLimiter.cleanup()
 			}
+		}
+	}
+}
+
+func (s *Server) disconnectRevokedSessions(ctx context.Context) {
+	lookupCtx, cancel := context.WithTimeout(contextOrBackground(ctx), durationOr(s.cfg.RequestTimeout, 30*time.Second))
+	ids, err := s.store.RevokedConnectedTunnelIDs(lookupCtx)
+	cancel()
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			s.log.Warn("failed to check revoked tunnel sessions", "err", err)
+		}
+		return
+	}
+	for _, tunnelID := range ids {
+		s.hub.mu.RLock()
+		sess := s.hub.sessions[tunnelID]
+		s.hub.mu.RUnlock()
+		if sess == nil || !sess.closing.CompareAndSwap(false, true) {
+			continue
+		}
+		s.log.Warn("disconnecting tunnel for revoked api key", "tunnel_id", tunnelID)
+		if sess.transport != nil {
+			_ = sess.transport.Close()
+		} else if sess.conn != nil {
+			_ = sess.conn.Close()
 		}
 	}
 }

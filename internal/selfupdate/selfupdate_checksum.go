@@ -41,6 +41,9 @@ func verifyAssetChecksum(ctx context.Context, rel *Release, assetName string, da
 	if int64(len(manifest)) > maxChecksumBytes {
 		return fmt.Errorf("%s exceeds %d bytes", checksumAssetName, maxChecksumBytes)
 	}
+	if err := verifyReleaseSignature(ctx, rel, manifest); err != nil {
+		return fmt.Errorf("verify release signature: %w", err)
+	}
 
 	expected, err := checksumForAsset(manifest, assetName)
 	if err != nil {

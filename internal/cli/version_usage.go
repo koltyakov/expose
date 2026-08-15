@@ -67,6 +67,7 @@ Environment Variables:
   EXPOSE_ROUTE_CACHE_TTL          Positive route cache TTL on the server (default: 1m)
   EXPOSE_WAF_COUNTER_RETENTION    Retention window for in-memory WAF counters (default: 1h)
   EXPOSE_AUTOUPDATE       Enable automatic self-update (true|1|yes)
+  EXPOSE_REQUIRE_SIGNATURE  Require cosign verification for self-updates (true|1|yes)
 
 For detailed documentation, see: https://github.com/koltyakov/expose`)
 }

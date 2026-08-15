@@ -90,7 +90,7 @@ Key design decisions:
 
 - **Defense in depth**: The WAF is a supplementary layer, not a replacement for application-level validation
 - **Double-decode detection**: Query strings are decoded twice to catch `%25XX`-style encoding evasion
-- **Sensitive field privacy**: Password-like form/JSON fields are inspected like any other input, but request-body values are not written to WAF logs. Logs include the complete request URI, including its query string, so do not place secrets in query parameters. Excluding password-like fields from scanning was previously used to reduce false positives, but it was trivially bypassed by naming an attack parameter `password`. The trade-off is that a password containing rule-matching text (`' OR 1=1`, `<script`) can now cause the login request to be blocked
+- **Sensitive field privacy**: Password-like form/JSON fields are inspected like any other input, but request-body values are not written to WAF logs. Query parameter names are retained for diagnostics while their values are redacted. Excluding password-like fields from scanning was previously used to reduce false positives, but it was trivially bypassed by naming an attack parameter `password`. The trade-off is that a password containing rule-matching text (`' OR 1=1`, `<script`) can now cause the login request to be blocked
 - **Body inspection limits**: Only the first N bytes (configurable via `EXPOSE_WAF_BODY_INSPECT_LIMIT`, default 16 KiB) are scanned. Form keys and values are normalized and inspected. JSON object keys plus string and numeric values are inspected, with encoded variants of string values normalized. Multipart bodies are parsed and each field name, filename, form value, and UTF-8 file content is scanned. UTF-8 `application/octet-stream` payloads are also scanned; non-text binary content is skipped. Use `EXPOSE_WAF_IGNORE_PATHS` on the client to bypass the Sensitive File Probe rule for selected path prefixes; all other WAF rules still apply
 - **Audit mode**: `EXPOSE_WAF_AUDIT_ONLY=true` logs matches without blocking, for safe rollout
 
@@ -103,6 +103,7 @@ Key design decisions:
 ## Data Storage
 
 - **SQLite with WAL mode**: Enables concurrent reads while maintaining write serialization
+- **Owner-only database permissions**: Disk-backed database files are created and tightened to `0600`; newly created parent directories use `0700`
 - **Parameterized queries throughout**: No string concatenation for SQL construction
 - **Transaction timeouts**: 30-second default to prevent deadlocks
 - **Domain allocation**: Protected by database unique constraints to prevent race conditions
@@ -113,9 +114,9 @@ All security-sensitive random values (API key generation, token creation, epheme
 
 ## Forwarded Headers
 
-The server injects standard reverse-proxy headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`). For `X-Forwarded-For`, all incoming header values are preserved, normalized into one canonical chain, and the immediate peer's IP is appended as the rightmost hop. This lets an upstream trusted proxy's chain pass through while still recording who connected to expose.
+The server injects standard reverse-proxy headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`). Client-supplied `X-Forwarded-For` values are replaced with one client address resolved under the trusted-proxy policy, preventing callers from spoofing the leftmost hop seen by a local framework.
 
-**Trust rule**: only the LAST hop of `X-Forwarded-For` (the immediate peer) is inherently trustworthy; every earlier hop is client-controllable unless it was added by a proxy you trust. When expose sits behind a known reverse proxy or CDN, set `EXPOSE_TRUSTED_PROXY_CIDRS` to a comma-separated list of trusted proxy CIDRs (e.g. `10.0.0.0/8,203.0.113.10/32`). When the immediate peer matches a trusted CIDR, the client IP is derived from the rightmost XFF hop that is NOT in a trusted CIDR. The default is empty, which means no XFF hop is trusted and the client IP is always the connection's `RemoteAddr`.
+**Trust rule**: when expose sits behind a known reverse proxy or CDN, set `EXPOSE_TRUSTED_PROXY_CIDRS` to a comma-separated list of trusted proxy CIDRs (e.g. `10.0.0.0/8,203.0.113.10/32`). When the immediate peer matches a trusted CIDR, the client IP is derived from the rightmost XFF hop that is NOT in a trusted CIDR. The default is empty, which means no XFF hop is trusted and the forwarded client IP is always the connection's `RemoteAddr`.
 
 ## Release Integrity
 
@@ -139,8 +140,8 @@ The certificate identity pins the signature to this repository's release workflo
 
 ### How each install path verifies
 
-- **`scripts/install.sh`**: verifies `checksums.txt` with cosign when cosign is available on the system. If signature assets cannot be downloaded while cosign is installed, installation fails closed rather than silently downgrading. If cosign itself is absent, the script warns and falls back to checksum-only verification; the checksum manifest then comes from the same origin as the archive (trust on first use).
-- **Built-in self-update** (`expose update`): relies on GitHub TLS plus the SHA-256 checksum manifest, and additionally refuses non-HTTPS download URLs and asset hosts outside the GitHub allowlist. In-binary signature verification is intentionally omitted: pulling in the sigstore libraries would add heavy dependencies to the binary, and full signature verification is available via the install script or the manual command above.
+- **Install scripts**: Unix and Windows verify `checksums.txt` with cosign when cosign is available. If signature assets cannot be downloaded while cosign is installed, installation fails closed. If cosign is absent, the scripts warn and fall back to checksum-only verification unless `EXPOSE_REQUIRE_SIGNATURE=true` is set.
+- **Built-in self-update** (`expose update`): always requires the SHA-256 checksum manifest and refuses non-HTTPS or non-GitHub asset URLs. Set `EXPOSE_REQUIRE_SIGNATURE=true` and install cosign to additionally require the Sigstore bundle; this mode fails closed if cosign, the bundle, or verification is unavailable.
 
 ## Recommendations for Operators
 

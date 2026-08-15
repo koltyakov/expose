@@ -49,7 +49,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	stripPublicAccessCookie(requestHeaders)
 	stripPublicAccessCredentials(requestHeaders, route)
 	injectForwardedProxyHeaders(requestHeaders, r)
-	injectForwardedFor(requestHeaders, r.RemoteAddr)
+	injectForwardedFor(requestHeaders, s.clientIP(r))
 
 	if _, err := s.sendRequestBodyToH3Stream(stream, reqID, r, requestHeaders, sess.usesH3StreamV2()); err != nil {
 		requeue = false
@@ -127,7 +127,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	stripPublicAccessCookie(headers)
 	stripPublicAccessCredentials(headers, route)
 	injectForwardedProxyHeaders(headers, r)
-	injectForwardedFor(headers, r.RemoteAddr)
+	injectForwardedFor(headers, s.clientIP(r))
 	openMsg := tunnelproto.Message{
 		Kind: tunnelproto.KindWSOpen,
 		WSOpen: &tunnelproto.WSOpen{

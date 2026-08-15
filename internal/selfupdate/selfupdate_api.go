@@ -157,7 +157,6 @@ func Apply(ctx context.Context, rel *Release) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", assetName, err)
 	}
-
 	if err := verifyAssetChecksum(ctx, rel, assetName, data); err != nil {
 		return nil, fmt.Errorf("verify %s: %w", assetName, err)
 	}

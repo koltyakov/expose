@@ -134,10 +134,10 @@ func sameClientCredentialSource(src clientCredSources) bool {
 }
 
 // verifyClientCredentialTrust guards against credential mixing: an API key
-// must never be sent silently to a server that came from a ./.env file in
+// must never be sent silently to a server selected by project-local files in
 // the working directory. Mixed sources always produce a prominent warning; a
-// ./.env-supplied server that differs from the saved one additionally
-// requires interactive confirmation, and fails hard when non-interactive.
+// .env- or expose.yml-supplied server that differs from the saved one requires
+// interactive confirmation and fails hard when non-interactive.
 func verifyClientCredentialTrust(ctx context.Context, serverURL string, src clientCredSources) error {
 	if sameClientCredentialSource(src) {
 		return nil
@@ -152,12 +152,14 @@ func verifyClientCredentialTrust(ctx context.Context, serverURL string, src clie
 	effective := normalizedServerForCompare(serverURL)
 	stored := normalizedServerForCompare(src.storedServer)
 	redirected := !src.apiKeySettings || (effective != "" && effective != stored)
-	dotEnvRedirect := src.serverDotEnv && !src.serverFlag && !src.serverConfigFile && !src.serverEnv
-	if !dotEnvRedirect || src.apiKeyDotEnv || !redirected {
+	projectServerRedirect := (src.serverDotEnv || src.serverConfigFile) && !src.serverFlag && !src.serverEnv
+	projectCredentialsMatch := (src.serverDotEnv && src.apiKeyDotEnv) ||
+		(src.serverConfigFile && src.apiKeyConfigFile)
+	if !projectServerRedirect || projectCredentialsMatch || !redirected {
 		return nil
 	}
 	if !isInteractiveInput() {
-		return fmt.Errorf("refusing to send the API key to %s taken from ./.env; pass --server %s (or set EXPOSE_DOMAIN) explicitly to confirm", serverURL, serverURL)
+		return fmt.Errorf("refusing to send the API key to %s selected by a project-local config file; pass --server %s (or set EXPOSE_DOMAIN) explicitly to confirm", serverURL, serverURL)
 	}
 	reader := bufio.NewReader(os.Stdin)
 	answer, err := promptContext(ctx, reader, fmt.Sprintf("Send the API key to %s? Type 'yes' to continue: ", serverURL))

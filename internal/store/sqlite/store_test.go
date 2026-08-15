@@ -1560,6 +1560,45 @@ func TestTrySetTunnelConnectedEnforcesLimitAtomically(t *testing.T) {
 	}
 }
 
+func TestRevokedAPIKeyRejectsAndIdentifiesConnectedTunnels(t *testing.T) {
+	store, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	key, err := store.CreateAPIKey(ctx, "revoked", "hash_revoked_connect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, connected, err := store.AllocateDomainAndTunnel(ctx, key.ID, "permanent", "connected-revoked", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pending, err := store.AllocateDomainAndTunnel(ctx, key.ID, "permanent", "pending-revoked", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TrySetTunnelConnected(ctx, connected.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeAPIKey(ctx, key.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.TrySetTunnelConnected(ctx, pending.ID); !errors.Is(err, domain.ErrAPIKeyRevoked) {
+		t.Fatalf("TrySetTunnelConnected() error = %v, want api key revoked", err)
+	}
+	ids, err := store.RevokedConnectedTunnelIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != connected.ID {
+		t.Fatalf("RevokedConnectedTunnelIDs() = %v, want [%s]", ids, connected.ID)
+	}
+}
+
 func TestListAPIKeysIncludesTunnelLimit(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {

@@ -34,6 +34,7 @@ Complete reference for all client flags, environment variables, and credential m
 | -                | `EXPOSE_PPROF_LISTEN`            | Optional pprof address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`)        |
 | -                | `EXPOSE_PPROF_ALLOW_REMOTE`      | Allow an unauthenticated pprof listener on a non-loopback address                     |
 | -                | `EXPOSE_AUTOUPDATE`              | Enable automatic self-update for `http` and `static` (`true`/`1`/`yes`)              |
+| -                | `EXPOSE_REQUIRE_SIGNATURE`       | Require cosign verification for self-updates (`true`/`1`/`yes`)                      |
 
 ## Command-Specific Flags
 

@@ -76,6 +76,30 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
 	return nil
 }
 
+// RevokedConnectedTunnelIDs returns connected tunnels owned by revoked API
+// keys so the running server can terminate their in-memory sessions promptly.
+func (s *Store) RevokedConnectedTunnelIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT t.id
+FROM tunnels t
+JOIN api_keys k ON k.id = t.api_key_id
+WHERE t.state = ? AND k.revoked_at IS NOT NULL`, domain.TunnelStateConnected)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error) {
 	var id string
 	stmt := s.resolveAPIKeyIDStmt

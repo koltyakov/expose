@@ -15,58 +15,33 @@ func normalizeHost(host string) string {
 	return netutil.NormalizeHost(host)
 }
 
-// injectForwardedFor appends the client's IP to the X-Forwarded-For header
-// chain so trusted proxy hops can extend an existing chain.
-func injectForwardedFor(h map[string][]string, remoteAddr string) {
-	ip := remoteAddr
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+// injectForwardedFor replaces every client-supplied X-Forwarded-For spelling
+// with the client IP already resolved under the server's trusted-proxy policy.
+// Preserving an untrusted incoming chain lets callers spoof the leftmost hop
+// seen by local frameworks that trust expose as their reverse proxy.
+func injectForwardedFor(h map[string][]string, resolvedClientAddr string) {
+	if h == nil {
+		return
+	}
+	ip := resolvedClientAddr
+	if host, _, err := net.SplitHostPort(resolvedClientAddr); err == nil {
 		ip = host
 	}
 	ip = strings.TrimSpace(ip)
+	for key := range h {
+		if strings.EqualFold(key, "X-Forwarded-For") {
+			delete(h, key)
+		}
+	}
 	if ip == "" {
 		return
 	}
-	existing := getAndNormalizeForwardedFor(h)
-	if existing != "" {
-		h["X-Forwarded-For"] = []string{existing + ", " + ip}
-	} else {
-		h["X-Forwarded-For"] = []string{ip}
-	}
-}
-
-// getAndNormalizeForwardedFor joins all X-Forwarded-For header values and
-// canonicalizes the header key in-place.
-func getAndNormalizeForwardedFor(h map[string][]string) string {
-	if h == nil {
-		return ""
-	}
-	if vals, ok := h["X-Forwarded-For"]; ok {
-		return joinForwardedForValues(vals)
-	}
-	var values []string
-	for k, vals := range h {
-		if !strings.EqualFold(k, "X-Forwarded-For") {
-			continue
-		}
-		values = append(values, vals...)
-		delete(h, k)
-	}
-	return joinForwardedForValues(values)
-}
-
-func joinForwardedForValues(values []string) string {
-	nonEmpty := values[:0]
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			nonEmpty = append(nonEmpty, value)
-		}
-	}
-	return strings.Join(nonEmpty, ", ")
+	h["X-Forwarded-For"] = []string{ip}
 }
 
 // injectForwardedProxyHeaders overwrites proxy-derived host, protocol, and
-// port headers to reflect the public request. X-Forwarded-For is preserved so
-// injectForwardedFor can append the immediate peer to its existing chain.
+// port headers to reflect the public request. X-Forwarded-For is replaced
+// separately after the trusted client address has been resolved.
 func injectForwardedProxyHeaders(h map[string][]string, r *http.Request) {
 	if h == nil || r == nil {
 		return

@@ -37,6 +37,7 @@ type tunnelRegistrar interface {
 type tunnelConnector interface {
 	ConsumeConnectToken(ctx context.Context, token string) (string, error)
 	TrySetTunnelConnected(ctx context.Context, tunnelID string) error
+	RevokedConnectedTunnelIDs(ctx context.Context) ([]string, error)
 	SetTunnelDisconnected(ctx context.Context, tunnelID string) error
 	SetTunnelsDisconnected(ctx context.Context, tunnelIDs []string) error
 	ResetConnectedTunnels(ctx context.Context) (int64, error)

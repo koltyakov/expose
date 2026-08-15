@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -58,13 +60,65 @@ func nullableString(v string) any {
 }
 
 func ensureParentDir(path string) error {
-	path = strings.TrimSpace(path)
-	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+	filePath, ok := sqliteDiskPath(path)
+	if !ok {
 		return nil
 	}
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(filePath)
 	if dir == "." || dir == "" {
 		return nil
 	}
-	return os.MkdirAll(dir, 0o755)
+	return os.MkdirAll(dir, 0o700)
+}
+
+// secureDatabaseFile creates a disk-backed SQLite database owner-only before
+// the driver opens it. SQLite otherwise creates the file with the process
+// umask (commonly 0644), even though the database contains access-cookie
+// signing material, password hashes, and short-lived connect tokens.
+// Existing files are tightened as well.
+func secureDatabaseFile(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	filePath, ok := sqliteDiskPath(path)
+	if !ok {
+		return nil
+	}
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// sqliteDiskPath returns the filesystem path represented by a plain SQLite
+// path or file: URI. Memory databases do not have permissions to enforce.
+func sqliteDiskPath(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == ":memory:" {
+		return "", false
+	}
+	if !strings.HasPrefix(raw, "file:") {
+		path, _, _ := strings.Cut(raw, "?")
+		return path, strings.TrimSpace(path) != ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque == ":memory:" || u.Path == ":memory:" {
+		return "", false
+	}
+	if strings.EqualFold(u.Query().Get("mode"), "memory") {
+		return "", false
+	}
+	path := u.Path
+	if path == "" {
+		path = u.Opaque
+	}
+	if path == "" || path == ":memory:" {
+		return "", false
+	}
+	return filepath.FromSlash(path), true
 }

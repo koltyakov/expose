@@ -67,6 +67,41 @@ function Test-Checksum {
   Write-Host "Checksum verified for $AssetName"
 }
 
+function Test-Truthy {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return $false
+  }
+  return @('true', '1', 'yes', 'on') -contains $Value.Trim().ToLowerInvariant()
+}
+
+function Test-Signature {
+  param([string]$ChecksumsFile, [string]$BaseUrl)
+  $cosign = Get-Command cosign -ErrorAction SilentlyContinue
+  if (-not $cosign) {
+    if (Test-Truthy "$env:EXPOSE_REQUIRE_SIGNATURE") {
+      Write-Error 'EXPOSE_REQUIRE_SIGNATURE=true but cosign is not installed'
+      exit 1
+    }
+    Write-Warning 'cosign not found; skipping signature verification'
+    Write-Warning 'trusting checksums.txt from the same origin (checksum-only)'
+    return
+  }
+
+  $bundle = "$ChecksumsFile.sigstore.json"
+  Invoke-Download -Url "$BaseUrl/checksums.txt.sigstore.json" -Out $bundle
+  & $cosign.Source verify-blob `
+    --bundle $bundle `
+    --certificate-identity-regexp '^https://github\.com/koltyakov/expose/\.github/workflows/release\.yml@refs/tags/.*$' `
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' `
+    $ChecksumsFile
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error 'Signature verification failed for checksums.txt'
+    exit 1
+  }
+  Write-Host 'Signature verified for checksums.txt'
+}
+
 $arch    = Get-AssetArch
 $asset   = "${binary}_Windows_${arch}.zip"
 $baseUrl = "https://github.com/$repo/releases/latest/download"
@@ -79,6 +114,7 @@ try {
   Write-Host "Downloading $asset from $repo..."
   Invoke-Download -Url "$baseUrl/$asset" -Out $archive
   Invoke-Download -Url "$baseUrl/checksums.txt" -Out $checksums
+  Test-Signature -ChecksumsFile $checksums -BaseUrl $baseUrl
   Test-Checksum -Archive $archive -AssetName $asset -ChecksumsFile $checksums
 
   Expand-Archive -LiteralPath $archive -DestinationPath $tmpDir -Force

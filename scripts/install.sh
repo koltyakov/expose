@@ -101,6 +101,12 @@ verify_checksum() {
 verify_signature() {
   checksums_path="$1"
   if ! command -v cosign >/dev/null 2>&1; then
+    case "${EXPOSE_REQUIRE_SIGNATURE:-false}" in
+      true | TRUE | 1 | yes | YES | on | ON)
+        echo "error: EXPOSE_REQUIRE_SIGNATURE=true but cosign is not installed" >&2
+        exit 1
+        ;;
+    esac
     echo "warning: cosign not found; skipping signature verification" >&2
     echo "warning: trusting checksums.txt from the same origin (checksum-only)" >&2
     return 0

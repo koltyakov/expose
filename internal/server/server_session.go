@@ -661,6 +661,7 @@ func (s *session) closeWSPending() {
 // and emits a structured audit log entry that identifies the protected
 // tunnel endpoint.
 func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
+	s.recordSiteWAF(evt)
 	nowUnix := time.Now().UnixNano()
 	val, _ := s.wafBlocks.LoadOrStore(evt.Host, &wafCounter{})
 	counter := val.(*wafCounter)

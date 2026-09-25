@@ -65,11 +65,20 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/sites")
 	id = strings.TrimPrefix(id, "/")
+	statsRequest := strings.HasSuffix(id, "/stats")
+	if statsRequest {
+		id = strings.TrimSuffix(id, "/stats")
+	}
 	if strings.Contains(id, "/") {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	if statsRequest && (id == "" || r.Method != http.MethodGet) {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if r.Method == http.MethodPost && id == "" {
 		s.uploadSite(w, r, st, key)
 		return
@@ -97,7 +106,11 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(w, http.StatusOK, site)
+			if statsRequest {
+				s.writeSiteStats(w, r, site)
+			} else {
+				writeJSON(w, http.StatusOK, site)
+			}
 		case http.MethodDelete:
 			if err := s.deleteSite(r.Context(), st, site); err != nil {
 				s.siteError(w, err)
@@ -218,7 +231,8 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		s.siteError(w, err)
 		return
 	}
-	s.siteHosts.Store(site.Hostname, struct{}{})
+	s.siteHosts.Store(site.Hostname, site)
+	s.statsForSite(site.ID)
 	status := http.StatusCreated
 	if previous != nil {
 		status = http.StatusOK
@@ -262,6 +276,19 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		s.siteError(w, err)
 		return true
 	}
+	started := time.Now()
+	recorder := &siteStatsWriter{ResponseWriter: w}
+	w = recorder
+	defer func() {
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		s.statsForSite(site.ID).record(domain.PublishedSiteRequest{
+			Time: started.UTC(), Method: r.Method, Path: r.URL.Path, Status: status,
+			DurationMS: float64(time.Since(started)) / float64(time.Millisecond), ResponseBytes: recorder.bytes,
+		}, s.clientIP(r), r.UserAgent())
+	}()
 	route := domain.TunnelRoute{Domain: domain.Domain{Hostname: host}}
 	if !s.allowPublicRequest(route, r) {
 		w.Header().Set("Retry-After", "1")
@@ -281,6 +308,7 @@ func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.Publi
 		return err
 	}
 	s.siteHosts.Delete(site.Hostname)
+	s.siteStats.Delete(site.ID)
 	return nil
 }
 
@@ -299,7 +327,8 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 	for _, site := range sites {
 		known[site.StorageID()] = true
 		if site.ExpiresAt == nil || time.Now().Before(*site.ExpiresAt) {
-			s.siteHosts.Store(site.Hostname, struct{}{})
+			s.siteHosts.Store(site.Hostname, site)
+			s.statsForSite(site.ID)
 			continue
 		}
 		if err := s.deleteSite(ctx, st, site); err != nil {

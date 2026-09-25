@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,6 +23,9 @@ import (
 
 func runPub(ctx context.Context, args []string) int {
 	if err := pubCommand(ctx, args); err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return 0
+		}
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -35,7 +39,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	action := "upload"
 	if len(args) > 0 {
 		switch args[0] {
-		case "list", "delete":
+		case "list", "delete", "connect":
 			action, args = args[0], args[1:]
 		}
 	}
@@ -46,10 +50,14 @@ func pubCommand(ctx context.Context, args []string) error {
 	preServer, preKey := capturePreDotEnv()
 	dotEnv := loadClientEnvFromDotEnv(".env")
 	fs := flag.NewFlagSet("pub "+action, flag.ContinueOnError)
-	if action == "delete" {
+	if action == "delete" || action == "connect" {
 		fs.Usage = func() {
-			_, _ = fmt.Fprintln(fs.Output(), "Usage: expose pub delete <folder> | --domain=<subdomain> [--server URL] [--api-key KEY] [--json]")
-			_, _ = fmt.Fprintln(fs.Output(), "Deletes the published files and releases the hostname. Find subdomains with `expose pub list`.")
+			_, _ = fmt.Fprintf(fs.Output(), "Usage: expose pub %s <folder> | --domain=<subdomain> [--server URL] [--api-key KEY] [--json]\n", action)
+			if action == "connect" {
+				_, _ = fmt.Fprintln(fs.Output(), "Show live hosting stats. Ctrl+C disconnects and leaves the site hosted. --json streams snapshots as NDJSON.")
+			} else {
+				_, _ = fmt.Fprintln(fs.Output(), "Deletes the published files and releases the hostname. Find subdomains with `expose pub list`.")
+			}
 			fs.PrintDefaults()
 		}
 	}
@@ -69,11 +77,11 @@ func pubCommand(ctx context.Context, args []string) error {
 		if fs.NArg() != 0 {
 			return fmt.Errorf("list takes no positional arguments")
 		}
-	} else if action == "delete" {
+	} else if action == "delete" || action == "connect" {
 		byFolder := fs.NArg() == 1 && name == ""
 		byDomain := fs.NArg() == 0 && strings.TrimSpace(name) != ""
 		if !byFolder && !byDomain {
-			return fmt.Errorf("provide a folder or --domain, e.g. `expose pub delete ./dist` or `expose pub delete --domain=docs`; find domains with `expose pub list`")
+			return fmt.Errorf("provide a folder or --domain, e.g. `expose pub %s ./dist` or `expose pub %s --domain=docs`; find domains with `expose pub list`", action, action)
 		}
 	} else if fs.NArg() != 1 {
 		return fmt.Errorf("expected a folder to publish")
@@ -91,10 +99,10 @@ func pubCommand(ctx context.Context, args []string) error {
 		}
 	}
 	if action == "list" && name != "" {
-		return fmt.Errorf("--domain is only supported when uploading or deleting")
+		return fmt.Errorf("--domain is not supported when listing")
 	}
 	var sourceID string
-	if action == "upload" || (action == "delete" && fs.NArg() == 1) {
+	if action == "upload" || ((action == "delete" || action == "connect") && fs.NArg() == 1) {
 		var err error
 		sourceID, err = publishedFolderID(fs.Arg(0))
 		if err != nil {
@@ -113,15 +121,21 @@ func pubCommand(ctx context.Context, args []string) error {
 	}
 	endpoint := strings.TrimRight(server, "/") + "/v1/sites"
 	client := &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	deleteTarget := name
-	if action == "delete" && sourceID != "" {
+	if action == "connect" {
+		client.Timeout = 10 * time.Second
+	}
+	siteTarget := name
+	if (action == "delete" || action == "connect") && sourceID != "" {
 		var site domain.PublishedSite
 		site, err = publishedFolderSite(ctx, client, endpoint, cfg.APIKey, sourceID)
 		if err != nil {
 			return err
 		}
 		name, _, _ = strings.Cut(site.Hostname, ".")
-		deleteTarget = site.ID
+		siteTarget = site.ID
+	}
+	if action == "connect" {
+		return connectPublishedSite(ctx, client, endpoint, cfg.APIKey, siteTarget, os.Stdout, isInteractiveOutput(), jsonOutput, time.Second)
 	}
 	query := url.Values{}
 	if action == "upload" && name != "" {
@@ -152,7 +166,7 @@ func pubCommand(ctx context.Context, args []string) error {
 		}
 		method, body = http.MethodPost, archive
 	case "delete":
-		endpoint += "/" + url.PathEscape(deleteTarget)
+		endpoint += "/" + url.PathEscape(siteTarget)
 		method = http.MethodDelete
 	}
 	if len(query) > 0 {
@@ -273,7 +287,7 @@ func publishedFolderSite(ctx context.Context, client *http.Client, endpoint, key
 		match = site
 	}
 	if match.ID == "" {
-		return match, fmt.Errorf("no publication found for this folder; use `expose pub list` and delete with --domain")
+		return match, fmt.Errorf("no publication found for this folder; use `expose pub list` and select a site with --domain")
 	}
 	return match, nil
 }

@@ -20,6 +20,8 @@ Usage:
   expose pub <dir>                     Upload and host a static site on the server
                                         --domain=myapp assigns a name, --ttl=24h schedules deletion
   expose pub list                      List your published sites
+  expose pub connect <dir>             Show live stats for a published folder
+  expose pub connect --domain=docs     Show live stats for a published subdomain
   expose pub delete <dir>              Delete the publication associated with a local folder
   expose pub delete --domain=docs      Delete a publication by subdomain
   expose soak --port 3000               Run a multi-tunnel client soak test against one local port

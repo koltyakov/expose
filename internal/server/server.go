@@ -101,6 +101,7 @@ type Server struct {
 	routeLifecycleMu sync.Mutex
 	sitesMu          sync.RWMutex
 	siteHosts        sync.Map
+	siteStats        sync.Map // publication ID -> *siteStats
 	disconnects      chan string
 	disconnectMu     sync.Mutex
 	disconnectQ      map[string]struct{}

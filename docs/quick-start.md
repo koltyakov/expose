@@ -78,7 +78,7 @@ Open the URL in your browser - traffic is tunnelled to `127.0.0.1:3000`.
 Request a stable subdomain:
 
 ```bash
-./bin/expose http --domain=myapp 3000
+./bin/expose http 3000 --domain=myapp
 ```
 
 This gives you `https://myapp.example.com` every time.

@@ -81,6 +81,9 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.disconnectRevokedSessions(ctx)
 			s.expireStaleSessions(ctx)
 		case <-cleanupTicker.C:
+			if err := s.cleanupPublishedSites(ctx); err != nil {
+				s.log.Error("clean up published sites", "err", err)
+			}
 			s.cleanupStaleTemporaryResources(ctx)
 			s.cleanupStaleWAFCounters()
 			s.cleanupStaleH3Sessions()

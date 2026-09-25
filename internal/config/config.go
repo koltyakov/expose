@@ -44,6 +44,8 @@ type ServerConfig struct {
 	ListenHTTP             string
 	PprofListen            string
 	DBPath                 string
+	PublishDir             string
+	PublishMaxBytes        int64
 	DBMaxOpenConns         int
 	DBMaxIdleConns         int
 	BaseDomain             string
@@ -91,6 +93,9 @@ const defaultServerTempRetention = 24 * time.Hour
 const defaultServerHTTPSListen = ":10443"
 const defaultServerHTTPChallengeListen = ":10080"
 const defaultServerDBPath = "./expose.db"
+
+// DefaultPublishMaxBytes limits each site's total extracted file size.
+const DefaultPublishMaxBytes int64 = 10 << 20
 const defaultServerCertCacheDir = "./cert"
 
 // ParseClientFlags parses CLI flags and env vars into a [ClientConfig].
@@ -207,6 +212,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		ListenHTTP:             EnvOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
 		PprofListen:            strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
 		DBPath:                 EnvOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
+		PublishDir:             EnvOrDefault("EXPOSE_PUBLISH_DIR", ""),
+		PublishMaxBytes:        envInt64("EXPOSE_PUBLISH_MAX_BYTES", DefaultPublishMaxBytes, &envErrs),
 		DBMaxOpenConns:         envInt("EXPOSE_DB_MAX_OPEN_CONNS", 10, &envErrs),
 		DBMaxIdleConns:         envInt("EXPOSE_DB_MAX_IDLE_CONNS", 10, &envErrs),
 		BaseDomain:             EnvOrDefault("EXPOSE_DOMAIN", ""),
@@ -246,6 +253,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.ListenHTTP, "http-challenge-listen", cfg.ListenHTTP, "HTTP-01 challenge listen address")
 	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
+	fs.StringVar(&cfg.PublishDir, "publish-dir", cfg.PublishDir, "Published site storage directory (default: <db path>.sites)")
+	fs.Int64Var(&cfg.PublishMaxBytes, "publish-max-bytes", cfg.PublishMaxBytes, "Maximum total extracted bytes per published site")
 	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "SQLite max open connections")
 	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "SQLite max idle connections")
 	fs.StringVar(&cfg.BaseDomain, "domain", cfg.BaseDomain, "Public base domain, e.g. example.com")
@@ -289,6 +298,9 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 	if cfg.TempRetention <= 0 {
 		return cfg, errors.New("temp retention must be > 0")
+	}
+	if cfg.PublishMaxBytes <= 0 {
+		return cfg, errors.New("publish max bytes must be > 0")
 	}
 	if cfg.DBMaxOpenConns <= 0 {
 		return cfg, errors.New("db max open conns must be > 0")

@@ -2,6 +2,8 @@
 
 Use `expose static` to publish a local directory as a static website through your expose server.
 
+To upload a folder and host it on the server after the CLI exits, use [Static site publishing](publishing.md) with `expose pub ./dist`.
+
 ## Quick Start
 
 Expose the current directory:
@@ -15,6 +17,14 @@ Expose a specific directory:
 ```bash
 expose static ./public
 ```
+
+The directory can come before or after flags. Prefer directory-first:
+
+```bash
+expose static ./dist --domain=myapp --spa
+```
+
+`expose static --domain=myapp --spa ./dist` also works. Omit the directory to serve the current directory, or use `--dir` to specify it explicitly.
 
 Static mode starts a local loopback web server, then tunnels it the same way `expose http` tunnels an existing app.
 
@@ -34,11 +44,11 @@ Static mode starts a local loopback web server, then tunnels it the same way `ex
 Examples:
 
 ```bash
-expose static --domain=docs ./site
-expose static --protect ./private-docs
-expose static --spa ./dist
-expose static --folders ./downloads
-expose static --allow '.well-known/**' ./public
+expose static ./site --domain=docs
+expose static ./private-docs --protect
+expose static ./dist --spa
+expose static ./downloads --folders
+expose static ./public --allow '.well-known/**'
 ```
 
 ## Default Hostname
@@ -73,7 +83,7 @@ If you need arbitrary file types, use `--protect`.
 Example:
 
 ```bash
-expose static --allow '.well-known/**' ./public
+expose static ./public --allow '.well-known/**'
 ```
 
 Use it carefully because it overrides the default path blocklist and public file-type restriction.
@@ -96,7 +106,7 @@ Symlinks are resolved within the published root. A symlink cannot be used to ser
 For client-side routers:
 
 ```bash
-expose static --spa ./dist
+expose static ./dist --spa
 ```
 
 With `--spa`, unresolved `GET` and `HEAD` requests fall back to the root `index.html`, unless the path already resolves to:

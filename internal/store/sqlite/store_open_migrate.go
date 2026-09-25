@@ -285,6 +285,19 @@ var schemaMigrations = []schemaMigration{
 	{version: 7, name: "tunnels_waf_ignore_paths", apply: func(ctx context.Context, tx *sql.Tx) error {
 		return ensureColumn(ctx, tx, "tunnels", "waf_ignore_paths", `ALTER TABLE tunnels ADD COLUMN waf_ignore_paths TEXT NULL`)
 	}},
+	{version: 8, name: "published_sites", apply: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE published_sites (
+			id TEXT PRIMARY KEY, api_key_id TEXT NOT NULL, hostname TEXT NOT NULL UNIQUE,
+			created_at DATETIME NOT NULL, expires_at DATETIME NULL
+		); CREATE INDEX idx_published_sites_key ON published_sites(api_key_id);`)
+		return err
+	}},
+	{version: 9, name: "published_site_source", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "published_sites", "source_id", `ALTER TABLE published_sites ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`)
+	}},
+	{version: 10, name: "published_site_content", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "published_sites", "content_id", `ALTER TABLE published_sites ADD COLUMN content_id TEXT NOT NULL DEFAULT ''`)
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {

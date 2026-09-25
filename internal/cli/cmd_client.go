@@ -27,6 +27,10 @@ const defaultClientPingInterval = 30 * time.Second
 
 func runHTTP(ctx context.Context, args []string) int {
 	args = config.NormalizeProtectFlagArgs(args)
+	// Accept both `http 3000 --domain=myapp` and flags before the port.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		args = append(append([]string{}, args[1:]...), args[0])
+	}
 
 	fs := flag.NewFlagSet("http", flag.ContinueOnError)
 	serverURL := envOr("EXPOSE_DOMAIN", "")
@@ -77,6 +81,10 @@ func runHTTP(ctx context.Context, args []string) int {
 
 func runStatic(ctx context.Context, args []string) int {
 	args = config.NormalizeProtectFlagArgs(args)
+	// Accept both `static ./dist --domain=myapp` and flags before the directory.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		args = append(append([]string{}, args[1:]...), args[0])
+	}
 	preEnvServer, preEnvAPIKey := capturePreDotEnv()
 	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 

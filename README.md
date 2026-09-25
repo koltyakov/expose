@@ -13,6 +13,7 @@
 - **HTTPS-only** public traffic with automatic TLS (ACME) or static wildcard certificates
 - **Built-in WAF** blocks SQL injection, XSS, path traversal, and other attacks before they reach your app, including bounded JSON/form/text body inspection
 - **Static site publishing** via `expose static` for quick docs, SPAs, and local folders
+- **Server-hosted static sites** via `expose pub`, with persistent URLs, optional expiry, and guarded archive uploads
 - **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
 - **Auto-update** - server and client can self-update in the background with automatic restart and client reconnection
@@ -102,10 +103,13 @@ expose login
 expose http 3000
 
 # Or expose it with a named subdomain
-expose http --domain=myapp 3000
+expose http 3000 --domain=myapp
 
 # Or expose a static directory as a website
-expose static
+expose static ./public
+
+# Or upload a static site for persistent server-side hosting
+expose pub ./dist --ttl=24h
 ```
 
 Open the URL shown in the terminal - that's it.
@@ -113,6 +117,8 @@ Open the URL shown in the terminal - that's it.
 > ⚠️ Security notice: if your server is using per-host ACME certificates (`dynamic`, or `auto` without a matching wildcard certificate), new public hostnames are often discovered and probed by bots shortly after they are created. Protect new tunnels immediately and use `--protect` for anything non-public. See [TLS Modes](docs/tls-modes.md) and [Static Sites](docs/static-sites.md).
 
 For the full walkthrough, DNS setup guides, and multi-route configs, see [Quick Start](docs/quick-start.md).
+
+See [Static site publishing](docs/publishing.md) for named domains, listing, deletion, and upload limits.
 
 ## Documentation
 

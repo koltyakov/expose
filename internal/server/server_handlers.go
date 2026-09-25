@@ -162,6 +162,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
+	if s.servePublishedSite(w, r, host) {
+		return
+	}
 	snap, err := s.resolvePublicRoute(r.Context(), host)
 	if err != nil {
 		status, msg := publicRouteLookupErrorStatus(err)

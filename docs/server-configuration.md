@@ -33,6 +33,8 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`            | -             | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
 | -                         | `EXPOSE_PPROF_ALLOW_REMOTE`      | `false`       | Allow an unauthenticated pprof listener on a non-loopback address |
 | `--db`                    | `EXPOSE_DB_PATH`                 | `./expose.db` | SQLite database path                                           |
+| `--publish-dir`           | `EXPOSE_PUBLISH_DIR`             | `<db path>.sites` | Storage directory for published static sites                 |
+| `--publish-max-bytes`     | `EXPOSE_PUBLISH_MAX_BYTES`       | `10485760` | Maximum total extracted size per published site, in bytes, default 10 MiB |
 | `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`       | `10`          | SQLite max open connections                                    |
 | `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`       | `10`          | SQLite max idle connections                                    |
 | `--tls-mode`              | `EXPOSE_TLS_MODE`                | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`                     |

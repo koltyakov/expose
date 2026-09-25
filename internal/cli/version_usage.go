@@ -13,10 +13,15 @@ Expose local HTTP ports to the internet through your own server.
 
 Usage:
   expose http <port>                    Expose local port (temporary subdomain)
-  expose http --domain=myapp <port>     Expose with a named subdomain
+  expose http <port> --domain=myapp     Expose with a named subdomain
                                         --protect enables form protection, --protect=basic opts into Basic Auth
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
+  expose pub <dir>                     Upload and host a static site on the server
+                                        --domain=myapp assigns a name, --ttl=24h schedules deletion
+  expose pub list                      List your published sites
+  expose pub delete <dir>              Delete the publication associated with a local folder
+  expose pub delete --domain=docs      Delete a publication by subdomain
   expose soak --port 3000               Run a multi-tunnel client soak test against one local port
   expose auth curl --url URL            Login to a protected route and print curl-ready auth output
   expose login                          Save server URL and API key
@@ -51,6 +56,8 @@ Environment Variables:
   EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 128)
   EXPOSE_WAF_IGNORE_PATHS  Comma-separated URL prefixes ignored by the WAF sensitive-file rule
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
+	  EXPOSE_PUBLISH_DIR      Published site storage directory (default: <db path>.sites)
+	  EXPOSE_PUBLISH_MAX_BYTES  Maximum extracted bytes per published site (default: 10485760)
 	  EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
 	  EXPOSE_DB_MAX_OPEN_CONNS  SQLite max open connections (default: 10)
 	  EXPOSE_DB_MAX_IDLE_CONNS  SQLite max idle connections (default: 10)

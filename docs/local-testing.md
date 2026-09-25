@@ -54,7 +54,7 @@ export EXPOSE_DOMAIN=https://127.0.0.1.sslip.io:10443
 export EXPOSE_API_KEY=<YOUR_API_KEY>
 export EXPOSE_USER=admin
 export EXPOSE_PASSWORD=123
-./bin/expose http --domain=myapp --protect 3000
+./bin/expose http 3000 --domain=myapp --protect
 ```
 
 Notes:
@@ -81,7 +81,7 @@ Expected:
 ```bash
 curl -k -I --http3-only https://127.0.0.1.sslip.io:10443/healthz
 lsof -nP -iUDP:10443
-./bin/expose http --domain=myapp --transport=quic 3000
+./bin/expose http 3000 --domain=myapp --transport=quic
 ```
 
 Expected:

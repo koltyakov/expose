@@ -24,6 +24,29 @@ func TestNormalizeDomainHost(t *testing.T) {
 	}
 }
 
+func TestPublishSizeLimitConfig(t *testing.T) {
+	t.Setenv("EXPOSE_PUBLISH_MAX_BYTES", "")
+	cfg, err := ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.PublishMaxBytes != 10<<20 {
+		t.Fatalf("default limit: %d, %v", cfg.PublishMaxBytes, err)
+	}
+	t.Setenv("EXPOSE_PUBLISH_MAX_BYTES", "26214400")
+	cfg, err = ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.PublishMaxBytes != 25<<20 {
+		t.Fatalf("env limit: %d, %v", cfg.PublishMaxBytes, err)
+	}
+	cfg, err = ParseServerFlags([]string{"--domain=example.com", "--publish-max-bytes=5242880"})
+	if err != nil || cfg.PublishMaxBytes != 5<<20 {
+		t.Fatalf("flag limit: %d, %v", cfg.PublishMaxBytes, err)
+	}
+	for _, value := range []string{"0", "-1", "invalid"} {
+		t.Setenv("EXPOSE_PUBLISH_MAX_BYTES", value)
+		if _, err := ParseServerFlags([]string{"--domain=example.com"}); err == nil {
+			t.Fatalf("accepted invalid limit %q", value)
+		}
+	}
+}
+
 func TestParseClientFlagsPasswordSourcesAndTrim(t *testing.T) {
 	t.Setenv("EXPOSE_PASSWORD", " from-env ")
 

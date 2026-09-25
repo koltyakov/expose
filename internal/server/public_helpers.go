@@ -91,6 +91,9 @@ func (s *Server) resolvePublicRouteStable(ctx context.Context, host string) (liv
 }
 
 func (s *Server) allowPublicRouteLookup(host string, r *http.Request) bool {
+	if _, ok := s.siteHosts.Load(host); ok {
+		return true
+	}
 	if _, ok := s.liveRoutes.lookupHost(host); ok {
 		return true
 	}

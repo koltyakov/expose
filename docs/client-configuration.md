@@ -7,8 +7,8 @@ Complete reference for all client flags, environment variables, and credential m
 | Command                             | Description                                       |
 | ----------------------------------- | ------------------------------------------------- |
 | `expose http <port>`                | Expose a local port (temporary subdomain)         |
-| `expose http --domain=myapp <port>` | Expose with a named subdomain                     |
-| `expose http --protect <port>`      | Expose with password protection                   |
+| `expose http <port> --domain=myapp` | Expose with a named subdomain                     |
+| `expose http <port> --protect`      | Expose with password protection                   |
 | `expose static [dir]`               | Expose a static directory                         |
 | `expose soak --port 3000`           | Run many temporary clients against one local port |
 | `expose auth curl --url <url>`       | Authenticate curl against an access-form route    |
@@ -148,8 +148,14 @@ Temporary tunnels are cleaned up after disconnect. See [Temporary Host Allocatio
 Request a stable subdomain that persists across reconnects:
 
 ```bash
-expose http --domain=myapp 3000
+expose http 3000 --domain=myapp
 # → https://myapp.example.com
+```
+
+Flags before the port are also supported:
+
+```bash
+expose http --domain=myapp 3000
 ```
 
 The requested name is always relative to the server's configured base domain;
@@ -163,13 +169,13 @@ Add protection in front of your tunnel:
 
 ```bash
 # Interactive - default form-based protection
-expose http --domain=myapp --protect 3000
+expose http 3000 --domain=myapp --protect
 
 # Non-interactive - password from env
-EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http --domain=myapp 3000
+EXPOSE_USER=admin EXPOSE_PASSWORD=secret expose http 3000 --domain=myapp
 
 # Legacy compatibility - explicit Basic Auth
-expose http --domain=myapp --protect=basic 3000
+expose http 3000 --domain=myapp --protect=basic
 ```
 
 > **Note**: `--protect` defaults to the edge access form and avoids consuming your app's `Authorization` header. Use `--protect=basic` only when you explicitly want legacy Basic Auth behavior.

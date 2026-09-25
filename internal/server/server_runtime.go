@@ -28,6 +28,9 @@ import (
 // It blocks until ctx is cancelled or a fatal error occurs.
 func (s *Server) Run(ctx context.Context) error {
 	s.runtimeCtx.Store(ctx)
+	if err := s.cleanupPublishedSites(ctx); err != nil {
+		return fmt.Errorf("initialize published sites: %w", err)
+	}
 
 	resetCount, err := s.store.ResetConnectedTunnels(ctx)
 	if err != nil {
@@ -52,6 +55,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/sites", s.handleSites)
+	mux.HandleFunc("/v1/sites/", s.handleSites)
 	mux.HandleFunc("/v1/tunnels/register", s.handleRegister)
 	mux.HandleFunc("/v1/tunnels/connect", s.handleConnect)
 	mux.HandleFunc("/v1/tunnels/connect-h3", s.handleConnectH3)
@@ -196,6 +201,16 @@ func (s *Server) authorizeACMEHost(ctx context.Context, host string) error {
 	host = normalizeHost(host)
 	if host == normalizeHost(s.cfg.BaseDomain) {
 		return nil
+	}
+	if st, ok := s.store.(siteStore); ok {
+		if _, err := st.FindPublishedSite(ctx, host); err == nil {
+			if !s.allowACMEIssuance(host) {
+				return errors.New("certificate issuance rate limit exceeded")
+			}
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return errors.New("failed to authorize host")
+		}
 	}
 	snap, err := s.resolvePublicRoute(ctx, host)
 	if err != nil {

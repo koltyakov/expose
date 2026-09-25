@@ -94,6 +94,12 @@ Trailing slashes use the same fallback order. Exact assets keep their content ty
 
 Published sites use the server's existing WAF, HTTPS certificate handling, trusted-proxy settings, and optional per-host/client-IP public rate limits.
 
+### HTTP caching
+
+Published files, including HTML and SPA fallbacks, send `Cache-Control: no-cache`. Browsers and shared caches may store responses but must revalidate before reuse, as specified by [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2.4). This keeps republished content fresh and requires caches to check whether a site is still available after expiry or deletion.
+
+Each file has a quoted, publication-specific `ETag`. Conditional `GET` and `HEAD` requests with a matching `If-None-Match` receive `304 Not Modified` without transferring the file again. Republishing changes the ETags even if file sizes and modification times match the previous upload. `Last-Modified` and byte-range requests remain supported. Missing or blocked paths send `Cache-Control: no-store`.
+
 ## Upload guards and limits
 
 The CLI skips blocked paths and prints a warning to stderr identifying each ignored file or directory. Blocked directories are skipped as a whole, with one warning for the directory. Publishing continues with the remaining files. The server rejects archives containing blocked paths.

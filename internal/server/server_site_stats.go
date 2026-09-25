@@ -115,6 +115,7 @@ func (s *Server) writeSiteStats(w http.ResponseWriter, r *http.Request, site dom
 	}
 	stats := s.statsForSite(site.ID).snapshot(now)
 	stats.Site, stats.ServerVersion = site, s.version
+	stats.ServerTLSMode = s.serverTLSMode()
 	stats.WAFEnabled, stats.WAFAuditOnly = s.cfg.WAFEnabled, s.cfg.WAFAuditOnly
 	writeJSON(w, http.StatusOK, stats)
 }

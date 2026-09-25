@@ -120,11 +120,12 @@ func TestPubConnectFolderAndDomain(t *testing.T) {
 func TestPubStatsDisplayAndCleanup(t *testing.T) {
 	var output bytes.Buffer
 	display := pubStatsDisplay{out: &output, interactive: true}
-	now := time.Now().UTC()
+	now := time.Date(2026, time.September, 25, 12, 30, 0, 0, time.FixedZone("source", 5*60*60))
 	expires := now.Add(time.Hour)
 	stats := domain.PublishedSiteStats{
-		Site: domain.PublishedSite{Hostname: "docs.example.com", ExpiresAt: &expires}, Since: now, CapturedAt: now,
-		HTTPRequests: 2, ResponseBytes: 1024, Visitors: 1, ActiveVisitors: 1, WAFEnabled: true, WAFBlocked: 1,
+		Site: domain.PublishedSite{Hostname: "docs.example.com", CreatedAt: now, ExpiresAt: &expires}, Since: now, CapturedAt: now,
+		ServerTLSMode: "dynamic",
+		HTTPRequests:  2, ResponseBytes: 1024, Visitors: 1, ActiveVisitors: 1, WAFEnabled: true, WAFBlocked: 1,
 		Requests: []domain.PublishedSiteRequest{{Time: now, Method: "GET", Path: "/\x1b[2Jinjected", Status: 200}},
 	}
 	if err := display.render(stats, time.Millisecond); err != nil {
@@ -136,10 +137,13 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	display.close()
-	for _, text := range []string{"docs.example.com", "Expires", "HTTP Requests", "Visitors", "2.0 KiB/s", "Request latency", "blocked 1", termui.ShowCur} {
+	for _, text := range []string{"docs.example.com", "Published", "Expires", now.Local().Format("2006-01-02 15:04:05 MST"), expires.Local().Format("2006-01-02 15:04:05 MST"), "TLS: Dynamic", "HTTP Requests", "Visitors", "2.0 KiB/s", "Request latency", "blocked 1", termui.ShowCur} {
 		if !strings.Contains(output.String(), text) {
 			t.Errorf("dashboard missing %q", text)
 		}
+	}
+	if strings.Contains(output.String(), "Stats since") || strings.Contains(output.String(), "Updated") {
+		t.Fatal("dashboard still shows snapshot timestamps")
 	}
 	if strings.Contains(output.String(), "\x1b[2J") {
 		t.Fatal("request injected terminal control codes")

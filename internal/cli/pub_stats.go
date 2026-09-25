@@ -185,7 +185,11 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	}
 	part("", fmt.Sprintf("%-19s", "Server"))
 	part("", stats.ServerVersion)
-	part(termui.Dim, " (WAF: "+wafMode+")")
+	tlsMode := "--"
+	if stats.ServerTLSMode != "" {
+		tlsMode = termui.CapitalizeCSV(stats.ServerTLSMode)
+	}
+	part(termui.Dim, " (WAF: "+wafMode+", TLS: "+tlsMode+")")
 	newline()
 	field("Latency", termui.FormatDurationRounded(roundTrip))
 	part("", fmt.Sprintf("%-19s", "Public URL"))
@@ -193,11 +197,16 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	newline()
 	expiry := "no expiry"
 	if stats.Site.ExpiresAt != nil {
-		expiry = stats.Site.ExpiresAt.Format(time.RFC3339)
+		expiry = stats.Site.ExpiresAt.Local().Format("2006-01-02 15:04:05 MST")
 	}
-	field("Expires", expiry)
-	field("Stats since", stats.Since.Format(time.RFC3339))
-	field("Updated", stats.CapturedAt.Format(time.RFC3339))
+	published := "--"
+	if !stats.Site.CreatedAt.IsZero() {
+		published = stats.Site.CreatedAt.Local().Format("2006-01-02 15:04:05 MST")
+	}
+	part("", fmt.Sprintf("%-19s%s", "Published", published))
+	part(termui.Dim, " | Expires ")
+	part("", expiry)
+	newline()
 	visitorSuffix := ""
 	if stats.VisitorsCapped {
 		visitorSuffix = " (tracking limit reached)"
@@ -231,11 +240,17 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	if d.interactive {
 		if f, ok := d.out.(*os.File); ok {
 			if _, rows, err := term.GetSize(int(f.Fd())); err == nil {
-				visible = min(visible, max(rows-20, 1))
+				visible = min(visible, max(rows-18, 1))
 			}
 		}
 	}
 	requests := stats.Requests[max(len(stats.Requests)-visible, 0):]
+	statusWidth := 10
+	for _, request := range requests {
+		if !request.AuditOnly {
+			statusWidth = max(statusWidth, len(fmt.Sprintf("%d %s", request.Status, http.StatusText(request.Status))))
+		}
+	}
 	for _, request := range requests {
 		status := fmt.Sprintf("%d %s", request.Status, http.StatusText(request.Status))
 		color := termui.Red
@@ -255,11 +270,11 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 		if request.WAFRule != "" {
 			path += fmt.Sprintf(" [WAF: %s]", config.SanitizeTerminalString(request.WAFRule))
 		}
-		pathWidth := min(40, max(width-39, 8))
-		part(termui.Dim, request.Time.Format("15:04:05")+"  ")
+		pathWidth := min(40, max(width-29-statusWidth, 8))
+		part(termui.Dim, request.Time.Local().Format("15:04:05")+"  ")
 		part(termui.Bold, fmt.Sprintf("%-7s", config.SanitizeTerminalString(request.Method)))
 		part("", fmt.Sprintf("  %-*s ", pathWidth, termui.TruncateRight(path, pathWidth)))
-		part(color, fmt.Sprintf("%-10s", status))
+		part(color, fmt.Sprintf("%-*s", statusWidth, status))
 		part(termui.Dim, fmt.Sprintf(" %7s", termui.FormatDurationRounded(time.Duration(request.DurationMS*float64(time.Millisecond)))))
 		newline()
 	}

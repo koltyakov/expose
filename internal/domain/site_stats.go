@@ -8,6 +8,7 @@ type PublishedSiteStats struct {
 	Since          time.Time              `json:"since"`
 	CapturedAt     time.Time              `json:"captured_at"`
 	ServerVersion  string                 `json:"server_version"`
+	ServerTLSMode  string                 `json:"server_tls_mode,omitempty"`
 	WAFEnabled     bool                   `json:"waf_enabled"`
 	WAFAuditOnly   bool                   `json:"waf_audit_only"`
 	HTTPRequests   int64                  `json:"http_requests"`

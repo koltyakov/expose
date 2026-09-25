@@ -132,7 +132,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if len(stats.Requests) != 4 || stats.Requests[3].WAFRule == "" || stats.LatencyP95MS <= 0 {
 		t.Fatalf("missing log/latency: %+v", stats)
 	}
-	if !stats.WAFEnabled || stats.ServerVersion != "stats-test" {
+	if !stats.WAFEnabled || stats.ServerVersion != "stats-test" || stats.ServerTLSMode != srv.serverTLSMode() {
 		t.Fatal("missing server configuration")
 	}
 	// Republish retains the same observation session and counters.

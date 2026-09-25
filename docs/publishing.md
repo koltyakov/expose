@@ -96,7 +96,7 @@ Published sites use the server's existing WAF, HTTPS certificate handling, trust
 
 ## Upload guards and limits
 
-Both the CLI and server reject unsafe paths. The CLI checks the complete tree before creating the archive. An unsafe entry fails the upload instead of silently excluding files.
+The CLI skips blocked paths and prints a warning to stderr identifying each ignored file or directory. Blocked directories are skipped as a whole, with one warning for the directory. Publishing continues with the remaining files. The server rejects archives containing blocked paths.
 
 Rejected entries include:
 

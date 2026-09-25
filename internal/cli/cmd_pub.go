@@ -158,7 +158,9 @@ func pubCommand(ctx context.Context, args []string) error {
 		}
 		defer func() { _ = os.Remove(archive.Name()) }()
 		defer func() { _ = archive.Close() }()
-		if err := publish.Archive(fs.Arg(0), &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes}); err != nil {
+		if err := publish.ArchiveWithWarnings(fs.Arg(0), &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes}, func(name string, reason error) {
+			fmt.Fprintf(os.Stderr, "Warning: ignored %q: %v\n", name, reason)
+		}); err != nil {
 			return err
 		}
 		if _, err := archive.Seek(0, io.SeekStart); err != nil {

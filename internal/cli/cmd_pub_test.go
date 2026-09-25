@@ -66,6 +66,20 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("SPA"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(root, ".claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "launch.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	warnings, err := os.CreateTemp(t.TempDir(), "warnings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer warnings.Close()
+	originalStderr := os.Stderr
+	os.Stderr = warnings
+	defer func() { os.Stderr = originalStderr }()
 	dest := t.TempDir()
 	calls := 0
 	sourceID := ""
@@ -89,6 +103,9 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 		}
 		if r.Method != "POST" || r.URL.Path != "/v1/sites" || r.URL.Query().Get("domain") != "docs" || r.URL.Query().Get("ttl") != "24h0m0s" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		if err := os.RemoveAll(dest); err != nil {
+			t.Error(err)
 		}
 		if err := publish.Extract(r.Body, dest); err != nil {
 			t.Error(err)
@@ -116,11 +133,25 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=value"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pubCommand(context.Background(), args); err == nil {
-		t.Fatal("accepted secret file")
+	if err := pubCommand(context.Background(), args); err != nil {
+		t.Fatal(err)
 	}
-	if calls != 1 {
-		t.Fatal("unsafe folder reached server")
+	if calls != 2 {
+		t.Fatal("filtered folder did not reach server")
+	}
+	for _, name := range []string{".env", ".claude"} {
+		if _, err := os.Stat(filepath.Join(dest, name)); !os.IsNotExist(err) {
+			t.Fatalf("ignored path %s reached server: %v", name, err)
+		}
+	}
+	text, err := os.ReadFile(warnings.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".env", ".claude"} {
+		if !strings.Contains(string(text), "Warning: ignored \""+name+"\"") {
+			t.Errorf("missing warning for %s: %s", name, text)
+		}
 	}
 	if err := pubCommand(context.Background(), []string{"delete", root, "--server", server.URL, "--api-key", "token"}); err != nil {
 		t.Fatal(err)

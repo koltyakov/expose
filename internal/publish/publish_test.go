@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,21 +63,41 @@ func TestArchiveRoundTripAndSPARouting(t *testing.T) {
 	}
 }
 
-func TestArchiveGuardsBeforeWriting(t *testing.T) {
-	for _, name := range []string{"node_modules/pkg/index.js", ".env.production", "nested/.git/config", "tls.key", "nested/secrets.json"} {
+func TestArchiveSkipsBlockedPaths(t *testing.T) {
+	for _, name := range []string{".claude/launch.json", "node_modules/pkg/index.js", ".env.production", "nested/.git/config", "tls.key", "nested/secrets.json"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			writeFile(t, root, "index.html", "root")
 			writeFile(t, root, name, "secret")
+			writeFile(t, root, ".well-known/security.txt", "public")
 			var buf bytes.Buffer
-			if err := Archive(root, &buf); err == nil {
-				t.Fatal("expected rejection")
+			var ignored []string
+			if err := ArchiveWithWarnings(root, &buf, func(path string, reason error) {
+				ignored = append(ignored, path)
+				if reason == nil {
+					t.Error("missing warning reason")
+				}
+			}); err != nil {
+				t.Fatal(err)
 			}
-			if buf.Len() != 0 {
-				t.Fatal("wrote archive before validation finished")
+			if len(ignored) != 1 || (ignored[0] != name && !strings.HasPrefix(name, ignored[0]+"/")) {
+				t.Fatalf("unexpected ignored paths: %v", ignored)
+			}
+			dest := t.TempDir()
+			if err := Extract(&buf, dest); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dest, name)); !os.IsNotExist(err) {
+				t.Fatalf("blocked file was not omitted: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Join(dest, ".well-known/security.txt")); err != nil || string(data) != "public" {
+				t.Fatalf("allowed hidden path missing: %q, %v", data, err)
 			}
 		})
 	}
+}
+
+func TestArchiveRejectsSymlinks(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "index.html", "root")
 	if err := os.Symlink("index.html", filepath.Join(root, "link")); err != nil {

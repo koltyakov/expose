@@ -20,7 +20,7 @@ const MaxFiles = 20000
 
 var ErrSiteTooLarge = errors.New("site exceeds maximum extracted size")
 
-// ValidatePath rejects unsafe names rather than silently omitting private files.
+// ValidatePath rejects unsafe names and private file paths.
 func ValidatePath(name string) error {
 	if !fs.ValidPath(name) || name == "." || strings.ContainsAny(name, "\\:\x00") {
 		return fmt.Errorf("unsafe publish path %q", name)
@@ -42,8 +42,14 @@ func ValidatePath(name string) error {
 	return nil
 }
 
-// Archive validates the entire tree before writing a gzip-compressed tar archive.
+// Archive writes a gzip-compressed tar archive, omitting blocked paths.
 func Archive(dir string, dst io.Writer) error {
+	return ArchiveWithWarnings(dir, dst, nil)
+}
+
+// ArchiveWithWarnings reports each omitted path through warn, when non-nil.
+// Blocked directories are reported once and their contents are skipped.
+func ArchiveWithWarnings(dir string, dst io.Writer, warn func(string, error)) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -66,7 +72,13 @@ func Archive(dir string, dst io.Writer) error {
 			return nil
 		}
 		if err := ValidatePath(name); err != nil {
-			return err
+			if warn != nil {
+				warn(name, err)
+			}
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {

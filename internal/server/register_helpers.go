@@ -232,6 +232,9 @@ func (s *Server) allocateRegisterRoute(ctx context.Context, keyID string, prepar
 			)
 		}
 	}
+	if isHostnameInUseError(err) && req.Subdomain != "" {
+		err = s.hostnameConflict(ctx, keyID, req.Subdomain+"."+normalizeHost(s.cfg.BaseDomain))
+	}
 	return domainRec, tunnelRec, err
 }
 

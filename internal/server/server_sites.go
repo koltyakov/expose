@@ -228,6 +228,10 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 	}
 	if err != nil {
 		_ = os.RemoveAll(final)
+		if isHostnameInUseError(err) {
+			http.Error(w, s.hostnameConflict(r.Context(), key, site.Hostname).Error(), http.StatusConflict)
+			return
+		}
 		s.siteError(w, err)
 		return
 	}

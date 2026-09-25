@@ -255,6 +255,20 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 	if w.Code != 409 {
 		t.Fatalf("conflict: %d", w.Code)
 	}
+	if strings.TrimSpace(w.Body.String()) != "hostname already in use" {
+		t.Fatalf("disclosed another owner's publication: %s", w.Body.String())
+	}
+	_, live, err := st.AllocateDomainAndTunnel(ctx, key.ID, "temporary", "live", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTunnelConnected(ctx, live.ID); err != nil {
+		t.Fatal(err)
+	}
+	w = request("POST", "/v1/sites?domain=live", "owner", archive.Bytes())
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "expose http") || !strings.Contains(w.Body.String(), "Ctrl+C") {
+		t.Fatalf("missing tunnel conflict guidance: %d %s", w.Code, w.Body.String())
+	}
 	w = request("PATCH", "/v1/sites/"+subdomain+"?domain=app", "owner", nil)
 	if w.Code != 405 {
 		t.Fatalf("unsupported method: %d %s", w.Code, w.Body.String())

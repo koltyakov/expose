@@ -23,7 +23,7 @@ func TestHostnameConflictDescribesOnlyOwnedExposure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	key, err := st.CreateAPIKey(ctx, "owner", "hash")
 	if err != nil {
 		t.Fatal(err)

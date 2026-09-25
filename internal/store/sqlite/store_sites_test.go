@@ -18,7 +18,7 @@ func TestPublishReclaimsStoppedTunnelHostname(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer store.Close()
+				defer func() { _ = store.Close() }()
 				ctx := context.Background()
 				key, err := store.CreateAPIKey(ctx, "owner", "owner-hash")
 				if err != nil {

@@ -76,7 +76,7 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer warnings.Close()
+	defer func() { _ = warnings.Close() }()
 	originalStderr := os.Stderr
 	os.Stderr = warnings
 	defer func() { os.Stderr = originalStderr }()

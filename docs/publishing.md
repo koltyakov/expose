@@ -41,7 +41,7 @@ Publishing records a hash of the source folder's canonical absolute path and mac
 
 ### Hostnames and expiry
 
-Without `--domain`, the server generates a random hashed subdomain on the first publication. Publishing the same folder again reuses its existing hostname. With `--domain=docs`, the site uses `docs.<server-base-domain>`, following the same convention as `expose http 3000 --domain=docs`. Publishing to that domain again replaces the site owned by your API key. A hostname reserved by another API key or by a tunnel cannot be claimed.
+Without `--domain`, the server generates a random hashed subdomain on the first publication. Publishing the same folder again reuses its existing hostname. With `--domain=docs`, the site uses `docs.<server-base-domain>`, following the same convention as `expose http 3000 --domain=docs`. Publishing to that domain again replaces the site owned by your API key. After stopping a tunnel, you can publish to its hostname using the same API key. Publishing replaces the stopped tunnel's reservation and invalidates its old sessions and connection tokens. A hostname reserved by another API key or by a connected tunnel cannot be claimed.
 
 Republishing replaces the entire remote folder. Files absent from the new upload are removed. The server validates and extracts the upload into a separate directory, then switches the site to it. A rejected upload leaves the current site intact. The site's URL and identity stay the same, and its TTL restarts from the new publication time. If a folder has multiple publications, use `--domain` to choose which one to replace. An explicit new domain creates a separate publication.
 

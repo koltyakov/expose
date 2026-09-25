@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -16,6 +17,9 @@ func (s *Store) CreatePublishedSite(ctx context.Context, site domain.PublishedSi
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		if err := releaseStoppedTunnelHostnameTx(ctx, tx, site); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO domains(id, api_key_id, type, hostname, status, created_at) VALUES(?, ?, 'published_site', ?, 'active', ?)`, site.ID, site.APIKeyID, site.Hostname, site.CreatedAt)
 		if err != nil {
 			return siteConflictError(err)
@@ -26,6 +30,37 @@ func (s *Store) CreatePublishedSite(ctx context.Context, site domain.PublishedSi
 		}
 		return tx.Commit()
 	})
+}
+
+// Reclaim the owner's tunnel reservation atomically with publication. Removing
+// old sessions and tokens prevents them from reconnecting onto the published host.
+func releaseStoppedTunnelHostnameTx(ctx context.Context, tx *sql.Tx, site domain.PublishedSite) error {
+	var id, owner, kind string
+	err := tx.QueryRowContext(ctx, `SELECT id, api_key_id, type FROM domains WHERE hostname = ?`, site.Hostname).Scan(&id, &owner, &kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if owner != site.APIKeyID || (kind != domain.DomainTypeTemporarySubdomain && kind != domain.DomainTypePermanentSubdomain) {
+		return ErrHostnameInUse
+	}
+	connected, err := domainHasConnectedTunnelTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if connected {
+		return ErrHostnameInUse
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM connect_tokens WHERE tunnel_id IN (SELECT id FROM tunnels WHERE domain_id = ?)`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tunnels WHERE domain_id = ?`, id); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id = ?`, id)
+	return err
 }
 
 func siteConflictError(err error) error {

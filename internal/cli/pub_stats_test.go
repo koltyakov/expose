@@ -136,7 +136,7 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	display.close()
-	for _, text := range []string{"docs.example.com", "Expires", "HTTP requests", "Visitors", "2.0 KiB/s", "Request latency", "1 blocked", termui.ShowCur} {
+	for _, text := range []string{"docs.example.com", "Expires", "HTTP Requests", "Visitors", "2.0 KiB/s", "Request latency", "blocked 1", termui.ShowCur} {
 		if !strings.Contains(output.String(), text) {
 			t.Errorf("dashboard missing %q", text)
 		}

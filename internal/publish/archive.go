@@ -14,7 +14,8 @@ import (
 	"strings"
 )
 
-const MaxArchiveBytes int64 = 100 << 20
+// Allow 200 MiB sites even when compression adds archive overhead.
+const MaxArchiveBytes int64 = 256 << 20
 const MaxExpandedBytes int64 = 500 << 20
 const MaxFiles = 20000
 

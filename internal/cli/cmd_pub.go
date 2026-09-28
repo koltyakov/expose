@@ -301,7 +301,7 @@ type archiveLimitWriter struct {
 
 func (w *archiveLimitWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > w.remaining {
-		return 0, fmt.Errorf("compressed archive exceeds 100 MiB")
+		return 0, fmt.Errorf("compressed archive exceeds %d MiB", publish.MaxArchiveBytes>>20)
 	}
 	n, err := w.w.Write(p)
 	w.remaining -= int64(n)

@@ -120,7 +120,7 @@ The server limits each site's total extracted file size to **10 MiB** by default
 expose server --publish-max-bytes=26214400
 ```
 
-This limit applies to the sum of all files, including on replacement uploads. Oversized sites receive HTTP `413`, their staging files are removed, and an existing publication stays intact. Compressed uploads remain limited to 100 MiB and archives to 20,000 entries. The CLI also has a 500 MiB extracted-size ceiling. Invalid archives never become routable. There is no upload-policy override for blocked files.
+This limit applies to the sum of all files, including on replacement uploads. Oversized sites receive HTTP `413`, their staging files are removed, and an existing publication stays intact. Compressed uploads are limited to 256 MiB and archives to 20,000 entries. Both the client and server must support this archive limit; older versions cap compressed uploads at 100 MiB. The 256 MiB cap leaves room for archive overhead when publishing 200 MiB of incompressible files. The CLI also has a 500 MiB extracted-size ceiling. Invalid archives never become routable. There is no upload-policy override for blocked files.
 
 ## Server storage
 

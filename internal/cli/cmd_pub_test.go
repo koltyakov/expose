@@ -72,13 +72,13 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".claude", "launch.json"), []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	warnings, err := os.CreateTemp(t.TempDir(), "warnings")
+	output, err := os.CreateTemp(t.TempDir(), "progress")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = warnings.Close() }()
+	defer func() { _ = output.Close() }()
 	originalStderr := os.Stderr
-	os.Stderr = warnings
+	os.Stderr = output
 	defer func() { os.Stderr = originalStderr }()
 	dest := t.TempDir()
 	calls := 0
@@ -103,6 +103,9 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 		}
 		if r.Method != "POST" || r.URL.Path != "/v1/sites" || r.URL.Query().Get("domain") != "docs" || r.URL.Query().Get("ttl") != "24h0m0s" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		if r.ContentLength <= 0 || r.Header.Get("Content-Type") != "application/gzip" {
+			t.Errorf("missing archive metadata: length %d, type %q", r.ContentLength, r.Header.Get("Content-Type"))
 		}
 		if err := os.RemoveAll(dest); err != nil {
 			t.Error(err)
@@ -130,10 +133,17 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("got %d requests", calls)
 	}
+	text, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(text) != 0 {
+		t.Fatalf("JSON publishing should be quiet on stderr: %s", text)
+	}
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=value"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pubCommand(context.Background(), args); err != nil {
+	if err := pubCommand(context.Background(), args[:len(args)-1]); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 {
@@ -144,13 +154,18 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 			t.Fatalf("ignored path %s reached server: %v", name, err)
 		}
 	}
-	text, err := os.ReadFile(warnings.Name())
+	text, err = os.ReadFile(output.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{".env", ".claude"} {
-		if !strings.Contains(string(text), "Warning: ignored \""+name+"\"") {
-			t.Errorf("missing warning for %s: %s", name, text)
+	for _, want := range []string{"Archiving " + root, "Archived 1 file, 3.0 B", "tar.gz in ", "Uploading ", "to " + server.URL, "Uploaded ", "(100%) in "} {
+		if !strings.Contains(string(text), want) {
+			t.Errorf("missing progress detail %q: %s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"Warning", "ignored", ".env", ".claude", "\r", "\x1b"} {
+		if strings.Contains(string(text), unwanted) {
+			t.Errorf("unexpected publish output %q: %s", unwanted, text)
 		}
 	}
 	if err := pubCommand(context.Background(), []string{"delete", root, "--server", server.URL, "--api-key", "token"}); err != nil {
@@ -177,5 +192,40 @@ func TestFolderDeletionRejectsMissingOrAmbiguousPublications(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "--domain") {
 			t.Fatalf("expected an error directing user to --domain, got %v", err)
 		}
+	}
+}
+
+func TestPubRejectedUploadDoesNotReportCompletion(t *testing.T) {
+	t.Chdir(t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("site"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		http.Error(w, "site exceeds limit", http.StatusRequestEntityTooLarge)
+	}))
+	defer server.Close()
+	original := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	defer func() { http.DefaultTransport = original }()
+	output, err := os.CreateTemp(t.TempDir(), "progress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = output.Close() }()
+	originalStderr := os.Stderr
+	os.Stderr = output
+	defer func() { os.Stderr = originalStderr }()
+	err = pubCommand(context.Background(), []string{root, "--server", server.URL, "--api-key", "token"})
+	if err == nil || !strings.Contains(err.Error(), "413") {
+		t.Fatalf("expected upload rejection: %v", err)
+	}
+	text, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(text), "Uploading ") || strings.Contains(string(text), "Uploaded ") {
+		t.Fatalf("rejected upload reported completion: %s", text)
 	}
 }

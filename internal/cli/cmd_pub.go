@@ -19,6 +19,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/publish"
+	"golang.org/x/term"
 )
 
 func runPub(ctx context.Context, args []string) int {
@@ -150,6 +151,9 @@ func pubCommand(ctx context.Context, args []string) error {
 	method := http.MethodGet
 	var body io.Reader
 	var archive *os.File
+	var progress *pubProgress
+	var uploadStarted time.Time
+	var archiveSize int64
 	switch action {
 	case "upload":
 		archive, err = os.CreateTemp("", "expose-publish-*.tar.gz")
@@ -158,10 +162,32 @@ func pubCommand(ctx context.Context, args []string) error {
 		}
 		defer func() { _ = os.Remove(archive.Name()) }()
 		defer func() { _ = archive.Close() }()
-		if err := publish.ArchiveWithWarnings(fs.Arg(0), &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes}, func(name string, reason error) {
-			fmt.Fprintf(os.Stderr, "Warning: ignored %q: %v\n", name, reason)
-		}); err != nil {
+		var report func(publish.ArchiveProgress)
+		var stats publish.ArchiveProgress
+		archiveStarted := time.Now()
+		if !jsonOutput {
+			progress = &pubProgress{out: os.Stderr, interactive: term.IsTerminal(int(os.Stderr.Fd()))}
+			defer progress.close()
+			progress.start(fmt.Sprintf("Archiving %s...", fs.Arg(0)))
+			report = func(p publish.ArchiveProgress) {
+				stats = p
+				progress.update(fmt.Sprintf("Archiving: %d / %d files, %s / %s", p.Files, p.TotalFiles, pubFormatBytes(float64(p.Bytes)), pubFormatBytes(float64(p.TotalBytes))))
+			}
+		}
+		if err := publish.ArchiveWithProgress(fs.Arg(0), &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes}, report); err != nil {
 			return err
+		}
+		info, err := archive.Stat()
+		if err != nil {
+			return err
+		}
+		archiveSize = info.Size()
+		if progress != nil {
+			files := "files"
+			if stats.Files == 1 {
+				files = "file"
+			}
+			progress.finish(fmt.Sprintf("Archived %d %s, %s → %s tar.gz in %s", stats.Files, files, pubFormatBytes(float64(stats.Bytes)), pubFormatBytes(float64(archiveSize)), time.Since(archiveStarted).Round(time.Millisecond)))
 		}
 		if _, err := archive.Seek(0, io.SeekStart); err != nil {
 			return err
@@ -181,11 +207,12 @@ func pubCommand(ctx context.Context, args []string) error {
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	if archive != nil {
 		req.Header.Set("Content-Type", "application/gzip")
-		info, err := archive.Stat()
-		if err != nil {
-			return err
+		req.ContentLength = archiveSize
+		if progress != nil {
+			uploadStarted = time.Now()
+			progress.start(fmt.Sprintf("Uploading %s to %s...", pubFormatBytes(float64(archiveSize)), server))
+			req.Body = io.NopCloser(&pubUploadReader{r: archive, progress: progress, total: archiveSize})
 		}
-		req.ContentLength = info.Size()
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -218,6 +245,9 @@ func pubCommand(ctx context.Context, args []string) error {
 			return err
 		}
 		sites = append(sites, site)
+		if progress != nil {
+			progress.finish(fmt.Sprintf("Uploaded %s (100%%) in %s", pubFormatBytes(float64(archiveSize)), time.Since(uploadStarted).Round(time.Millisecond)))
+		}
 	}
 	if jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
@@ -226,6 +256,9 @@ func pubCommand(ctx context.Context, args []string) error {
 			return encoder.Encode(sites)
 		}
 		return encoder.Encode(sites[0])
+	}
+	if action == "upload" {
+		return writePublishedSiteResult(os.Stdout, sites[0], term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == "")
 	}
 	if len(sites) == 0 {
 		fmt.Println("No published sites.")

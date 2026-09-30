@@ -108,6 +108,42 @@ func TestArchiveRejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestArchiveProgress(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "index.html", strings.Repeat("x", 128*1024))
+	writeFile(t, root, "empty.txt", "")
+	writeFile(t, root, ".env", "secret")
+	var buf bytes.Buffer
+	var updates []ArchiveProgress
+	if err := ArchiveWithProgress(root, &buf, func(p ArchiveProgress) {
+		updates = append(updates, p)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) < 4 {
+		t.Fatalf("expected incremental byte and file progress, got %v", updates)
+	}
+	first, last := updates[0], updates[len(updates)-1]
+	if first != (ArchiveProgress{TotalFiles: 2, TotalBytes: 128 * 1024}) {
+		t.Fatalf("unexpected initial progress: %+v", first)
+	}
+	if last != (ArchiveProgress{Files: 2, TotalFiles: 2, Bytes: 128 * 1024, TotalBytes: 128 * 1024}) {
+		t.Fatalf("unexpected final progress: %+v", last)
+	}
+	for i := 1; i < len(updates); i++ {
+		if updates[i].Bytes < updates[i-1].Bytes || updates[i].Files < updates[i-1].Files {
+			t.Fatalf("progress went backwards: %v", updates)
+		}
+	}
+	dest := t.TempDir()
+	if err := Extract(&buf, dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("blocked file was not omitted: %v", err)
+	}
+}
+
 func TestExtractRejectsHostileArchives(t *testing.T) {
 	for _, header := range []tar.Header{
 		{Name: "../escape", Typeflag: tar.TypeReg},

@@ -51,6 +51,21 @@ func Archive(dir string, dst io.Writer) error {
 // ArchiveWithWarnings reports each omitted path through warn, when non-nil.
 // Blocked directories are reported once and their contents are skipped.
 func ArchiveWithWarnings(dir string, dst io.Writer, warn func(string, error)) error {
+	return archive(dir, dst, warn, nil)
+}
+
+// ArchiveProgress describes the regular files included in an archive.
+type ArchiveProgress struct {
+	Files, TotalFiles int
+	Bytes, TotalBytes int64
+}
+
+// ArchiveWithProgress omits blocked paths silently and reports file and byte progress.
+func ArchiveWithProgress(dir string, dst io.Writer, report func(ArchiveProgress)) error {
+	return archive(dir, dst, nil, report)
+}
+
+func archive(dir string, dst io.Writer, warn func(string, error), report func(ArchiveProgress)) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -105,8 +120,16 @@ func ArchiveWithWarnings(dir string, dst io.Writer, warn func(string, error)) er
 	if err != nil || !index.Mode().IsRegular() {
 		return fmt.Errorf("publish requires a root index.html")
 	}
+	progress := ArchiveProgress{TotalFiles: len(names), TotalBytes: total}
+	if report != nil {
+		report(progress)
+	}
 	zw := gzip.NewWriter(dst)
 	tw := tar.NewWriter(zw)
+	var contents io.Writer = tw
+	if report != nil {
+		contents = &archiveProgressWriter{w: tw, progress: &progress, report: report}
+	}
 	total = 0
 	for _, name := range names {
 		before, err := root.Lstat(name)
@@ -136,17 +159,34 @@ func ArchiveWithWarnings(dir string, dst io.Writer, warn func(string, error)) er
 		}
 		err = tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: info.Size(), ModTime: info.ModTime(), Typeflag: tar.TypeReg})
 		if err == nil {
-			_, err = io.CopyN(tw, f, info.Size())
+			_, err = io.CopyN(contents, f, info.Size())
 		}
 		_ = f.Close()
 		if err != nil {
 			return err
+		}
+		progress.Files++
+		if report != nil {
+			report(progress)
 		}
 	}
 	if err := tw.Close(); err != nil {
 		return err
 	}
 	return zw.Close()
+}
+
+type archiveProgressWriter struct {
+	w        io.Writer
+	progress *ArchiveProgress
+	report   func(ArchiveProgress)
+}
+
+func (w *archiveProgressWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.progress.Bytes += int64(n)
+	w.report(*w.progress)
+	return n, err
 }
 
 // Extract accepts only bounded, regular-file archives. dir must be a new private directory.

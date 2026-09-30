@@ -22,6 +22,10 @@ expose pub delete --domain=docs
 
 Positional arguments refer to local folders. To select a publication by subdomain, use `--domain=docs` for `docs.example.com`. Automatically generated hashed subdomains work the same way.
 
+Publishing shows archive and upload progress on stderr, including file counts, original and compressed sizes, upload destination, and elapsed time. Terminal progress updates in place. Redirected output records only stage starts and completion summaries. `--json` suppresses progress and prints only the publication metadata on success.
+
+After uploading, a success summary highlights the public URL and shows the expiry in your local timezone. Terminal output uses color, unless `NO_COLOR` is set. Redirected output stays plain text.
+
 ### Unpublish a site
 
 Find the site, then unpublish it using the same API key that published it:
@@ -102,7 +106,7 @@ Each file has a quoted, publication-specific `ETag`. Conditional `GET` and `HEAD
 
 ## Upload guards and limits
 
-The CLI skips blocked paths and prints a warning to stderr identifying each ignored file or directory. Blocked directories are skipped as a whole, with one warning for the directory. Publishing continues with the remaining files. The server rejects archives containing blocked paths.
+The CLI silently skips blocked paths, including the entire contents of blocked directories. Publishing continues with the remaining files. The server rejects archives containing blocked paths.
 
 Rejected entries include:
 

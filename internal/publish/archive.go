@@ -56,7 +56,7 @@ func Archive(dir string, dst io.Writer) error {
 // ArchiveWithWarnings reports each omitted path through warn, when non-nil.
 // Blocked directories are reported once and their contents are skipped.
 func ArchiveWithWarnings(dir string, dst io.Writer, warn func(string, error)) error {
-	return archive(dir, dst, warn, nil, nil, nil)
+	return archive(dir, dst, warn, nil, nil, nil, nil)
 }
 
 // ArchiveProgress describes the regular files included in an archive.
@@ -67,12 +67,18 @@ type ArchiveProgress struct {
 
 // ArchiveWithProgress omits blocked paths silently and reports file and byte progress.
 func ArchiveWithProgress(dir string, dst io.Writer, report func(ArchiveProgress)) error {
-	return archive(dir, dst, nil, report, nil, nil)
+	return archive(dir, dst, nil, report, nil, nil, nil)
 }
 
 // ArchiveDelta writes a target manifest and only new or changed file contents.
 // Files absent from the target manifest are removed when the server commits it.
 func ArchiveDelta(dir string, dst io.Writer, local, remote []domain.PublishedFile, report func(ArchiveProgress)) error {
+	return ArchiveDeltaWithIgnoredEmptyFiles(dir, dst, local, remote, nil, report)
+}
+
+// ArchiveDeltaWithIgnoredEmptyFiles allows explicitly omitted editor placeholders.
+// An ignored file that gains content before archiving requires a fresh comparison.
+func ArchiveDeltaWithIgnoredEmptyFiles(dir string, dst io.Writer, local, remote []domain.PublishedFile, ignored []string, report func(ArchiveProgress)) error {
 	diff, err := DiffFiles(local, remote)
 	if err != nil {
 		return err
@@ -81,7 +87,11 @@ func ArchiveDelta(dir string, dst io.Writer, local, remote []domain.PublishedFil
 	for _, file := range diff.Changed {
 		changed[file.Path] = true
 	}
-	return archive(dir, dst, nil, report, local, changed)
+	ignoredEmpty := make(map[string]bool, len(ignored))
+	for _, name := range ignored {
+		ignoredEmpty[name] = true
+	}
+	return archive(dir, dst, nil, report, local, changed, ignoredEmpty)
 }
 
 func openArchiveRoot(dir string) (*os.Root, error) {
@@ -145,7 +155,7 @@ func scanPublicFiles(root *os.Root, warn func(string, error), maxBytes int64) ([
 	return names, total, nil
 }
 
-func archive(dir string, dst io.Writer, warn func(string, error), report func(ArchiveProgress), manifest []domain.PublishedFile, changed map[string]bool) error {
+func archive(dir string, dst io.Writer, warn func(string, error), report func(ArchiveProgress), manifest []domain.PublishedFile, changed, ignoredEmpty map[string]bool) error {
 	root, err := openArchiveRoot(dir)
 	if err != nil {
 		return err
@@ -159,6 +169,23 @@ func archive(dir string, dst io.Writer, warn func(string, error), report func(Ar
 	if manifest != nil {
 		for _, file := range manifest {
 			expected[file.Path] = file
+		}
+		if len(ignoredEmpty) > 0 {
+			included := names[:0]
+			for _, name := range names {
+				if ignoredEmpty[name] {
+					info, err := root.Lstat(name)
+					if err != nil {
+						return err
+					}
+					if !info.Mode().IsRegular() || info.Size() != 0 {
+						return fmt.Errorf("file changed during publish: %s", name)
+					}
+					continue
+				}
+				included = append(included, name)
+			}
+			names = included
 		}
 		if len(names) != len(manifest) {
 			return fmt.Errorf("folder changed during publish; retry")

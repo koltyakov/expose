@@ -155,6 +155,7 @@ func pubCommand(ctx context.Context, args []string) error {
 		opts := pubUploadOptions{Folder: fs.Arg(0), Endpoint: endpoint, Server: server, Key: cfg.APIKey, Name: name, SourceID: sourceID, TTL: ttl, Full: full}
 		var snapshot map[string]os.FileInfo
 		if watch {
+			opts.IgnoreNewEmpty = true
 			snapshot, err = publish.FileSnapshot(opts.Folder)
 			if err != nil {
 				return err

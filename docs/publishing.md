@@ -84,6 +84,8 @@ expose pub ./dist --domain=docs --watch --ttl=24h
 
 Watch mode checks public file metadata every 250 ms and waits for 200 ms of quiet before comparing checksums and uploading changes. New files, edits, renames, and deletions are detected recursively. Blocked paths do not trigger uploads. A metadata-only change with identical contents does not upload or renew the TTL. The dashboard's New, Updates, and Deleted counts accumulate across successful uploads in the current watch session, including the initial publish. Failed attempts do not count. Creating and then deleting a file increments both New and Deleted.
 
+New zero-byte files are ignored until they have content, including during the initial watch upload. Creating an empty file in an editor and then saving content counts as one new file, not a new file followed by an update. Already-published files can still be emptied or deleted. One-shot publishing includes empty files as usual.
+
 The dashboard shows hosting stats, the local folder, current archive/upload progress, the last publication time, and change counts and sizes. Stats keep refreshing while an upload is in progress. Saves during an upload are queued for another incremental comparison afterward. Successful updates renew the TTL using the original `--ttl`, or the server default if omitted.
 
 Temporary network failures, revision conflicts, and incomplete builds are retried without replacing the live site. A missing root `index.html` pauses publishing until it returns. Deleting or expiring the remote publication, or losing access to it, stops watch mode. Updates are pinned to the original publication identity so hostname reuse cannot redirect them to another site.

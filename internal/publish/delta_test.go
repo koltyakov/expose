@@ -56,6 +56,34 @@ func TestManifestAndDiff(t *testing.T) {
 	}
 }
 
+func TestArchiveDeltaWithIgnoredEmptyFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "index.html", "home")
+	writeFile(t, root, "new.txt", "")
+	files := []domain.PublishedFile{manifestFile("index.html", "home")}
+	var archive bytes.Buffer
+	if err := ArchiveDeltaWithIgnoredEmptyFiles(root, &archive, files, nil, []string{"new.txt"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	got, err := ExtractDeltaWithLimit(&archive, dest, MaxExpandedBytes)
+	if err != nil || !reflect.DeepEqual(got, files) {
+		t.Fatalf("ignored placeholder appears in manifest: %+v, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("ignored placeholder was archived: %v", err)
+	}
+	archive.Reset()
+	if err := ArchiveDelta(root, &archive, files, nil, nil); err == nil {
+		t.Fatal("ordinary delta accepted a missing file in the manifest")
+	}
+	writeFile(t, root, "new.txt", "content")
+	archive.Reset()
+	if err := ArchiveDeltaWithIgnoredEmptyFiles(root, &archive, files, nil, []string{"new.txt"}, nil); err == nil {
+		t.Fatal("ignored placeholder gained content without requiring a new comparison")
+	}
+}
+
 func TestDiffFilesCategorySizes(t *testing.T) {
 	local := []domain.PublishedFile{
 		manifestFile("index.html", "new"),

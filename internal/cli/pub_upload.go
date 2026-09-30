@@ -19,6 +19,7 @@ type pubUploadOptions struct {
 	Folder, Endpoint, Server, Key, Name, SourceID string
 	TTL                                           time.Duration
 	Full, SkipUnchanged                           bool
+	IgnoreNewEmpty                                bool
 	ExpectedSiteID                                string
 	Progress                                      *pubProgress
 	OnDiff                                        func(publish.FileDiff)
@@ -63,6 +64,7 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 		query.Set("site_id", opts.ExpectedSiteID)
 	}
 	var remote []domain.PublishedFile
+	var ignoredEmpty []string
 	var revision string
 	var err error
 	if !opts.Full {
@@ -76,6 +78,18 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 		result.Files, err = publish.Manifest(opts.Folder)
 		if err != nil {
 			return result, err
+		}
+		if opts.IgnoreNewEmpty {
+			published := pubPublishedPaths(remote)
+			files := result.Files[:0]
+			for _, file := range result.Files {
+				if file.Size > 0 || published[file.Path] {
+					files = append(files, file)
+				} else {
+					ignoredEmpty = append(ignoredEmpty, file.Path)
+				}
+			}
+			result.Files = files
 		}
 		result.Diff, err = publish.DiffFiles(result.Files, remote)
 		if err != nil {
@@ -112,7 +126,7 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 	if opts.Full {
 		err = publish.ArchiveWithProgress(opts.Folder, limited, report)
 	} else {
-		err = publish.ArchiveDelta(opts.Folder, limited, result.Files, remote, report)
+		err = publish.ArchiveDeltaWithIgnoredEmptyFiles(opts.Folder, limited, result.Files, remote, ignoredEmpty, report)
 	}
 	if err != nil {
 		return result, err
@@ -170,4 +184,12 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 		progress.finish(fmt.Sprintf("Uploaded %s (100%%) in %s", pubFormatBytes(float64(archiveSize)), time.Since(uploadStarted).Round(time.Millisecond)))
 	}
 	return result, nil
+}
+
+func pubPublishedPaths(files []domain.PublishedFile) map[string]bool {
+	paths := make(map[string]bool, len(files))
+	for _, file := range files {
+		paths[file.Path] = true
+	}
+	return paths
 }

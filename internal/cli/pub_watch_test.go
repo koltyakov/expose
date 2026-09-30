@@ -231,6 +231,114 @@ func TestPubWatchCumulativeChanges(t *testing.T) {
 	}
 }
 
+func TestPubWatchIgnoresNewEmptyFiles(t *testing.T) {
+	root := t.TempDir()
+	writeIncrementalCLIFile(t, root, "index.html", "home")
+	writeIncrementalCLIFile(t, root, "existing.txt", "old")
+	h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	phase := 0
+	var createdAt time.Time
+	var output pubWatchTestOutput
+	output.onEvent = func(event pubWatchEvent) {
+		if event.Type == "stats" {
+			switch phase {
+			case 0:
+				writeIncrementalCLIFile(t, root, "new.txt", "")
+				createdAt, phase = time.Now(), 1
+			case 1:
+				if time.Since(createdAt) < 100*time.Millisecond {
+					return
+				}
+				h.mu.Lock()
+				posts, fetches := h.posts, h.fetches
+				h.mu.Unlock()
+				if posts != 0 || fetches != 0 {
+					t.Fatalf("empty placeholder triggered comparison/upload: posts=%d fetches=%d", posts, fetches)
+				}
+				writeIncrementalCLIFile(t, root, "existing.txt", "")
+				phase = 2
+			}
+			return
+		}
+		if event.Type != "published" || phase < 2 {
+			return
+		}
+		h.mu.Lock()
+		paths := pubPublishedPaths(h.files)
+		h.mu.Unlock()
+		switch phase {
+		case 2:
+			if event.Changes.New.Files != 0 || event.Changes.Updated != (pubWatchFileStats{1, 0}) || paths["new.txt"] {
+				t.Fatalf("existing truncation published the empty placeholder: %+v", event.Changes)
+			}
+			writeIncrementalCLIFile(t, root, "new.txt", "content")
+			phase = 3
+		case 3:
+			if event.Changes.New != (pubWatchFileStats{1, 7}) || event.Changes.Updated.Files != 0 || !paths["new.txt"] {
+				t.Fatalf("first content save was not counted only as new: %+v", event.Changes)
+			}
+			if err := os.Remove(filepath.Join(root, "existing.txt")); err != nil {
+				t.Fatal(err)
+			}
+			phase = 4
+		case 4:
+			if event.Changes.Deleted != (pubWatchFileStats{1, 0}) || paths["existing.txt"] {
+				t.Fatalf("published empty file deletion was missed: %+v", event.Changes)
+			}
+			phase = 5
+			cancel()
+		}
+	}
+	if err := watchPublishedSite(ctx, client, opts, initial, snapshot, &output, false, true, fastPubWatchTiming()); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if phase != 5 || h.commits != 3 {
+		t.Fatalf("empty-file watch flow incomplete: phase=%d commits=%d", phase, h.commits)
+	}
+}
+
+func TestPubUploadNewEmptyFilesOnlyIgnoredForWatch(t *testing.T) {
+	for _, watch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("watch=%v", watch), func(t *testing.T) {
+			root := t.TempDir()
+			writeIncrementalCLIFile(t, root, "index.html", "home")
+			writeIncrementalCLIFile(t, root, "existing.txt", "")
+			h, client, opts, _, _ := newPubWatchTestServer(t, root)
+			writeIncrementalCLIFile(t, root, "new.txt", "")
+			opts.IgnoreNewEmpty = watch
+			opts.ExpectedSiteID = h.site.ID
+			result, err := uploadPublishedSite(context.Background(), client, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths := pubPublishedPaths(result.Files)
+			if !paths["existing.txt"] || paths["new.txt"] == watch {
+				t.Fatalf("incorrect empty-file policy: %+v", result.Files)
+			}
+			if result.Diff.Updated != 0 || result.Diff.Deleted != 0 || (result.Diff.Added == 0) != watch {
+				t.Fatalf("incorrect empty-file counts: %+v", result.Diff)
+			}
+			snapshot, err := publish.FileSnapshot(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			filterPubWatchSnapshot(snapshot, paths)
+			if snapshot["existing.txt"] == nil || (snapshot["new.txt"] == nil) != watch {
+				t.Fatalf("watch snapshot did not follow published paths: %+v", snapshot)
+			}
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if pubPublishedPaths(h.files)["new.txt"] == watch {
+				t.Fatalf("archive did not follow empty-file policy: %+v", h.files)
+			}
+		})
+	}
+}
+
 func TestPubWatchPublishesChangedFilesAndStreamsStats(t *testing.T) {
 	root := t.TempDir()
 	for name, content := range map[string]string{"index.html": "old", "keep.txt": "keep", "deleted.txt": "gone"} {

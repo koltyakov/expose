@@ -89,6 +89,16 @@ func samePubSnapshot(a, b map[string]os.FileInfo) bool {
 	return true
 }
 
+// New editor placeholders do not trigger comparisons until they have content.
+// Keep published empty files so truncations and deletions are still detected.
+func filterPubWatchSnapshot(snapshot map[string]os.FileInfo, published map[string]bool) {
+	for name, info := range snapshot {
+		if info.Size() == 0 && !published[name] {
+			delete(snapshot, name)
+		}
+	}
+}
+
 // Unix change times catch writes that preserve size and modification time.
 // FileInfo.Sys is platform-specific; other platforms use the portable fields.
 func pubFileChangeTime(info os.FileInfo) any {
@@ -142,6 +152,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 		}
 	}
 	opts.Full, opts.SkipUnchanged, opts.ExpectedSiteID, opts.Progress = false, true, initial.Site.ID, nil
+	opts.IgnoreNewEmpty = true
+	published := pubPublishedPaths(initial.Files)
+	filterPubWatchSnapshot(baseline, published)
 	events := make(chan pubWatchUpdate, 16)
 	send := func(event pubWatchUpdate) {
 		select {
@@ -235,6 +248,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				}
 				continue
 			}
+			filterPubWatchSnapshot(snapshot, published)
 			if scanError != "" {
 				scanError = ""
 				if !uploadBusy {
@@ -296,6 +310,8 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				}
 				// Use the pre-upload snapshot. A save during the upload must trigger
 				// another comparison, not be mistaken for already-published content.
+				published = pubPublishedPaths(event.result.Files)
+				filterPubWatchSnapshot(event.snapshot, published)
 				baseline = event.snapshot
 				uploadError, nextRetry, retryDelay = "", time.Time{}, timing.Retry
 				status.State = "Watching for changes"

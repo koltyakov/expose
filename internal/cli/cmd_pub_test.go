@@ -57,7 +57,7 @@ func TestPubDeleteCLI(t *testing.T) {
 	}
 }
 
-func TestPubCLIUploadsValidatedArchive(t *testing.T) {
+func TestPubFullCLIUploadsValidatedArchive(t *testing.T) {
 	t.Chdir(t.TempDir())
 	root := filepath.Join(t.TempDir(), "dist")
 	if err := os.Mkdir(root, 0700); err != nil {
@@ -104,6 +104,9 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 		if r.Method != "POST" || r.URL.Path != "/v1/sites" || r.URL.Query().Get("domain") != "docs" || r.URL.Query().Get("ttl") != "24h0m0s" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
 		}
+		if r.URL.Query().Has("incremental") || r.Header.Get("If-Match") != "" {
+			t.Errorf("full upload sent incremental parameters: %s, revision %q", r.URL, r.Header.Get("If-Match"))
+		}
 		if r.ContentLength <= 0 || r.Header.Get("Content-Type") != "application/gzip" {
 			t.Errorf("missing archive metadata: length %d, type %q", r.ContentLength, r.Header.Get("Content-Type"))
 		}
@@ -126,7 +129,7 @@ func TestPubCLIUploadsValidatedArchive(t *testing.T) {
 	original := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
 	defer func() { http.DefaultTransport = original }()
-	args := []string{root, "--server", server.URL, "--api-key", "token", "--domain", "docs", "--ttl", "24h", "--json"}
+	args := []string{root, "--full", "--server", server.URL, "--api-key", "token", "--domain", "docs", "--ttl", "24h", "--json"}
 	if err := pubCommand(context.Background(), args); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +220,7 @@ func TestPubRejectedUploadDoesNotReportCompletion(t *testing.T) {
 	originalStderr := os.Stderr
 	os.Stderr = output
 	defer func() { os.Stderr = originalStderr }()
-	err = pubCommand(context.Background(), []string{root, "--server", server.URL, "--api-key", "token"})
+	err = pubCommand(context.Background(), []string{root, "--full", "--server", server.URL, "--api-key", "token"})
 	if err == nil || !strings.Contains(err.Error(), "413") {
 		t.Fatalf("expected upload rejection: %v", err)
 	}

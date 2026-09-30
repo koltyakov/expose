@@ -9,12 +9,14 @@ import (
 
 // pubProgress keeps terminal updates on one line and logs only stage boundaries
 // when output is redirected. Finish also suppresses late HTTP transport reads.
+// Progress output is best-effort and must not interrupt an upload.
 type pubProgress struct {
 	mu          sync.Mutex
 	out         io.Writer
 	interactive bool
 	lastUpdate  time.Time
 	active      bool
+	notify      func(string)
 }
 
 func (p *pubProgress) start(text string) {
@@ -22,10 +24,13 @@ func (p *pubProgress) start(text string) {
 	defer p.mu.Unlock()
 	p.active = true
 	p.lastUpdate = time.Now()
+	if p.notify != nil {
+		p.notify(text)
+	}
 	if p.interactive {
-		fmt.Fprintf(p.out, "\r\x1b[2K%s", text)
+		_, _ = fmt.Fprintf(p.out, "\r\x1b[2K%s", text)
 	} else {
-		fmt.Fprintln(p.out, text)
+		_, _ = fmt.Fprintln(p.out, text)
 	}
 }
 
@@ -35,25 +40,31 @@ func (p *pubProgress) update(text string) {
 	if !p.active || !p.interactive || time.Since(p.lastUpdate) < 100*time.Millisecond {
 		return
 	}
-	fmt.Fprintf(p.out, "\r\x1b[2K%s", text)
+	_, _ = fmt.Fprintf(p.out, "\r\x1b[2K%s", text)
 	p.lastUpdate = time.Now()
+	if p.notify != nil {
+		p.notify(text)
+	}
 }
 
 func (p *pubProgress) finish(text string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.interactive && p.active {
-		fmt.Fprint(p.out, "\r\x1b[2K")
+		_, _ = fmt.Fprint(p.out, "\r\x1b[2K")
 	}
 	p.active = false
-	fmt.Fprintln(p.out, text)
+	_, _ = fmt.Fprintln(p.out, text)
+	if p.notify != nil {
+		p.notify(text)
+	}
 }
 
 func (p *pubProgress) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.active && p.interactive {
-		fmt.Fprintln(p.out)
+		_, _ = fmt.Fprintln(p.out)
 	}
 	p.active = false
 }

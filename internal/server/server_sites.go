@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +66,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/sites")
 	id = strings.TrimPrefix(id, "/")
+	filesRequest := id == "files" && (r.URL.Query().Has("domain") || r.URL.Query().Has("source_id"))
 	statsRequest := strings.HasSuffix(id, "/stats")
 	if statsRequest {
 		id = strings.TrimSuffix(id, "/stats")
@@ -74,7 +76,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	if statsRequest && (id == "" || r.Method != http.MethodGet) {
+	if (statsRequest && id == "") || ((statsRequest || filesRequest) && r.Method != http.MethodGet) {
 		w.Header().Set("Allow", "GET")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -88,11 +90,20 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.sitesMu.Lock()
-	defer s.sitesMu.Unlock()
+	if r.Method == http.MethodGet {
+		s.sitesMu.RLock()
+		defer s.sitesMu.RUnlock()
+	} else {
+		s.sitesMu.Lock()
+		defer s.sitesMu.Unlock()
+	}
 	sites, err := st.ListPublishedSites(r.Context(), key)
 	if err != nil {
 		s.siteError(w, err)
+		return
+	}
+	if filesRequest {
+		s.writeSiteFiles(w, r, sites)
 		return
 	}
 	if r.Method == http.MethodGet && id == "" {
@@ -124,14 +135,26 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore, key string) {
-	sourceID := r.URL.Query().Get("source_id")
-	if sourceID != "" {
-		decoded, err := hex.DecodeString(sourceID)
-		if err != nil || len(decoded) != 32 {
-			http.Error(w, "invalid source_id", http.StatusBadRequest)
+	sourceID, err := siteSourceID(r.URL.Query().Get("source_id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	incremental := false
+	if raw := r.URL.Query().Get("incremental"); raw != "" {
+		incremental, err = strconv.ParseBool(raw)
+		if err != nil {
+			http.Error(w, "incremental must be a boolean", http.StatusBadRequest)
 			return
 		}
-		sourceID = strings.ToLower(sourceID)
+	}
+	if incremental && r.Header.Get("If-Match") == "" {
+		http.Error(w, "incremental publishing requires If-Match from the file listing", http.StatusPreconditionRequired)
+		return
+	}
+	if incremental && sourceID == "" && r.URL.Query().Get("domain") == "" {
+		http.Error(w, "incremental publishing requires domain or source_id", http.StatusBadRequest)
+		return
 	}
 	ttl := 7 * 24 * time.Hour
 	if raw := r.URL.Query().Get("ttl"); raw != "" {
@@ -172,7 +195,13 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 	if maxBytes <= 0 {
 		maxBytes = config.DefaultPublishMaxBytes
 	}
-	if err := publish.ExtractWithLimit(r.Body, dir, maxBytes); err != nil {
+	var manifest []domain.PublishedFile
+	if incremental {
+		manifest, err = publish.ExtractDeltaWithLimit(r.Body, dir, maxBytes)
+	} else {
+		err = publish.ExtractWithLimit(r.Body, dir, maxBytes)
+	}
+	if err != nil {
 		status := http.StatusBadRequest
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) || errors.Is(err, publish.ErrSiteTooLarge) {
@@ -193,20 +222,28 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		s.siteError(w, err)
 		return
 	}
-	var previous *domain.PublishedSite
-	for _, existing := range sites {
-		match := existing.Hostname == host
-		if r.URL.Query().Get("domain") == "" {
-			match = sourceID != "" && existing.SourceID == sourceID
-		}
-		if !match {
-			continue
-		}
-		if previous != nil {
-			http.Error(w, "multiple publications match this folder; select one with --domain", http.StatusConflict)
+	previous, err := matchingPublishedSite(sites, host, sourceID, r.URL.Query().Get("domain") != "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if expected := r.URL.Query().Get("site_id"); expected != "" && (previous == nil || previous.ID != expected) {
+		http.Error(w, "watched publication no longer exists", http.StatusNotFound)
+		return
+	}
+	if incremental {
+		if r.Header.Get("If-Match") != publishedSiteRevision(previous) {
+			http.Error(w, "publication changed since file listing; retry incremental publishing", http.StatusPreconditionFailed)
 			return
 		}
-		previous = &existing
+		baseDir := ""
+		if previous != nil {
+			baseDir = filepath.Join(s.publishDir(), previous.StorageID())
+		}
+		if err := publish.CompleteDelta(baseDir, dir, manifest, maxBytes); err != nil {
+			http.Error(w, "invalid incremental site: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	if previous != nil {
 		site.ID = previous.ID
@@ -245,6 +282,78 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		}
 	}
 	writeJSON(w, status, site)
+}
+
+func siteSourceID(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	decoded, err := hex.DecodeString(raw)
+	if err != nil || len(decoded) != 32 {
+		return "", fmt.Errorf("invalid source_id")
+	}
+	return strings.ToLower(raw), nil
+}
+
+func matchingPublishedSite(sites []domain.PublishedSite, host, sourceID string, byDomain bool) (*domain.PublishedSite, error) {
+	var previous *domain.PublishedSite
+	for _, existing := range sites {
+		match := existing.Hostname == host
+		if !byDomain {
+			match = sourceID != "" && existing.SourceID == sourceID
+		}
+		if !match {
+			continue
+		}
+		if previous != nil {
+			return nil, fmt.Errorf("multiple publications match this folder; select one with --domain")
+		}
+		previous = &existing
+	}
+	return previous, nil
+}
+
+func publishedSiteRevision(site *domain.PublishedSite) string {
+	if site == nil {
+		return `"new"`
+	}
+	return strconv.Quote(site.StorageID())
+}
+
+// The caller holds sitesMu so the manifest and revision describe one snapshot.
+func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, sites []domain.PublishedSite) {
+	sourceID, err := siteSourceID(r.URL.Query().Get("source_id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	label := r.URL.Query().Get("domain")
+	host := ""
+	if label != "" {
+		host, err = s.publishedHostname(label)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else if sourceID == "" {
+		http.Error(w, "provide domain or source_id", http.StatusBadRequest)
+		return
+	}
+	site, err := matchingPublishedSite(sites, host, sourceID, label != "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	files := []domain.PublishedFile{}
+	if site != nil {
+		files, err = publish.Manifest(filepath.Join(s.publishDir(), site.StorageID()))
+		if err != nil {
+			s.siteError(w, err)
+			return
+		}
+	}
+	w.Header().Set("ETag", publishedSiteRevision(site))
+	writeJSON(w, http.StatusOK, files)
 }
 
 func (s *Server) siteError(w http.ResponseWriter, err error) {

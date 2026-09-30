@@ -2,13 +2,15 @@ package domain
 
 import "time"
 
-// PublishedSiteStats is an owner-only snapshot of in-memory hosting statistics.
+// PublishedSiteStats is an owner-only snapshot of hosting statistics.
 type PublishedSiteStats struct {
 	Site           PublishedSite          `json:"site"`
 	Since          time.Time              `json:"since"`
 	CapturedAt     time.Time              `json:"captured_at"`
 	ServerVersion  string                 `json:"server_version"`
 	ServerTLSMode  string                 `json:"server_tls_mode,omitempty"`
+	FileCount      int                    `json:"file_count"`
+	FileBytes      int64                  `json:"file_bytes"`
 	WAFEnabled     bool                   `json:"waf_enabled"`
 	WAFAuditOnly   bool                   `json:"waf_audit_only"`
 	HTTPRequests   int64                  `json:"http_requests"`

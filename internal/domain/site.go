@@ -2,6 +2,13 @@ package domain
 
 import "time"
 
+// PublishedFile identifies public file content using a hex-encoded SHA-256 checksum.
+type PublishedFile struct {
+	Path     string `json:"path"`
+	Checksum string `json:"checksum"`
+	Size     int64  `json:"size"`
+}
+
 // PublishedSite is a durable server-hosted static site owned by an API key.
 type PublishedSite struct {
 	ID        string     `json:"id"`

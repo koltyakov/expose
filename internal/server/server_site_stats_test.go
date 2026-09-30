@@ -86,6 +86,9 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if stats := snapshot(); stats.HTTPRequests != 0 {
 		t.Fatal("stats polling counted as traffic")
 	}
+	if stats := snapshot(); stats.FileCount != 2 || stats.FileBytes != 15 {
+		t.Fatalf("wrong published file totals: %+v", stats)
+	}
 	for _, check := range []struct {
 		key    string
 		status int
@@ -136,17 +139,59 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 		t.Fatal("missing server configuration")
 	}
 	// Republish retains the same observation session and counters.
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("updated index"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "app.js")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "style.css"), []byte(strings.Repeat("x", 2048)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "empty.txt"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	archive.Reset()
+	if err := publish.Archive(root, &archive); err != nil {
+		t.Fatal(err)
+	}
 	if w := api("POST", "/v1/sites?domain=stats", "owner", archive.Bytes()); w.Code != 200 {
 		t.Fatalf("republish: %d", w.Code)
 	}
-	if next := snapshot(); next.HTTPRequests != stats.HTTPRequests || !next.Since.Equal(stats.Since) {
+	if next := snapshot(); next.HTTPRequests != stats.HTTPRequests || next.Visitors != stats.Visitors || !next.Since.Equal(stats.Since) {
 		t.Fatal("republish reset counters")
+	}
+	if next := snapshot(); next.FileCount != 3 || next.FileBytes != 2061 {
+		t.Fatalf("republish did not refresh file totals: %+v", next)
 	}
 	// Audit-only matches must not be reported as blocked requests.
 	srv.cfg.WAFAuditOnly = true
 	srv.recordWAFBlock(waf.BlockEvent{Host: site.Hostname, Rule: "test-audit", Method: "GET", RequestURI: "/?token=private-token", RemoteAddr: "192.0.2.3"})
 	if next := snapshot(); next.WAFBlocked != 1 || next.WAFAudited != 1 {
 		t.Fatalf("incorrect audit counts: %+v", next)
+	}
+	// Visitor identities survive a database/server restart, without inventing
+	// recent activity or counting a returning visitor twice.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv = New(config.ServerConfig{BaseDomain: "example.com", DBPath: dbPath}, st, logger, "stats-test")
+	srv.authLimiter, srv.regLimiter = nil, nil
+	if err := srv.cleanupPublishedSites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if next := snapshot(); next.Visitors != 3 || next.ActiveVisitors != 0 {
+		t.Fatalf("restart lost tracked visitors or restored stale activity: %+v", next)
+	}
+	r = httptest.NewRequest("GET", "https://stats.example.com/", nil)
+	r.RemoteAddr = "192.0.2.1:5678"
+	srv.handlePublic(httptest.NewRecorder(), r)
+	if next := snapshot(); next.Visitors != 3 || next.ActiveVisitors != 1 {
+		t.Fatalf("returning visitor counted twice after restart: %+v", next)
 	}
 	stored, err := st.FindPublishedSite(ctx, site.Hostname)
 	if err != nil {
@@ -166,11 +211,60 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if _, ok := srv.siteStats.Load(site.ID); ok {
 		t.Fatal("expiry retained site statistics")
 	}
+	if visitors, err := st.ListPublishedSiteVisitors(ctx, site.ID); err != nil || len(visitors) != 0 {
+		t.Fatalf("expiry retained durable visitors: %d, %v", len(visitors), err)
+	}
+	w = api("POST", "/v1/sites?domain=stats", "owner", archive.Bytes())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("publish after expiry: %d %s", w.Code, w.Body.String())
+	}
+	if next := snapshot(); next.Site.ID == site.ID || next.Visitors != 0 {
+		t.Fatalf("new publication inherited expired visitors: %+v", next)
+	}
 	if err := st.RevokeAPIKey(ctx, owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	if w := api("GET", "/v1/sites/stats/stats", "owner", nil); w.Code != 401 {
 		t.Fatalf("revoked owner can read stats: %d", w.Code)
+	}
+}
+
+func TestPublishedFileTotalsCacheUsesStorageIdentity(t *testing.T) {
+	srv := &Server{cfg: config.ServerConfig{PublishDir: t.TempDir()}}
+	site := domain.PublishedSite{ID: "site_test", ContentID: "site_first"}
+	first := filepath.Join(srv.publishDir(), site.StorageID())
+	if err := os.Mkdir(first, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "index.html"), []byte("one"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	count, size, err := srv.publishedFileTotals(site)
+	if err != nil || count != 1 || size != 3 {
+		t.Fatalf("initial totals: %d, %d, %v", count, size, err)
+	}
+	// Removing the index demonstrates that repeated polls do not walk the directory.
+	// Production directories remain immutable until the storage identity changes.
+	if err := os.Remove(filepath.Join(first, "index.html")); err != nil {
+		t.Fatal(err)
+	}
+	count, size, err = srv.publishedFileTotals(site)
+	if err != nil || count != 1 || size != 3 {
+		t.Fatalf("totals were not cached: %d, %d, %v", count, size, err)
+	}
+	site.ContentID = "site_second"
+	second := filepath.Join(srv.publishDir(), site.StorageID())
+	if err := os.Mkdir(second, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"index.html": "second", "asset.txt": "new", "empty.txt": ""} {
+		if err := os.WriteFile(filepath.Join(second, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count, size, err = srv.publishedFileTotals(site)
+	if err != nil || count != 3 || size != 9 {
+		t.Fatalf("new storage totals: %d, %d, %v", count, size, err)
 	}
 }
 

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -10,12 +12,18 @@ import (
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/publish"
 	"github.com/koltyakov/expose/internal/waf"
 )
 
 const siteRecentRequests = 20
 const siteLatencySamples = 1024
 const siteVisitorLimit = 10000
+
+type siteVisitorStore interface {
+	ListPublishedSiteVisitors(context.Context, string) ([][32]byte, error)
+	RecordPublishedSiteVisitor(context.Context, string, [32]byte, int) error
+}
 
 type siteStats struct {
 	mu             sync.Mutex
@@ -26,18 +34,53 @@ type siteStats struct {
 	audited        int64
 	visitors       map[[32]byte]time.Time
 	visitorsCapped bool
+	visitorsLoaded bool
+	persistVisitor func([32]byte)
 	requests       []domain.PublishedSiteRequest
 	latencies      [siteLatencySamples]float64
 	latencyCount   int
 	latencyNext    int
+	filesStorageID string
+	fileCount      int
+	fileBytes      int64
 }
 
 func (s *Server) statsForSite(id string) *siteStats {
-	if value, ok := s.siteStats.Load(id); ok {
-		return value.(*siteStats)
+	value, ok := s.siteStats.Load(id)
+	if !ok {
+		value, _ = s.siteStats.LoadOrStore(id, &siteStats{since: time.Now().UTC(), visitors: make(map[[32]byte]time.Time)})
 	}
-	value, _ := s.siteStats.LoadOrStore(id, &siteStats{since: time.Now().UTC(), visitors: make(map[[32]byte]time.Time)})
-	return value.(*siteStats)
+	stats := value.(*siteStats)
+	if st, ok := s.store.(siteVisitorStore); ok {
+		stats.mu.Lock()
+		defer stats.mu.Unlock()
+		if !stats.visitorsLoaded {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			visitors, err := st.ListPublishedSiteVisitors(ctx, id)
+			if err != nil {
+				if s.log != nil {
+					s.log.Error("load published site visitors", "site", id, "err", err)
+				}
+			} else {
+				for _, fingerprint := range visitors {
+					if _, exists := stats.visitors[fingerprint]; !exists {
+						stats.visitors[fingerprint] = time.Time{}
+					}
+				}
+				stats.visitorsLoaded = true
+				stats.visitorsCapped = len(stats.visitors) >= siteVisitorLimit
+			}
+			stats.persistVisitor = func(fingerprint [32]byte) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := st.RecordPublishedSiteVisitor(ctx, id, fingerprint, siteVisitorLimit); err != nil && s.log != nil {
+					s.log.Error("record published site visitor", "site", id, "err", err)
+				}
+			}
+		}
+	}
+	return stats
 }
 
 func (stats *siteStats) record(entry domain.PublishedSiteRequest, ip, userAgent string) {
@@ -65,6 +108,9 @@ func (stats *siteStats) record(entry domain.PublishedSiteRequest, ip, userAgent 
 		}
 	}
 	if _, found := stats.visitors[fingerprint]; found || len(stats.visitors) < siteVisitorLimit {
+		if !found && stats.persistVisitor != nil {
+			stats.persistVisitor(fingerprint)
+		}
 		stats.visitors[fingerprint] = entry.Time
 	} else {
 		stats.visitorsCapped = true
@@ -113,11 +159,38 @@ func (s *Server) writeSiteStats(w http.ResponseWriter, r *http.Request, site dom
 		http.NotFound(w, r)
 		return
 	}
-	stats := s.statsForSite(site.ID).snapshot(now)
+	count, size, err := s.publishedFileTotals(site)
+	if err != nil {
+		s.siteError(w, err)
+		return
+	}
+	stats := s.statsForSite(site.ID).snapshot(time.Now().UTC())
+	stats.FileCount, stats.FileBytes = count, size
 	stats.Site, stats.ServerVersion = site, s.version
 	stats.ServerTLSMode = s.serverTLSMode()
 	stats.WAFEnabled, stats.WAFAuditOnly = s.cfg.WAFEnabled, s.cfg.WAFAuditOnly
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// The caller holds sitesMu. Immutable storage IDs let stats polls reuse file
+// totals until the next full or incremental publication, including after restart.
+func (s *Server) publishedFileTotals(site domain.PublishedSite) (int, int64, error) {
+	tracker := s.statsForSite(site.ID)
+	tracker.mu.Lock()
+	if tracker.filesStorageID == site.StorageID() {
+		count, size := tracker.fileCount, tracker.fileBytes
+		tracker.mu.Unlock()
+		return count, size, nil
+	}
+	tracker.mu.Unlock()
+	count, size, err := publish.FileTotals(filepath.Join(s.publishDir(), site.StorageID()))
+	if err != nil {
+		return 0, 0, err
+	}
+	tracker.mu.Lock()
+	tracker.filesStorageID, tracker.fileCount, tracker.fileBytes = site.StorageID(), count, size
+	tracker.mu.Unlock()
+	return count, size, nil
 }
 
 // WAF callbacks happen before the public handler. Use the live site index so

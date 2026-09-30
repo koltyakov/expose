@@ -298,6 +298,14 @@ var schemaMigrations = []schemaMigration{
 	{version: 10, name: "published_site_content", apply: func(ctx context.Context, tx *sql.Tx) error {
 		return ensureColumn(ctx, tx, "published_sites", "content_id", `ALTER TABLE published_sites ADD COLUMN content_id TEXT NOT NULL DEFAULT ''`)
 	}},
+	{version: 11, name: "published_site_visitors", apply: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE published_site_visitors (
+			site_id TEXT NOT NULL REFERENCES published_sites(id) ON DELETE CASCADE,
+			fingerprint BLOB NOT NULL CHECK(length(fingerprint) = 32),
+			PRIMARY KEY (site_id, fingerprint)
+		) WITHOUT ROWID`)
+		return err
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {

@@ -116,6 +116,8 @@ type pubStatsDisplay struct {
 	interactive bool
 	started     bool
 	previous    *domain.PublishedSiteStats
+	rate        float64
+	watch       *pubWatchStatus
 }
 
 func (d *pubStatsDisplay) close() {
@@ -142,7 +144,7 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 		}
 		b.WriteString(termui.Home + termui.ClearDown)
 	}
-	style := termui.Styler{Color: d.interactive}
+	style := termui.Styler{Color: d.interactive && os.Getenv("NO_COLOR") == ""}
 	columns := termui.TerminalColumnsForWriter(d.out)
 	if columns <= 0 {
 		columns = 79
@@ -168,13 +170,20 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	part(termui.Bold+termui.Cyan, "expose")
 	part(termui.Dim, " "+Version)
 	hint := "(Ctrl+C to disconnect)"
+	if d.watch != nil {
+		hint = "(Ctrl+C to stop watching)"
+	}
 	part("", strings.Repeat(" ", max(min(width, 78)-len("expose "+Version)-len(hint), 1)))
 	part(termui.Dim, hint)
 	newline()
 	newline()
 	part("", fmt.Sprintf("%-19s", "Session"))
 	part(termui.Green, "connected")
-	part(termui.Dim, " (published site)")
+	if d.watch != nil {
+		part(termui.Dim, " (watching published site)")
+	} else {
+		part(termui.Dim, " (published site)")
+	}
 	newline()
 	wafMode := "Off"
 	if stats.WAFEnabled {
@@ -195,6 +204,11 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	part("", fmt.Sprintf("%-19s", "Public URL"))
 	part(termui.Cyan, "https://"+stats.Site.Hostname)
 	newline()
+	files := "--"
+	if stats.FileCount > 0 {
+		files = fmt.Sprintf("%d %s, %s", stats.FileCount, termui.Pluralize(stats.FileCount, "file"), pubFormatBytes(float64(stats.FileBytes)))
+	}
+	field("Files", files)
 	expiry := "no expiry"
 	if stats.Site.ExpiresAt != nil {
 		expiry = stats.Site.ExpiresAt.Local().Format("2006-01-02 15:04:05 MST")
@@ -207,17 +221,48 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	part(termui.Dim, " | Expires ")
 	part("", expiry)
 	newline()
+	watchRows := 0
+	if watch := d.watch; watch != nil {
+		part("", fmt.Sprintf("%-19s", "Watch"))
+		for i, change := range []struct {
+			label string
+			count int
+			bytes int64
+		}{
+			{"New", watch.Diff.Added, watch.Diff.AddedBytes},
+			{"Updated", watch.Diff.Updated, watch.Diff.UpdatedBytes},
+			{"Deleted", watch.Diff.Deleted, watch.Diff.DeletedBytes},
+		} {
+			if i > 0 {
+				part(termui.Dim, " | ")
+			}
+			part(termui.Dim, change.label+" ")
+			part("", fmt.Sprintf("%d", change.count))
+			part(termui.Dim, fmt.Sprintf(" (%s)", pubFormatBytes(float64(change.bytes))))
+		}
+		newline()
+		watchRows = 1
+	}
+	if watch := d.watch; watch != nil {
+		if watch.StatsError != "" {
+			field("Stats", watch.StatsError)
+			watchRows++
+		}
+	}
 	visitorSuffix := ""
 	if stats.VisitorsCapped {
 		visitorSuffix = " (tracking limit reached)"
 	}
 	field("Visitors", fmt.Sprintf("%d tracked, %d active in last minute%s", stats.Visitors, stats.ActiveVisitors, visitorSuffix))
-	var rate float64
-	if previous := d.previous; previous != nil && previous.Since.Equal(stats.Since) && stats.ResponseBytes >= previous.ResponseBytes {
+	rate := d.rate
+	if previous := d.previous; previous == nil || !previous.Since.Equal(stats.Since) || stats.ResponseBytes < previous.ResponseBytes {
+		rate = 0
+	} else {
 		if seconds := stats.CapturedAt.Sub(previous.CapturedAt).Seconds(); seconds > 0 {
 			rate = float64(stats.ResponseBytes-previous.ResponseBytes) / seconds
 		}
 	}
+	d.rate = rate
 	part("", fmt.Sprintf("%-19s%s sent ", "Traffic", pubFormatBytes(float64(stats.ResponseBytes))))
 	part(termui.Dim, fmt.Sprintf("(%s/s)", pubFormatBytes(rate)))
 	newline()
@@ -240,7 +285,7 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	if d.interactive {
 		if f, ok := d.out.(*os.File); ok {
 			if _, rows, err := term.GetSize(int(f.Fd())); err == nil {
-				visible = min(visible, max(rows-18, 1))
+				visible = min(visible, max(rows-19-watchRows, 1))
 			}
 		}
 	}
@@ -289,7 +334,11 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	part(termui.Dim, " | P95 ")
 	part("", fmt.Sprintf("%.2f ms", stats.LatencyP95MS))
 	newline()
-	part(termui.Dim, "The site stays hosted after disconnecting.")
+	if d.watch != nil {
+		part(termui.Dim, "Ctrl+C stops watching. The site stays hosted.")
+	} else {
+		part(termui.Dim, "The site stays hosted after disconnecting.")
+	}
 	newline()
 	if !d.interactive {
 		b.WriteByte('\n')

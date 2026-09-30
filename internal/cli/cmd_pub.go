@@ -66,11 +66,15 @@ func pubCommand(ctx context.Context, args []string) error {
 	var name string
 	var ttl time.Duration
 	var jsonOutput bool
+	var full bool
+	var watch bool
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.StringVar(&name, "domain", "", "Public subdomain label; defaults to a persistent random hash")
 	fs.DurationVar(&ttl, "ttl", 0, "Delete the site after this duration, e.g. 24h; defaults to 7 days on the server")
 	fs.BoolVar(&jsonOutput, "json", false, "Print JSON")
+	fs.BoolVar(&full, "full", false, "Upload all public files without fetching a file list or comparing checksums")
+	fs.BoolVar(&watch, "watch", false, "Watch local files, publish changes, and show live hosting stats")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -92,6 +96,15 @@ func pubCommand(ctx context.Context, args []string) error {
 	}
 	if action != "upload" && cliFlagPassed(args, "ttl") {
 		return fmt.Errorf("ttl is only supported when uploading")
+	}
+	if action != "upload" && cliFlagPassed(args, "full") {
+		return fmt.Errorf("full is only supported when uploading")
+	}
+	if action != "upload" && cliFlagPassed(args, "watch") {
+		return fmt.Errorf("watch is only supported when uploading")
+	}
+	if watch && full {
+		return fmt.Errorf("--watch publishes incremental changes and cannot be combined with --full")
 	}
 	if name != "" {
 		name = strings.ToLower(strings.TrimSpace(name))
@@ -138,82 +151,42 @@ func pubCommand(ctx context.Context, args []string) error {
 	if action == "connect" {
 		return connectPublishedSite(ctx, client, endpoint, cfg.APIKey, siteTarget, os.Stdout, isInteractiveOutput(), jsonOutput, time.Second)
 	}
-	query := url.Values{}
-	if action == "upload" && name != "" {
-		query.Set("domain", name)
-	}
 	if action == "upload" {
-		query.Set("source_id", sourceID)
-	}
-	if ttl > 0 {
-		query.Set("ttl", ttl.String())
+		opts := pubUploadOptions{Folder: fs.Arg(0), Endpoint: endpoint, Server: server, Key: cfg.APIKey, Name: name, SourceID: sourceID, TTL: ttl, Full: full}
+		var snapshot map[string]os.FileInfo
+		if watch {
+			snapshot, err = publish.FileSnapshot(opts.Folder)
+			if err != nil {
+				return err
+			}
+		}
+		if !jsonOutput {
+			opts.Progress = &pubProgress{out: os.Stderr, interactive: term.IsTerminal(int(os.Stderr.Fd()))}
+		}
+		result, err := uploadPublishedSite(ctx, client, opts)
+		if err != nil {
+			return err
+		}
+		if watch {
+			return watchPublishedSite(ctx, client, opts, result, snapshot, os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), jsonOutput, pubWatchTiming{})
+		}
+		if jsonOutput {
+			encoder := json.NewEncoder(os.Stdout)
+			encoder.SetIndent("", "  ")
+			return encoder.Encode(result.Site)
+		}
+		return writePublishedSiteResult(os.Stdout, result.Site, term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == "")
 	}
 	method := http.MethodGet
-	var body io.Reader
-	var archive *os.File
-	var progress *pubProgress
-	var uploadStarted time.Time
-	var archiveSize int64
-	switch action {
-	case "upload":
-		archive, err = os.CreateTemp("", "expose-publish-*.tar.gz")
-		if err != nil {
-			return err
-		}
-		defer func() { _ = os.Remove(archive.Name()) }()
-		defer func() { _ = archive.Close() }()
-		var report func(publish.ArchiveProgress)
-		var stats publish.ArchiveProgress
-		archiveStarted := time.Now()
-		if !jsonOutput {
-			progress = &pubProgress{out: os.Stderr, interactive: term.IsTerminal(int(os.Stderr.Fd()))}
-			defer progress.close()
-			progress.start(fmt.Sprintf("Archiving %s...", fs.Arg(0)))
-			report = func(p publish.ArchiveProgress) {
-				stats = p
-				progress.update(fmt.Sprintf("Archiving: %d / %d files, %s / %s", p.Files, p.TotalFiles, pubFormatBytes(float64(p.Bytes)), pubFormatBytes(float64(p.TotalBytes))))
-			}
-		}
-		if err := publish.ArchiveWithProgress(fs.Arg(0), &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes}, report); err != nil {
-			return err
-		}
-		info, err := archive.Stat()
-		if err != nil {
-			return err
-		}
-		archiveSize = info.Size()
-		if progress != nil {
-			files := "files"
-			if stats.Files == 1 {
-				files = "file"
-			}
-			progress.finish(fmt.Sprintf("Archived %d %s, %s → %s tar.gz in %s", stats.Files, files, pubFormatBytes(float64(stats.Bytes)), pubFormatBytes(float64(archiveSize)), time.Since(archiveStarted).Round(time.Millisecond)))
-		}
-		if _, err := archive.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		method, body = http.MethodPost, archive
-	case "delete":
+	if action == "delete" {
 		endpoint += "/" + url.PathEscape(siteTarget)
 		method = http.MethodDelete
 	}
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	if archive != nil {
-		req.Header.Set("Content-Type", "application/gzip")
-		req.ContentLength = archiveSize
-		if progress != nil {
-			uploadStarted = time.Now()
-			progress.start(fmt.Sprintf("Uploading %s to %s...", pubFormatBytes(float64(archiveSize)), server))
-			req.Body = io.NopCloser(&pubUploadReader{r: archive, progress: progress, total: archiveSize})
-		}
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -235,30 +208,13 @@ func pubCommand(ctx context.Context, args []string) error {
 	}
 	var sites []domain.PublishedSite
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 8<<20))
-	if action == "list" {
-		if err := decoder.Decode(&sites); err != nil {
-			return err
-		}
-	} else {
-		var site domain.PublishedSite
-		if err := decoder.Decode(&site); err != nil {
-			return err
-		}
-		sites = append(sites, site)
-		if progress != nil {
-			progress.finish(fmt.Sprintf("Uploaded %s (100%%) in %s", pubFormatBytes(float64(archiveSize)), time.Since(uploadStarted).Round(time.Millisecond)))
-		}
+	if err := decoder.Decode(&sites); err != nil {
+		return err
 	}
 	if jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
-		if action == "list" {
-			return encoder.Encode(sites)
-		}
-		return encoder.Encode(sites[0])
-	}
-	if action == "upload" {
-		return writePublishedSiteResult(os.Stdout, sites[0], term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == "")
+		return encoder.Encode(sites)
 	}
 	if len(sites) == 0 {
 		fmt.Println("No published sites.")
@@ -330,9 +286,13 @@ func publishedFolderSite(ctx context.Context, client *http.Client, endpoint, key
 type archiveLimitWriter struct {
 	w         io.Writer
 	remaining int64
+	ctx       context.Context
 }
 
 func (w *archiveLimitWriter) Write(p []byte) (int, error) {
+	if w.ctx != nil && w.ctx.Err() != nil {
+		return 0, w.ctx.Err()
+	}
 	if int64(len(p)) > w.remaining {
 		return 0, fmt.Errorf("compressed archive exceeds %d MiB", publish.MaxArchiveBytes>>20)
 	}

@@ -125,7 +125,8 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 	stats := domain.PublishedSiteStats{
 		Site: domain.PublishedSite{Hostname: "docs.example.com", CreatedAt: now, ExpiresAt: &expires}, Since: now, CapturedAt: now,
 		ServerTLSMode: "dynamic",
-		HTTPRequests:  2, ResponseBytes: 1024, Visitors: 1, ActiveVisitors: 1, WAFEnabled: true, WAFBlocked: 1,
+		FileCount:     2, FileBytes: 2048,
+		HTTPRequests: 2, ResponseBytes: 1024, Visitors: 1, ActiveVisitors: 1, WAFEnabled: true, WAFBlocked: 1,
 		Requests: []domain.PublishedSiteRequest{{Time: now, Method: "GET", Path: "/\x1b[2Jinjected", Status: 200}},
 	}
 	if err := display.render(stats, time.Millisecond); err != nil {
@@ -137,7 +138,7 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	display.close()
-	for _, text := range []string{"docs.example.com", "Published", "Expires", now.Local().Format("2006-01-02 15:04:05 MST"), expires.Local().Format("2006-01-02 15:04:05 MST"), "TLS: Dynamic", "HTTP Requests", "Visitors", "2.0 KiB/s", "Request latency", "blocked 1", termui.ShowCur} {
+	for _, text := range []string{"docs.example.com", "Files", "2 files, 2.0 KiB", "Published", "Expires", now.Local().Format("2006-01-02 15:04:05 MST"), expires.Local().Format("2006-01-02 15:04:05 MST"), "TLS: Dynamic", "HTTP Requests", "Visitors", "2.0 KiB/s", "Request latency", "blocked 1", termui.ShowCur} {
 		if !strings.Contains(output.String(), text) {
 			t.Errorf("dashboard missing %q", text)
 		}
@@ -147,5 +148,32 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "\x1b[2J") {
 		t.Fatal("request injected terminal control codes")
+	}
+	if url, files, published := strings.Index(output.String(), "Public URL"), strings.Index(output.String(), "Files"), strings.Index(output.String(), "Published"); url >= files || files >= published {
+		t.Fatal("files row is not between Public URL and Published")
+	}
+}
+
+func TestPubStatsFileTotalsFormatting(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		count      int
+		bytes      int64
+	}{
+		{"many files", "270 files, 111.0 MiB", 270, 111 << 20},
+		{"single empty file", "1 file, 0.0 B", 1, 0},
+		{"older server", "--", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			display := pubStatsDisplay{out: &out}
+			stats := domain.PublishedSiteStats{Site: domain.PublishedSite{Hostname: "docs.example.com"}, FileCount: tc.count, FileBytes: tc.bytes}
+			if err := display.render(stats, time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "Files"+strings.Repeat(" ", 14)+tc.want+"\nPublished") {
+				t.Fatalf("wrong file totals row: %s", out.String())
+			}
+		})
 	}
 }

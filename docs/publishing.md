@@ -47,13 +47,50 @@ Publishing records a hash of the source folder's canonical absolute path and mac
 
 Without `--domain`, the server generates a random hashed subdomain on the first publication. Publishing the same folder again reuses its existing hostname. With `--domain=docs`, the site uses `docs.<server-base-domain>`, following the same convention as `expose http 3000 --domain=docs`. Publishing to that domain again replaces the site owned by your API key. After stopping a tunnel, you can publish to its hostname using the same API key. Publishing replaces the stopped tunnel's reservation and invalidates its old sessions and connection tokens. A hostname reserved by another API key or by a connected tunnel cannot be claimed.
 
-Republishing replaces the entire remote folder. Files absent from the new upload are removed. The server validates and extracts the upload into a separate directory, then switches the site to it. A rejected upload leaves the current site intact. The site's URL and identity stay the same, and its TTL restarts from the new publication time. If a folder has multiple publications, use `--domain` to choose which one to replace. An explicit new domain creates a separate publication.
+Republishing makes the remote site match the local folder's public files. Files absent from the local folder are removed. By default, only new or changed file contents are uploaded. The server validates and prepares the site in a separate directory, then switches to it. A rejected upload leaves the current site intact. The site's URL and identity stay the same, and its TTL restarts from the new publication time. If a folder has multiple publications, use `--domain` to choose which one to replace. An explicit new domain creates a separate publication.
 
 `--ttl` accepts positive Go durations such as `30m`, `24h`, or `168h`. The default is 7 days, enforced by the server when TTL is omitted. Expired sites stop serving immediately. The server's periodic cleanup removes their files and hostname reservations, including expirations that occurred while the server was offline.
 
 Listing, stats access, and deletion are scoped to the authenticated API key. Revoking a key also stops its published sites from serving.
 
 All commands accept `--server` and `--api-key`, or use the usual environment variables and saved login. `--json` produces structured upload, listing, and deletion output.
+
+## Incremental publishing
+
+Publishing is incremental by default. Use `--full` to upload every public file without fetching the published file list or comparing checksums:
+
+```bash
+expose pub ./dist
+expose pub ./dist --domain=docs --ttl=24h
+expose pub ./dist --full
+```
+
+The client fetches the published files' relative paths, sizes, and SHA-256 checksums, then hashes the local public files and compares their contents. Only new and updated files go into the upload. Files removed locally are deleted remotely, and unchanged files are reused from the server's existing publication. Before archiving, the CLI shows file counts and total uncompressed sizes for new, updated, deleted, and unchanged files. New and updated sizes use the current local contents; deleted sizes use the published contents being removed.
+
+The first incremental publication uploads all public files. A deletion-only upload sends no file contents. If nothing changed, publishing sends only the target manifest to renew the site's TTL, without transferring file contents. The `Published` summary still shows the public URL and updated expiry. `--json` suppresses progress and returns publication metadata.
+
+Incremental updates use the same atomic directory switch as full uploads. The server validates checksums and limits for the complete resulting site, including reused files. A failed update leaves the current publication intact. If another upload or deletion changes the publication after the file comparison, the server rejects the stale update with HTTP `412`. Run the command again to compare against the latest publication.
+
+Both client and server must support incremental publishing. An older server produces an error explaining how to upgrade or publish with `--full`. Full uploads use the original gzip-compressed tar format and replace the entire remote site without requesting a file list.
+
+## Watch local changes
+
+Use `--watch` to publish the folder, keep the live stats dashboard open, and automatically publish local changes:
+
+```bash
+expose pub ./dist --watch
+expose pub ./dist --domain=docs --watch --ttl=24h
+```
+
+Watch mode checks public file metadata every 250 ms and waits for 200 ms of quiet before comparing checksums and uploading changes. New files, edits, renames, and deletions are detected recursively. Blocked paths do not trigger uploads. A metadata-only change with identical contents does not upload or renew the TTL. The dashboard's New, Updates, and Deleted counts accumulate across successful uploads in the current watch session, including the initial publish. Failed attempts do not count. Creating and then deleting a file increments both New and Deleted.
+
+The dashboard shows hosting stats, the local folder, current archive/upload progress, the last publication time, and change counts and sizes. Stats keep refreshing while an upload is in progress. Saves during an upload are queued for another incremental comparison afterward. Successful updates renew the TTL using the original `--ttl`, or the server default if omitted.
+
+Temporary network failures, revision conflicts, and incomplete builds are retried without replacing the live site. A missing root `index.html` pauses publishing until it returns. Deleting or expiring the remote publication, or losing access to it, stops watch mode. Updates are pinned to the original publication identity so hostname reuse cannot redirect them to another site.
+
+Press **Ctrl+C** to stop watching. The remote site stays hosted. `--watch` cannot be combined with `--full` because watched updates are always incremental.
+
+For scripts, `expose pub ./dist --watch --json` streams NDJSON events with a `type` of `published`, `stats`, or `error`. Publication events include the site metadata and file counts and byte totals under `changes.new`, `changes.updated`, `changes.deleted`, and `changes.unchanged`. Progress text is suppressed.
 
 ## Live stats connection
 
@@ -67,6 +104,7 @@ expose pub connect --domain=docs
 The dashboard refreshes once per second and shows:
 
 - Public URL, expiry, server version, and connection round-trip time
+- Published file count and total uncompressed size, shown between Public URL and Published
 - HTTP request count and recent request paths, methods, status codes, and durations
 - Response-body bytes sent and the current transfer rate
 - Tracked visitors and visitors active within the last minute
@@ -81,7 +119,9 @@ For scripts, stream one JSON snapshot per line:
 expose pub connect --domain=docs --json
 ```
 
-Stats collect on the server even when no dashboard is connected. They are held in memory and reset on server restart. Each site retains its last 20 request/WAF events and tracks up to 10,000 distinct visitors, identified by a hash of IP address and User-Agent. The dashboard reports when this tracking limit is reached. Active visitor counts then cover only tracked visitors. The terminal shows the newest requests that fit; JSON snapshots include all retained events.
+Stats collect on the server even when no dashboard is connected. Tracked visitor identities are stored in SQLite under the site's stable identity, so the total survives full and incremental republishing, TTL renewal, and server restarts. Removing a site, either explicitly or through TTL cleanup, deletes its visitor identities. Publishing it again starts a new count. Other counters, recent activity, and request history are held in memory and reset on server restart. Each site retains its last 20 request/WAF events and tracks up to 10,000 distinct visitors, identified by a hash of IP address and User-Agent. The dashboard reports when this tracking limit is reached. Active visitor counts then cover only tracked visitors. The terminal shows the newest requests that fit; JSON snapshots include all retained events.
+
+File totals describe the current hosted publication, not the local folder or the compressed upload. They refresh after full and incremental updates and are included in JSON snapshots as `file_count` and `file_bytes`. The server caches these totals per immutable publication directory, so stats polling does not re-read file contents.
 
 Request logs omit query strings, headers, and raw visitor identifiers. Traffic counts HTTP response-body bytes from the static handler, excluding TLS/HTTP headers and responses generated by the WAF. WAF-blocked requests have their own counter and do not increment the handled HTTP request count. `expose pub list` shows publication metadata, while `connect` shows live stats.
 
@@ -139,9 +179,17 @@ All endpoints require `Authorization: Bearer <API-key>`.
 | Method | Path | Operation |
 | --- | --- | --- |
 | `POST` | `/v1/sites?domain=docs&ttl=24h` | Upload a gzip-compressed tar body. Both query parameters are optional |
+| `GET` | `/v1/sites/files?domain=docs` | List owned file paths, SHA-256 checksums, and sizes, with a publication revision in `ETag`. Use `source_id` instead of `domain` to select by folder |
+| `POST` | `/v1/sites?domain=docs&incremental=true` | Upload a gzip-compressed delta archive with `If-Match` set to the file listing's `ETag` |
 | `GET` | `/v1/sites` | List sites owned by the key |
 | `GET` | `/v1/sites/{subdomain}` | Get site metadata |
 | `GET` | `/v1/sites/{subdomain}/stats` | Get an owner-only live stats snapshot; expired or deleted sites return `404` |
 | `DELETE` | `/v1/sites/{subdomain}` | Delete files and release the hostname |
 
 Metadata contains the internal storage `id`, `hostname`, `created_at`, optional `expires_at`, and optional `source_id`. The CLI sends `source_id` as a query parameter when uploading to associate the publication with its local folder. Commands accept a folder or `--domain`, so the internal ID is not needed. Listing returns an array. Creating a site returns `201`; replacing it returns `200`; deletion returns `204`. Domain conflicts return `409`.
+
+File listings return a JSON array of `{ "path": "index.html", "checksum": "<64 lowercase SHA-256 hex characters>", "size": 123 }` entries. If no publication matches under the authenticated key, the response is an empty array with `ETag: "new"`. File listings are not cached. A `domain` selector takes precedence over `source_id` when both are provided.
+
+An incremental tar archive starts with a regular `.expose-manifest.json` entry containing the complete target file array, bounded to 8 MiB and 20,000 files. Remaining entries contain only new or changed regular files. Paths omitted from the target manifest are deletions. The control entry is validated as metadata and never written into the published site. Missing `If-Match` returns `428`; a changed revision returns `412`. Other archive guards and site-size limits still apply.
+
+Watch updates also send `site_id` to pin the original publication. If the selected publication no longer has that identity, the upload is rejected with `404` before committing any changes.

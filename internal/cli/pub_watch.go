@@ -235,7 +235,14 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				startStats()
 			}
 		case <-poll.C:
-			snapshot, err := publish.FileSnapshot(opts.Folder)
+			var snapshot map[string]os.FileInfo
+			var err error
+			// Queue staged object IDs while keeping the upload source immutable.
+			if opts.Staged != nil && uploadBusy {
+				err = opts.Staged.observe(ctx)
+			} else {
+				snapshot, err = opts.watchSnapshot(ctx)
+			}
 			if err != nil {
 				if !uploadBusy {
 					status.State = "Waiting for valid local files: " + err.Error()
@@ -246,6 +253,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 						return err
 					}
 				}
+				continue
+			}
+			if opts.Staged != nil && uploadBusy {
 				continue
 			}
 			filterPubWatchSnapshot(snapshot, published)

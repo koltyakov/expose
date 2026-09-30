@@ -20,6 +20,7 @@ type pubUploadOptions struct {
 	TTL                                           time.Duration
 	Full, SkipUnchanged                           bool
 	IgnoreNewEmpty                                bool
+	Staged                                        *pubStagedWatch
 	ExpectedSiteID                                string
 	Progress                                      *pubProgress
 	OnDiff                                        func(publish.FileDiff)
@@ -48,6 +49,10 @@ func (e pubHTTPError) Error() string {
 // uploadPublishedSite is shared by one-shot publishing and watch updates.
 func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploadOptions) (pubUploadResult, error) {
 	var result pubUploadResult
+	folder := opts.Folder
+	if opts.Staged != nil {
+		folder = opts.Staged.folder
+	}
 	progress := opts.Progress
 	if progress != nil {
 		defer progress.close()
@@ -75,7 +80,7 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 		if err != nil {
 			return result, err
 		}
-		result.Files, err = publish.Manifest(opts.Folder)
+		result.Files, err = publish.Manifest(folder)
 		if err != nil {
 			return result, err
 		}
@@ -124,9 +129,9 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 	}
 	limited := &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes, ctx: ctx}
 	if opts.Full {
-		err = publish.ArchiveWithProgress(opts.Folder, limited, report)
+		err = publish.ArchiveWithProgress(folder, limited, report)
 	} else {
-		err = publish.ArchiveDeltaWithIgnoredEmptyFiles(opts.Folder, limited, result.Files, remote, ignoredEmpty, report)
+		err = publish.ArchiveDeltaWithIgnoredEmptyFiles(folder, limited, result.Files, remote, ignoredEmpty, report)
 	}
 	if err != nil {
 		return result, err

@@ -68,6 +68,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	var jsonOutput bool
 	var full bool
 	var watch bool
+	var staged bool
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.StringVar(&name, "domain", "", "Public subdomain label; defaults to a persistent random hash")
@@ -75,6 +76,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	fs.BoolVar(&jsonOutput, "json", false, "Print JSON")
 	fs.BoolVar(&full, "full", false, "Upload all public files without fetching a file list or comparing checksums")
 	fs.BoolVar(&watch, "watch", false, "Watch local files, publish changes, and show live hosting stats")
+	fs.BoolVar(&staged, "staged", false, "With --watch, publish only Git-staged changes using staged file contents")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -105,6 +107,9 @@ func pubCommand(ctx context.Context, args []string) error {
 	}
 	if watch && full {
 		return fmt.Errorf("--watch publishes incremental changes and cannot be combined with --full")
+	}
+	if cliFlagPassed(args, "staged") && (action != "upload" || !watch) {
+		return fmt.Errorf("--staged requires --watch when uploading")
 	}
 	if name != "" {
 		name = strings.ToLower(strings.TrimSpace(name))
@@ -156,7 +161,14 @@ func pubCommand(ctx context.Context, args []string) error {
 		var snapshot map[string]os.FileInfo
 		if watch {
 			opts.IgnoreNewEmpty = true
-			snapshot, err = publish.FileSnapshot(opts.Folder)
+			if staged {
+				opts.Staged, err = newPubStagedWatch(ctx, opts.Folder)
+				if err != nil {
+					return err
+				}
+				defer opts.Staged.close()
+			}
+			snapshot, err = opts.watchSnapshot(ctx)
 			if err != nil {
 				return err
 			}

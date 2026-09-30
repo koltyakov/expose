@@ -807,10 +807,24 @@ func TestPubWatchCancelsInFlightUpload(t *testing.T) {
 }
 
 func TestPubWatchCLIInitialUploadAndJSON(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("staged=%v", staged), func(t *testing.T) {
+			testPubWatchCLIInitialUploadAndJSON(t, staged)
+		})
+	}
+}
+
+func testPubWatchCLIInitialUploadAndJSON(t *testing.T, staged bool) {
 	t.Chdir(t.TempDir())
 	stdout, stderr := captureIncrementalOutput(t)
 	root := t.TempDir()
 	writeIncrementalCLIFile(t, root, "index.html", "home")
+	if staged {
+		pubTestGit(t, root, "init", "-q")
+		pubTestGit(t, root, "add", "index.html")
+		writeIncrementalCLIFile(t, root, "index.html", "unstaged")
+		writeIncrementalCLIFile(t, root, "untracked.txt", "ignored")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var mu sync.Mutex
@@ -835,6 +849,12 @@ func TestPubWatchCLIInitialUploadAndJSON(t *testing.T) {
 			if err := publish.CompleteDelta("", dest, files, publish.MaxExpandedBytes); err != nil {
 				t.Error(err)
 			}
+			if data, err := os.ReadFile(filepath.Join(dest, "index.html")); err != nil || string(data) != "home" {
+				t.Errorf("initial watch upload included unstaged content: %q, %v", data, err)
+			}
+			if len(files) != 1 {
+				t.Errorf("initial watch upload included untracked files: %+v", files)
+			}
 			_ = json.NewEncoder(w).Encode(site)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sites/site_watch/stats":
 			stats++
@@ -852,7 +872,11 @@ func TestPubWatchCLIInitialUploadAndJSON(t *testing.T) {
 	original := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
 	defer func() { http.DefaultTransport = original }()
-	if err := pubCommand(ctx, []string{root, "--watch", "--json", "--server", server.URL, "--api-key", "token"}); err != nil {
+	args := []string{root, "--watch", "--json", "--server", server.URL, "--api-key", "token"}
+	if staged {
+		args = append(args, "--staged")
+	}
+	if err := pubCommand(ctx, args); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()

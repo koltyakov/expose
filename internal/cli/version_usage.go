@@ -21,6 +21,7 @@ Usage:
                                         --domain=myapp assigns a name, --ttl=24h schedules deletion
                                         incremental uploads by default, --full uploads all files without comparison
                                         --watch republishes local changes and shows live hosting stats
+                                        --watch --staged publishes only Git-staged changes
   expose pub list                      List your published sites
   expose pub connect <dir>             Show live stats for a published folder
   expose pub connect --domain=docs     Show live stats for a published subdomain

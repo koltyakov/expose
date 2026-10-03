@@ -28,6 +28,10 @@ import (
 // It blocks until ctx is cancelled or a fatal error occurs.
 func (s *Server) Run(ctx context.Context) error {
 	s.runtimeCtx.Store(ctx)
+	defer s.siteStats.Range(func(key, _ any) bool {
+		s.closeSitePresence(key.(string))
+		return true
+	})
 	if err := s.cleanupPublishedSites(ctx); err != nil {
 		return fmt.Errorf("initialize published sites: %w", err)
 	}

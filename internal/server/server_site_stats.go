@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/publish"
@@ -43,6 +44,7 @@ type siteStats struct {
 	filesStorageID string
 	fileCount      int
 	fileBytes      int64
+	presence       map[*websocket.Conn][32]byte
 }
 
 func (s *Server) statsForSite(id string) *siteStats {
@@ -107,19 +109,23 @@ func (stats *siteStats) record(entry domain.PublishedSiteRequest, ip, userAgent 
 			stats.latencyCount++
 		}
 	}
-	if _, found := stats.visitors[fingerprint]; found || len(stats.visitors) < siteVisitorLimit {
-		if !found && stats.persistVisitor != nil {
-			stats.persistVisitor(fingerprint)
-		}
-		stats.visitors[fingerprint] = entry.Time
-	} else {
-		stats.visitorsCapped = true
-	}
+	stats.touchVisitorLocked(fingerprint, entry.Time)
 	if len(stats.requests) == siteRecentRequests {
 		copy(stats.requests, stats.requests[1:])
 		stats.requests[len(stats.requests)-1] = entry
 	} else {
 		stats.requests = append(stats.requests, entry)
+	}
+}
+
+func (stats *siteStats) touchVisitorLocked(fingerprint [32]byte, now time.Time) {
+	if _, found := stats.visitors[fingerprint]; found || len(stats.visitors) < siteVisitorLimit {
+		if !found && stats.persistVisitor != nil {
+			stats.persistVisitor(fingerprint)
+		}
+		stats.visitors[fingerprint] = now
+	} else {
+		stats.visitorsCapped = true
 	}
 }
 

@@ -16,6 +16,7 @@ type PublishedSite struct {
 	SourceID  string     `json:"source_id,omitempty"`
 	ContentID string     `json:"-"`
 	Hostname  string     `json:"hostname"`
+	WS        bool       `json:"ws"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }

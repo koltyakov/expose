@@ -110,6 +110,8 @@ expose static ./public
 
 # Or upload a static site for persistent server-side hosting
 expose pub ./dist --ttl=24h
+# Track open pages as active visitors:
+expose pub ./dist --ws
 ```
 
 Open the URL shown in the terminal - that's it.

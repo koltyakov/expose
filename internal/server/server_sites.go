@@ -141,6 +141,14 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		return
 	}
 	incremental := false
+	ws := false
+	if r.URL.Query().Has("ws") {
+		ws, err = strconv.ParseBool(r.URL.Query().Get("ws"))
+		if err != nil {
+			http.Error(w, "ws must be a boolean", http.StatusBadRequest)
+			return
+		}
+	}
 	if raw := r.URL.Query().Get("incremental"); raw != "" {
 		incremental, err = strconv.ParseBool(raw)
 		if err != nil {
@@ -210,7 +218,7 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		http.Error(w, "invalid site archive: "+err.Error(), status)
 		return
 	}
-	site := domain.PublishedSite{ID: id, ContentID: id, APIKeyID: key, SourceID: sourceID, Hostname: host, CreatedAt: time.Now().UTC()}
+	site := domain.PublishedSite{ID: id, ContentID: id, APIKeyID: key, SourceID: sourceID, Hostname: host, WS: ws, CreatedAt: time.Now().UTC()}
 	if ttl > 0 {
 		expires := site.CreatedAt.Add(ttl)
 		site.ExpiresAt = &expires
@@ -273,6 +281,9 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		return
 	}
 	s.siteHosts.Store(site.Hostname, site)
+	if !site.WS {
+		s.closeSitePresence(site.ID)
+	}
 	s.statsForSite(site.ID)
 	status := http.StatusCreated
 	if previous != nil {
@@ -380,15 +391,35 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		return false
 	}
 	s.sitesMu.RLock()
-	defer s.sitesMu.RUnlock()
 	site, err := st.FindPublishedSite(r.Context(), host)
 	if errors.Is(err, sql.ErrNoRows) {
+		s.sitesMu.RUnlock()
 		return false
 	}
 	if err != nil {
+		s.sitesMu.RUnlock()
 		s.siteError(w, err)
 		return true
 	}
+	// Upgrade before wrapping the writer for file stats. The presence handler
+	// releases sitesMu before waiting on the socket.
+	if site.WS && (r.URL.Path == publish.PresencePath || r.URL.Path == publish.PresenceScriptPath) {
+		route := domain.TunnelRoute{Domain: domain.Domain{Hostname: host}}
+		if !s.allowPublicRequest(route, r) {
+			s.sitesMu.RUnlock()
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return true
+		}
+		run := s.prepareSitePresence(w, r, site)
+		s.sitesMu.RUnlock()
+		if run != nil {
+			run()
+		}
+		return true
+	}
+	defer s.sitesMu.RUnlock()
 	started := time.Now()
 	recorder := &siteStatsWriter{ResponseWriter: w}
 	w = recorder
@@ -409,7 +440,7 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return true
 	}
-	publish.Serve(w, r, filepath.Join(s.publishDir(), site.StorageID()))
+	publish.ServeWithOptions(w, r, filepath.Join(s.publishDir(), site.StorageID()), publish.ServeOptions{WS: site.WS})
 	return true
 }
 
@@ -421,6 +452,7 @@ func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.Publi
 		return err
 	}
 	s.siteHosts.Delete(site.Hostname)
+	s.closeSitePresence(site.ID)
 	s.siteStats.Delete(site.ID)
 	return nil
 }

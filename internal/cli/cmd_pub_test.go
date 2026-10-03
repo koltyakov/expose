@@ -57,6 +57,52 @@ func TestPubDeleteCLI(t *testing.T) {
 	}
 }
 
+func TestPubWSOption(t *testing.T) {
+	t.Chdir(t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("site"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, full := range []bool{false, true} {
+		for _, ws := range []bool{false, true} {
+			posts := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Header().Set("ETag", `"new"`)
+					_, _ = io.WriteString(w, "[]")
+					return
+				}
+				posts++
+				if got := r.URL.Query().Get("ws") == "true"; got != ws {
+					t.Errorf("WS option lost: want %v, query %s", ws, r.URL.RawQuery)
+				}
+				_, _ = io.Copy(io.Discard, r.Body)
+				_ = json.NewEncoder(w).Encode(domain.PublishedSite{ID: "site_test", Hostname: "docs.example.com", WS: ws})
+			}))
+			original := http.DefaultTransport
+			http.DefaultTransport = server.Client().Transport
+			args := []string{root, "--server", server.URL, "--api-key", "owner", "--json"}
+			if full {
+				args = append(args, "--full")
+			}
+			if ws {
+				args = append(args, "--ws")
+			}
+			err := pubCommand(context.Background(), args)
+			http.DefaultTransport = original
+			server.Close()
+			if err != nil || posts != 1 {
+				t.Fatalf("full=%v ws=%v: posts=%d err=%v", full, ws, posts, err)
+			}
+		}
+	}
+	for _, args := range [][]string{{"list", "--ws"}, {"connect", "--domain=docs", "--ws"}, {"delete", "--domain=docs", "--ws"}} {
+		if err := pubCommand(context.Background(), args); err == nil || !strings.Contains(err.Error(), "ws is only supported") {
+			t.Fatalf("unexpected error for %v: %v", args, err)
+		}
+	}
+}
+
 func TestPubFullCLIUploadsValidatedArchive(t *testing.T) {
 	t.Chdir(t.TempDir())
 	root := filepath.Join(t.TempDir(), "dist")

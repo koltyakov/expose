@@ -69,6 +69,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	var full bool
 	var watch bool
 	var staged bool
+	var ws bool
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.StringVar(&name, "domain", "", "Public subdomain label; defaults to a persistent random hash")
@@ -77,6 +78,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	fs.BoolVar(&full, "full", false, "Upload all public files without fetching a file list or comparing checksums")
 	fs.BoolVar(&watch, "watch", false, "Watch local files, publish changes, and show live hosting stats")
 	fs.BoolVar(&staged, "staged", false, "With --watch, publish only Git-staged changes using staged file contents")
+	fs.BoolVar(&ws, "ws", false, "Inject a WebSocket heartbeat to track open pages in hosting stats")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -101,6 +103,9 @@ func pubCommand(ctx context.Context, args []string) error {
 	}
 	if action != "upload" && cliFlagPassed(args, "full") {
 		return fmt.Errorf("full is only supported when uploading")
+	}
+	if action != "upload" && cliFlagPassed(args, "ws") {
+		return fmt.Errorf("ws is only supported when uploading")
 	}
 	if action != "upload" && cliFlagPassed(args, "watch") {
 		return fmt.Errorf("watch is only supported when uploading")
@@ -157,7 +162,7 @@ func pubCommand(ctx context.Context, args []string) error {
 		return connectPublishedSite(ctx, client, endpoint, cfg.APIKey, siteTarget, os.Stdout, isInteractiveOutput(), jsonOutput, time.Second)
 	}
 	if action == "upload" {
-		opts := pubUploadOptions{Folder: fs.Arg(0), Endpoint: endpoint, Server: server, Key: cfg.APIKey, Name: name, SourceID: sourceID, TTL: ttl, Full: full}
+		opts := pubUploadOptions{Folder: fs.Arg(0), Endpoint: endpoint, Server: server, Key: cfg.APIKey, Name: name, SourceID: sourceID, TTL: ttl, Full: full, WS: ws}
 		var snapshot map[string]os.FileInfo
 		if watch {
 			opts.IgnoreNewEmpty = true

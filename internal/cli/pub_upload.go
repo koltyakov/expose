@@ -19,6 +19,7 @@ type pubUploadOptions struct {
 	Folder, Endpoint, Server, Key, Name, SourceID string
 	TTL                                           time.Duration
 	Full, SkipUnchanged                           bool
+	WS                                            bool
 	IgnoreNewEmpty                                bool
 	Staged                                        *pubStagedWatch
 	ExpectedSiteID                                string
@@ -62,6 +63,9 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 		query.Set("domain", opts.Name)
 	}
 	query.Set("source_id", opts.SourceID)
+	if opts.WS {
+		query.Set("ws", "true")
+	}
 	if opts.TTL > 0 {
 		query.Set("ttl", opts.TTL.String())
 	}

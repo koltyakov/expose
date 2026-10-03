@@ -306,6 +306,9 @@ var schemaMigrations = []schemaMigration{
 		) WITHOUT ROWID`)
 		return err
 	}},
+	{version: 12, name: "published_site_ws", apply: func(ctx context.Context, tx *sql.Tx) error {
+		return ensureColumn(ctx, tx, "published_sites", "ws", `ALTER TABLE published_sites ADD COLUMN ws INTEGER NOT NULL DEFAULT 0`)
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {

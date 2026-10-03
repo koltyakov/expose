@@ -165,6 +165,7 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 			return
 		}
 		h.dir, h.files = dest, files
+		h.site.WS = r.URL.Query().Get("ws") == "true"
 		h.revision++
 		h.commits++
 		_ = json.NewEncoder(w).Encode(h.site)
@@ -184,6 +185,7 @@ func TestPubWatchCumulativeChanges(t *testing.T) {
 	writeIncrementalCLIFile(t, root, "index.html", "home")
 	h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
 	h.failCount, h.failStatus = 1, http.StatusServiceUnavailable
+	opts.WS = true
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var output pubWatchTestOutput
@@ -228,6 +230,9 @@ func TestPubWatchCumulativeChanges(t *testing.T) {
 	defer h.mu.Unlock()
 	if phase != 4 || h.commits != 3 || h.posts != 4 {
 		t.Fatalf("cumulative changes failed: phase=%d commits=%d posts=%d\n%s", phase, h.commits, h.posts, output.String())
+	}
+	if !h.site.WS {
+		t.Fatal("watch updates lost the WS option")
 	}
 }
 

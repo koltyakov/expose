@@ -264,7 +264,8 @@ func TestSitePresenceHeartbeatAndTimeout(t *testing.T) {
 				_, _, _ = conn.ReadMessage()
 				close(done)
 			}()
-			if mode == "responsive" {
+			switch mode {
+			case "responsive":
 				// Stay connected beyond the initial read deadline using only pongs.
 				for range 12 {
 					select {
@@ -280,16 +281,16 @@ func TestSitePresenceHeartbeatAndTimeout(t *testing.T) {
 					t.Fatalf("cached-page activity missing or counted as HTTP: %+v", got)
 				}
 				cancel()
-			} else if mode == "application-data" {
+			case "application-data":
 				if err := conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("x", 100))); err != nil {
 					t.Fatal(err)
 				}
-			} else if mode == "deleted" {
+			case "deleted":
 				w := incrementalSiteRequest(srv, "DELETE", "/v1/sites/docs", "owner", "", nil)
 				if w.Code != http.StatusNoContent {
 					t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 				}
-			} else if mode == "expired" {
+			case "expired":
 				stored, err := st.FindPublishedSite(ctx, site.Hostname)
 				if err != nil {
 					t.Fatal(err)

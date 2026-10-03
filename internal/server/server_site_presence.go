@@ -18,6 +18,11 @@ const sitePresenceTimeout = 55 * time.Second
 const sitePresenceLimit = 1024
 const sitePresenceVisitorLimit = 8
 
+type sitePresence struct {
+	fingerprint [32]byte
+	seen        time.Time
+}
+
 // The caller holds sitesMu through registration, so deletion or disabling WS
 // cannot miss a connection being upgraded. The socket loop owns it afterwards.
 func (s *Server) prepareSitePresence(w http.ResponseWriter, r *http.Request, site domain.PublishedSite) func() {
@@ -40,7 +45,7 @@ func (s *Server) prepareSitePresence(w http.ResponseWriter, r *http.Request, sit
 	defer stats.mu.Unlock()
 	count := 0
 	for _, visitor := range stats.presence {
-		if visitor == fingerprint {
+		if visitor.fingerprint == fingerprint {
 			count++
 		}
 	}
@@ -67,9 +72,9 @@ func (s *Server) prepareSitePresence(w http.ResponseWriter, r *http.Request, sit
 		return nil
 	}
 	if stats.presence == nil {
-		stats.presence = make(map[*websocket.Conn][32]byte)
+		stats.presence = make(map[*websocket.Conn]sitePresence)
 	}
-	stats.presence[conn] = fingerprint
+	stats.presence[conn] = sitePresence{fingerprint: fingerprint}
 	return func() { s.runSitePresence(conn, site, stats, fingerprint, sitePresenceInterval, sitePresenceTimeout) }
 }
 
@@ -78,9 +83,6 @@ func (s *Server) runSitePresence(conn *websocket.Conn, site domain.PublishedSite
 	defer func() {
 		_ = conn.Close()
 		<-done
-		stats.mu.Lock()
-		delete(stats.presence, conn)
-		stats.mu.Unlock()
 	}()
 	conn.SetReadLimit(32)
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
@@ -90,12 +92,21 @@ func (s *Server) runSitePresence(conn *websocket.Conn, site domain.PublishedSite
 		}
 		now := time.Now().UTC()
 		stats.mu.Lock()
-		stats.touchVisitorLocked(fingerprint, now)
+		if presence, ok := stats.presence[conn]; ok {
+			presence.seen = now
+			stats.presence[conn] = presence
+			stats.touchVisitorLocked(fingerprint, now)
+		}
 		stats.mu.Unlock()
 		return conn.SetReadDeadline(now.Add(timeout))
 	})
 	go func() {
-		defer close(done)
+		defer func() {
+			stats.mu.Lock()
+			delete(stats.presence, conn)
+			stats.mu.Unlock()
+			close(done)
+		}()
 		// Presence accepts control frames only, never application data.
 		_, _, _ = conn.ReadMessage()
 	}()
@@ -131,5 +142,6 @@ func (s *Server) closeSitePresence(id string) {
 		for conn := range stats.presence {
 			_ = conn.Close()
 		}
+		clear(stats.presence)
 	}
 }

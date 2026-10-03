@@ -124,11 +124,11 @@ func TestPublishedSitePresenceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for stats.snapshot(time.Now()).ActiveVisitors != 1 && time.Now().Before(deadline) {
+	for stats.snapshot(time.Now()).ActiveSockets != 1 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	after := stats.snapshot(time.Now())
-	if after.ActiveVisitors != 1 || after.Visitors != before.Visitors || after.HTTPRequests != before.HTTPRequests || after.ResponseBytes != before.ResponseBytes {
+	if after.ActiveSockets != 1 || after.ActiveVisitors != 1 || after.Visitors != before.Visitors || after.HTTPRequests != before.HTTPRequests || after.ResponseBytes != before.ResponseBytes {
 		t.Fatalf("heartbeat should refresh the same visitor without file traffic: before=%+v after=%+v", before, after)
 	}
 	// Republishing must not block on an open socket and keeps presence alive.
@@ -138,21 +138,81 @@ func TestPublishedSitePresenceLifecycle(t *testing.T) {
 		t.Fatalf("republish disconnected presence: %v", err)
 	default:
 	}
+	// Another visible tab shares the visitor identity but adds an online socket.
+	second, _, err := dial("http://" + site.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	secondDone := make(chan struct{})
+	go func() {
+		_, _, _ = second.ReadMessage()
+		close(secondDone)
+	}()
+	waitPresence := func(connections int) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			got := stats.snapshot(time.Now())
+			if got.ActiveSockets == connections && got.Visitors == before.Visitors {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("presence: sockets=%d visitors=%d, want %d and %d", got.ActiveSockets, got.Visitors, connections, before.Visitors)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitPresence(2)
+	get("/") // A recent download must not mask the subsequent disconnect.
+	if err := conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "inactive"), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first tab did not close")
+	}
+	waitPresence(1)
+	if err := second.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "inactive"), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second tab did not close")
+	}
+	waitPresence(0)
+	if stats.snapshot(time.Now()).ActiveVisitors != 1 {
+		t.Fatal("recent visitor activity was lost when its sockets closed")
+	}
+	// Returning to the tab reconnects without another file download.
+	resumed, _, err := dial("http://" + site.Hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resumed.Close() }()
+	resumedDone := make(chan struct{})
+	go func() {
+		_, _, _ = resumed.ReadMessage()
+		close(resumedDone)
+	}()
+	waitPresence(1)
 	// Publishing without --ws disables it and closes existing connections.
 	disabled := upload("")
 	if disabled.WS {
 		t.Fatal("presence was not disabled")
 	}
 	select {
-	case <-done:
+	case <-resumedDone:
 	case <-time.After(3 * time.Second):
 		t.Fatal("disabled publication retained its socket")
 	}
 	if strings.Contains(get("/").Body.String(), publish.PresenceScriptPath) {
 		t.Fatal("disabled publication still injects HTML")
 	}
-	if got := stats.snapshot(time.Now().Add(time.Minute)); got.ActiveVisitors != 0 {
-		t.Fatalf("disconnected visitor did not expire: %+v", got)
+	if got := stats.snapshot(time.Now()); got.ActiveSockets != 0 {
+		t.Fatalf("disconnected socket is still online: %+v", got)
 	}
 }
 
@@ -179,6 +239,9 @@ func TestSitePresenceHeartbeatAndTimeout(t *testing.T) {
 				upgrader := websocket.Upgrader{}
 				conn, err := upgrader.Upgrade(w, r, nil)
 				if err == nil {
+					stats.mu.Lock()
+					stats.presence = map[*websocket.Conn]sitePresence{conn: {fingerprint: [32]byte{1}}}
+					stats.mu.Unlock()
 					srv.runSitePresence(conn, site, stats, [32]byte{1}, 25*time.Millisecond, 250*time.Millisecond)
 				}
 			}))
@@ -213,7 +276,7 @@ func TestSitePresenceHeartbeatAndTimeout(t *testing.T) {
 					}
 				}
 				got := stats.snapshot(time.Now())
-				if got.ActiveVisitors != 1 || got.HTTPRequests != 0 {
+				if got.ActiveSockets != 1 || got.ActiveVisitors != 1 || got.HTTPRequests != 0 {
 					t.Fatalf("cached-page activity missing or counted as HTTP: %+v", got)
 				}
 				cancel()

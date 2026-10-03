@@ -44,7 +44,7 @@ type siteStats struct {
 	filesStorageID string
 	fileCount      int
 	fileBytes      int64
-	presence       map[*websocket.Conn][32]byte
+	presence       map[*websocket.Conn]sitePresence
 }
 
 func (s *Server) statsForSite(id string) *siteStats {
@@ -147,6 +147,13 @@ func (stats *siteStats) snapshot(now time.Time) domain.PublishedSiteStats {
 	for _, seen := range stats.visitors {
 		if now.Sub(seen) < time.Minute {
 			result.ActiveVisitors++
+		}
+	}
+	// Online sockets are separate from recent visitor activity. Closing or
+	// hiding a tab must not leave its socket online for another minute.
+	for _, connection := range stats.presence {
+		if now.Sub(connection.seen) < sitePresenceTimeout {
+			result.ActiveSockets++
 		}
 	}
 	latencies := append([]float64(nil), stats.latencies[:stats.latencyCount]...)

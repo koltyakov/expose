@@ -1,19 +1,40 @@
 (function () {
   var socket, retry, stopped = false, delay = 1000;
+  function canConnect() {
+    return !stopped && !document.hidden;
+  }
+  function disconnect() {
+    clearTimeout(retry);
+    retry = null;
+    if (socket) {
+      var current = socket;
+      socket = null;
+      current.onopen = current.onclose = current.onerror = null;
+      current.close(1000, 'inactive');
+    }
+  }
   function reconnect() {
-    if (stopped) return;
+    if (!canConnect()) return;
+    clearTimeout(retry);
     retry = setTimeout(connect, delay + Math.random() * 1000);
     delay = Math.min(delay * 2, 30000);
   }
   function connect() {
-    if (stopped || socket) return;
+    if (!canConnect() || socket) return;
+    clearTimeout(retry);
+    retry = null;
     try {
-      socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/_expose/presence');
+      var current = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/_expose/presence');
+      socket = current;
       // Browsers answer the server's WebSocket ping frames automatically,
-      // including when background-tab JavaScript timers are throttled.
-      socket.onopen = function () { delay = 1000; };
-      socket.onclose = function () { socket = null; reconnect(); };
-      socket.onerror = function () { if (socket) socket.close(); };
+      // while visibility events disconnect tabs that are no longer visible.
+      current.onopen = function () { if (socket === current) delay = 1000; };
+      current.onclose = function () {
+        if (socket !== current) return;
+        socket = null;
+        reconnect();
+      };
+      current.onerror = function () { if (socket === current) current.close(); };
     } catch (_) {
       socket = null;
       reconnect();
@@ -21,13 +42,12 @@
   }
   addEventListener('pagehide', function () {
     stopped = true;
-    clearTimeout(retry);
-    if (socket) {
-      socket.onclose = socket.onerror = null;
-      socket.close();
-      socket = null;
-    }
+    disconnect();
   });
   addEventListener('pageshow', function () { stopped = false; connect(); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) disconnect();
+    else connect();
+  });
   connect();
 })();

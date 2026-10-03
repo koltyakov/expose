@@ -152,6 +152,19 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 	if url, files, published := strings.Index(output.String(), "Public URL"), strings.Index(output.String(), "Files"), strings.Index(output.String(), "Published"); url >= files || files >= published {
 		t.Fatal("files row is not between Public URL and Published")
 	}
+	if strings.Contains(output.String(), "online") {
+		t.Fatal("online count shown without WS")
+	}
+	output.Reset()
+	stats.Site.WS = true
+	stats.ActiveSockets = 3
+	display = pubStatsDisplay{out: &output}
+	if err := display.render(stats, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "1 tracked, 1 active in last minute, 3 online") {
+		t.Fatalf("online sockets not shown separately from visitors: %s", output.String())
+	}
 }
 
 func TestPubStatsFileTotalsFormatting(t *testing.T) {

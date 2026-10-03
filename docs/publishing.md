@@ -114,7 +114,7 @@ The dashboard refreshes once per second and shows:
 - Published file count and total uncompressed size, shown between Public URL and Published
 - HTTP request count and recent request paths, methods, status codes, and durations
 - Response-body bytes sent and the current transfer rate
-- Tracked visitors and visitors active within the last minute
+- Tracked visitors and visitors active within the last minute, plus online sockets when `--ws` is enabled
 - Request-latency p50 and p95 across the last 1,024 handled requests
 - WAF blocks and audit-only matches, counted separately
 
@@ -142,9 +142,13 @@ expose pub ./dist --watch --ws
 expose pub connect ./dist
 ```
 
-This is off by default. When enabled, the server appends a small same-site script to HTML responses, including SPA fallbacks. Uploaded files and their checksums stay unchanged. The script opens a WebSocket to the published hostname. The server sends a small ping every 20 seconds; the browser answers automatically, including in background tabs whose JavaScript timers are throttled. Heartbeats refresh the existing active-visitor count without adding HTTP requests, response bytes, or request-log entries. Multiple tabs with the same IP address and User-Agent still count as one visitor.
+This is off by default. When enabled, the server appends a small ES5-compatible same-site script to HTML responses, including SPA fallbacks. Uploaded files and their checksums stay unchanged. The script opens a WebSocket to the published hostname while the page is visible. The server sends a small ping every 20 seconds; the browser answers automatically. Heartbeats do not add HTTP requests, response bytes, or request-log entries.
 
-The client reconnects after network interruptions and resumes when a page returns from the browser's back/forward cache. Unresponsive sockets time out after 55 seconds. A visitor drops out of the active count one minute after their last file request or heartbeat. Suspended browsers and offline devices stop refreshing activity.
+The Visitors field adds a separate online count, for example `12 tracked, 4 active in last minute, 3 online`. Online counts live sockets from visible tabs; tracked and recently active visitors use the existing IP address and User-Agent identity. Two visible tabs with the same identity count as two online sockets and one visitor. JSON stats expose the socket count as `active_sockets`. Unlike tracked visitors, this count is not capped by the historical visitor-tracking limit.
+
+Closing a tab or browser, switching to another tab, or minimizing the browser closes the socket through page lifecycle and visibility events. Hidden tabs count as disconnected and do not retry until visible again. The server removes each socket from the online count as soon as it disconnects, even if its visitor recently downloaded files. The dashboard reflects this on its next one-second refresh. Recent visitor activity still expires one minute after the last request or heartbeat. Browsers without the Page Visibility API can still disconnect on page exit.
+
+The client reconnects when the page becomes visible, after network interruptions, and when a page returns from the browser's back/forward cache. Crashes, lost networks, and browsers that suspend without delivering a lifecycle event cannot guarantee an immediate close notification; their sockets time out after 55 seconds without a heartbeat.
 
 `--ws` works with full, incremental, and watched uploads. Include it on each publish command to keep it enabled. Republishing without it, or with `--ws=false`, disables injection and closes existing presence sockets. The setting survives server restarts. Cached pages must have received the injected script at least once to report activity.
 

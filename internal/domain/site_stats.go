@@ -17,6 +17,7 @@ type PublishedSiteStats struct {
 	ResponseBytes  int64                  `json:"response_bytes"`
 	Visitors       int                    `json:"visitors"`
 	ActiveVisitors int                    `json:"active_visitors"`
+	ActiveSockets  int                    `json:"active_sockets"`
 	VisitorsCapped bool                   `json:"visitors_capped"`
 	WAFBlocked     int64                  `json:"waf_blocked"`
 	WAFAudited     int64                  `json:"waf_audited"`

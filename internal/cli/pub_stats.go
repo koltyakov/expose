@@ -253,7 +253,7 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	if stats.VisitorsCapped {
 		visitorSuffix = " (tracking limit reached)"
 	}
-	visitors := fmt.Sprintf("%d tracked, %d active in last minute", stats.Visitors, stats.ActiveVisitors)
+	visitors := fmt.Sprintf("%d tracked, %d active (last minute)", stats.Visitors, stats.ActiveVisitors)
 	if stats.Site.WS {
 		visitors += fmt.Sprintf(", %d online", stats.ActiveSockets)
 	}

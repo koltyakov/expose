@@ -123,6 +123,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		WAFEnabled:    s.cfg.WAFEnabled,
 	}
 	writeJSON(w, http.StatusOK, resp)
+	s.notifyNewerClient(prepared.request.ClientVersion)
 }
 
 func (s *Server) allowPreAuthRequest(w http.ResponseWriter, r *http.Request) bool {

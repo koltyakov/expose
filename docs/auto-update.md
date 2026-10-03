@@ -20,6 +20,7 @@ When auto-update is enabled:
 1. **On startup** - checks for a newer release and updates before proceeding
 2. **Periodically** - checks every 30 minutes in the background
 3. **On server version change** - if the client detects the server upgraded (via registration response), it triggers an immediate update check
+4. **On newer client registration** - if a client registers with a newer version than the server, the server triggers an immediate update check. Client-triggered checks are limited to once per minute.
 
 When an update is applied, the binary is replaced in-place and the process restarts automatically.
 

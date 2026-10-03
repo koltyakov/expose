@@ -74,14 +74,14 @@ func runServer(ctx context.Context, args []string) int {
 	defer serverCancel()
 
 	var needsRestart atomic.Bool
+	s := server.New(cfg, store, logger, Version)
 	if isAutoUpdateEnabled() {
-		go startAutoUpdateLoop(serverCtx, Version, logger, func() {
+		go startAutoUpdateLoop(serverCtx, Version, logger, s.UpdateChecks(), func() {
 			needsRestart.Store(true)
 			serverCancel()
 		})
 	}
 
-	s := server.New(cfg, store, logger, Version)
 	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "server", map[string]http.HandlerFunc{
 		"/debug/metrics": s.MetricsHandler(),
 	}); err != nil {

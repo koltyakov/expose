@@ -2,13 +2,19 @@ package selfupdate
 
 import "strings"
 
-// isNewer returns true when latest > current using simple semver comparison.
-// Both strings should already have the "v" prefix stripped.
 // IsNewer reports whether latest is a newer semver than current.
+// Optional "v" prefixes are accepted; invalid and development versions are ignored.
 func IsNewer(current, latest string) bool {
+	current = strings.TrimPrefix(strings.TrimSpace(current), "v")
+	latest = strings.TrimPrefix(strings.TrimSpace(latest), "v")
+	if strings.HasSuffix(current, "-dev") || strings.HasSuffix(latest, "-dev") || parseSemver(current) == nil || parseSemver(latest) == nil {
+		return false
+	}
 	return isNewer(current, latest)
 }
 
+// isNewer returns true when latest > current using simple semver comparison.
+// Both strings should already have the "v" prefix stripped.
 func isNewer(current, latest string) bool {
 	cp := parseSemver(current)
 	lp := parseSemver(latest)

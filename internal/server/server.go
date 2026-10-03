@@ -77,6 +77,9 @@ type Server struct {
 	log              *slog.Logger
 	hub              *hub
 	version          string
+	updateChecks     chan struct{}
+	updateCheckMu    sync.Mutex
+	lastUpdateCheck  time.Time
 	wildcardTLSOn    bool
 	requestSeq       atomic.Uint64
 	regLimiter       *rateLimiter
@@ -270,6 +273,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		log:              logger,
 		hub:              &hub{sessions: map[string]*session{}},
 		version:          version,
+		updateChecks:     make(chan struct{}, 1),
 		regLimiter:       newRateLimiter(),
 		authLimiter:      newConfiguredRateLimiter(preAuthRateLimit, preAuthBurstLimit, regCleanupAge),
 		lookupLimiter:    newConfiguredRateLimiter(lookupRateLimit, lookupBurstLimit, regCleanupAge),

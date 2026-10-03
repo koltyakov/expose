@@ -14,6 +14,8 @@ import (
 
 const autoUpdateCheckInterval = 30 * time.Minute
 
+var autoUpdateCheckAndApply = selfupdate.CheckAndApply
+
 // isAutoUpdateEnabled reports whether the EXPOSE_AUTOUPDATE environment
 // variable is set to a truthy value (true, 1, yes).
 func isAutoUpdateEnabled() bool {
@@ -42,10 +44,10 @@ func autoUpdateOnStart(ctx context.Context, currentVersion string, logger *slog.
 	return true
 }
 
-// startAutoUpdateLoop runs periodic update checks in the background. When
+// startAutoUpdateLoop runs periodic and client-triggered update checks. When
 // an update is successfully applied it calls onUpdate (which should trigger
 // a graceful shutdown) and returns.
-func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slog.Logger, onUpdate func()) {
+func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slog.Logger, updateChecks <-chan struct{}, onUpdate func()) {
 	if currentVersion == "" || currentVersion == "dev" || strings.HasSuffix(currentVersion, "-dev") {
 		return
 	}
@@ -57,18 +59,23 @@ func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slo
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			result, err := selfupdate.CheckAndApply(ctx, currentVersion)
-			if err != nil {
-				logger.Warn("auto-update: periodic check failed", "err", err)
-				continue
-			}
-			if result.Updated {
-				logger.Info("auto-update: update applied", "from", result.CurrentVersion, "to", versionutil.EnsureVPrefix(result.LatestVersion))
-				onUpdate()
-				return
-			}
-			logger.Debug("auto-update: periodic check passed, up to date")
+		case <-updateChecks:
+			logger.Info("auto-update: newer client registered, checking for updates")
 		}
+		if ctx.Err() != nil {
+			return
+		}
+		result, err := autoUpdateCheckAndApply(ctx, currentVersion)
+		if err != nil {
+			logger.Warn("auto-update: check failed", "err", err)
+			continue
+		}
+		if result.Updated {
+			logger.Info("auto-update: update applied", "from", result.CurrentVersion, "to", versionutil.EnsureVPrefix(result.LatestVersion))
+			onUpdate()
+			return
+		}
+		logger.Debug("auto-update: check passed, up to date")
 	}
 }
 

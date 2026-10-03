@@ -162,7 +162,7 @@ func TestPubStatsDisplayAndCleanup(t *testing.T) {
 	if err := display.render(stats, time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "1 tracked, 1 active in last minute, 3 online") {
+	if !strings.Contains(output.String(), "1 tracked, 1 active (last minute), 3 online") {
 		t.Fatalf("online sockets not shown separately from visitors: %s", output.String())
 	}
 }

@@ -395,12 +395,6 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 				}
 				continue
 			}
-			if Version == "" || Version == "dev" || strings.HasSuffix(Version, "-dev") {
-				if display != nil {
-					display.ShowWarning("Self-update is unavailable for dev builds")
-				}
-				continue
-			}
 			updateBusy = true
 			if display != nil {
 				display.ShowInfo("Checking for updates...")

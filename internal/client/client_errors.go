@@ -74,8 +74,3 @@ func isTLSProvisioningInProgressError(err error) bool {
 		strings.Contains(msg, "certificate is not standards compliant") ||
 		strings.Contains(msg, "x509:")
 }
-
-func isNonReleaseVersion(version string) bool {
-	version = strings.TrimSpace(version)
-	return version == "" || version == "dev" || strings.HasSuffix(version, "-dev")
-}

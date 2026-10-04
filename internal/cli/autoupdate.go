@@ -27,11 +27,11 @@ func isAutoUpdateEnabled() bool {
 // available it downloads and replaces the binary in-place. Returns true
 // when the binary was replaced and the caller should restart the process.
 func autoUpdateOnStart(ctx context.Context, currentVersion string, logger *slog.Logger) bool {
-	if currentVersion == "" || currentVersion == "dev" || strings.HasSuffix(currentVersion, "-dev") {
+	if currentVersion == "" {
 		return false
 	}
 	logger.Info("auto-update: checking for updates", "current_version", currentVersion)
-	result, err := selfupdate.CheckAndApply(ctx, currentVersion)
+	result, err := autoUpdateCheckAndApply(ctx, currentVersion)
 	if err != nil {
 		logger.Warn("auto-update: check failed", "err", err)
 		return false
@@ -48,7 +48,7 @@ func autoUpdateOnStart(ctx context.Context, currentVersion string, logger *slog.
 // an update is successfully applied it calls onUpdate (which should trigger
 // a graceful shutdown) and returns.
 func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slog.Logger, updateChecks <-chan struct{}, onUpdate func()) {
-	if currentVersion == "" || currentVersion == "dev" || strings.HasSuffix(currentVersion, "-dev") {
+	if currentVersion == "" {
 		return
 	}
 	logger.Info("auto-update: periodic checks enabled", "interval", autoUpdateCheckInterval)

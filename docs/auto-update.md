@@ -76,7 +76,9 @@ While the client dashboard is running, press **Ctrl+U** to trigger an immediate 
 
 ## Development Builds
 
-Auto-update is disabled for development builds (`dev` version or versions ending in `-dev`). This prevents accidental overwrites during development.
+Development builds support auto-update when `EXPOSE_AUTOUPDATE=true`, including startup, periodic, and version-change checks. Manual updates and Ctrl+U work too.
+
+Versioned development builds compare their base version with the latest published release. For example, `v1.2.9-dev` and `v1.2.9-3-gabc123-dev` update to `v1.2.10`, but not to `v1.2.9` or an older release. A plain `dev` build has no version baseline and updates to the latest published release. Unrecognized version strings are ignored.
 
 ## Binary Placement
 

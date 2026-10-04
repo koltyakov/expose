@@ -1186,27 +1186,6 @@ func TestIsH3MultiStreamProtocol(t *testing.T) {
 	}
 }
 
-func TestIsNonReleaseVersion(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		version string
-		want    bool
-	}{
-		{version: "", want: true},
-		{version: "dev", want: true},
-		{version: "  dev  ", want: true},
-		{version: "1.2.3-dev", want: true},
-		{version: "1.2.3", want: false},
-		{version: "v1.2.3", want: false},
-	}
-	for _, tt := range tests {
-		if got := isNonReleaseVersion(tt.version); got != tt.want {
-			t.Fatalf("isNonReleaseVersion(%q) = %v, want %v", tt.version, got, tt.want)
-		}
-	}
-}
-
 func TestForwardAndSendSmallResponseInline(t *testing.T) {
 	t.Parallel()
 

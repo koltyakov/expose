@@ -37,7 +37,10 @@ func TestRegisterNewerClientTriggersUpdateCheck(t *testing.T) {
 		{name: "invalid version", serverVersion: "1.2.9", clientVersion: "unknown"},
 		{name: "dev client", serverVersion: "1.2.9", clientVersion: "dev"},
 		{name: "dev suffix", serverVersion: "1.2.9", clientVersion: "1.3.0-dev"},
-		{name: "dev server", serverVersion: "dev", clientVersion: "1.3.0"},
+		{name: "dev server", serverVersion: "dev", clientVersion: "1.3.0", wantCheck: true},
+		{name: "versioned dev server", serverVersion: "v1.2.9-dev", clientVersion: "1.3.0", wantCheck: true},
+		{name: "dev server same base", serverVersion: "v1.3.0-dev", clientVersion: "1.3.0"},
+		{name: "dev server ahead", serverVersion: "v1.3.1-dev", clientVersion: "1.3.0"},
 		{name: "unauthorized", serverVersion: "1.2.9", clientVersion: "1.3.0", unauthorized: true},
 		{name: "invalid registration", serverVersion: "1.2.9", clientVersion: "1.3.0", invalid: true},
 	} {

@@ -47,22 +47,34 @@ func TestAutoUpdateLoopClientTrigger(t *testing.T) {
 	}
 }
 
-func TestAutoUpdateLoopIgnoresDevelopmentBuilds(t *testing.T) {
+func TestAutoUpdateDevelopmentBuilds(t *testing.T) {
 	original := autoUpdateCheckAndApply
 	t.Cleanup(func() { autoUpdateCheckAndApply = original })
-	autoUpdateCheckAndApply = func(context.Context, string) (*selfupdate.Result, error) {
-		t.Fatal("development build checked for updates")
-		return nil, nil
-	}
-	for _, version := range []string{"", "dev", "1.2.9-dev"} {
+	for _, version := range []string{"dev", "1.2.9-dev", "v1.2.9-3-gabc123-dev"} {
 		t.Run(version, func(t *testing.T) {
+			calls := 0
+			autoUpdateCheckAndApply = func(_ context.Context, current string) (*selfupdate.Result, error) {
+				calls++
+				if current != version {
+					t.Fatalf("checked version = %q, want %q", current, version)
+				}
+				return &selfupdate.Result{CurrentVersion: current, LatestVersion: "1.2.10", Updated: true}, nil
+			}
 			checks := make(chan struct{}, 1)
 			checks <- struct{}{}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			startAutoUpdateLoop(ctx, version, slog.New(slog.NewTextHandler(io.Discard, nil)), checks, func() {
-				t.Fatal("development build requested restart")
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			if !autoUpdateOnStart(ctx, version, logger) {
+				t.Fatal("startup did not request restart after update")
+			}
+			restarts := 0
+			startAutoUpdateLoop(ctx, version, logger, checks, func() {
+				restarts++
 			})
+			if calls != 2 || restarts != 1 {
+				t.Fatalf("checks = %d, loop restarts = %d; want 2, 1", calls, restarts)
+			}
 		})
 	}
 }

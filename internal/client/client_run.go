@@ -30,7 +30,7 @@ func (c *Client) Run(ctx context.Context) error {
 	// Auto-update: periodic background check + server-version-change trigger.
 	autoUpdateCh := make(chan struct{}, 1) // signals that the binary was replaced
 	var lastServerVersion string
-	if c.autoUpdate && !isNonReleaseVersion(c.version) {
+	if c.autoUpdate {
 		go c.runAutoUpdateLoop(ctx, autoUpdateCh)
 	}
 
@@ -136,20 +136,18 @@ func (c *Client) Run(ctx context.Context) error {
 			})
 		}
 
-		// Check for updates in the background (non-blocking).
-		if !isNonReleaseVersion(c.version) {
-			// If server version changed since last registration and auto-update
-			// is on, immediately try to self-update.
-			if c.autoUpdate && lastServerVersion != "" && reg.ServerVersion != "" &&
-				reg.ServerVersion != lastServerVersion {
-				c.log.Info("server version changed", "from", lastServerVersion, "to", reg.ServerVersion)
-				if c.trySelfUpdate(ctx) {
-					return ErrAutoUpdated
-				}
+		// If server version changed since last registration and auto-update
+		// is on, immediately try to self-update.
+		if c.autoUpdate && lastServerVersion != "" && reg.ServerVersion != "" &&
+			reg.ServerVersion != lastServerVersion {
+			c.log.Info("server version changed", "from", lastServerVersion, "to", reg.ServerVersion)
+			if c.trySelfUpdate(ctx) {
+				return ErrAutoUpdated
 			}
-			lastServerVersion = reg.ServerVersion
-			go c.checkForUpdates(ctx)
 		}
+		lastServerVersion = reg.ServerVersion
+		// Check for updates in the background (non-blocking).
+		go c.checkForUpdates(ctx)
 
 		// Check if the background auto-update loop applied an update.
 		select {

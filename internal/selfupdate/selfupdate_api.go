@@ -119,12 +119,7 @@ func Check(ctx context.Context, currentVersion string) (*Release, error) {
 	if err != nil {
 		return nil, err
 	}
-	latest := strings.TrimPrefix(rel.TagName, "v")
-	current := strings.TrimPrefix(currentVersion, "v")
-	if current == latest || current == "dev" {
-		return nil, nil // already up to date or dev build
-	}
-	if !isNewer(current, latest) {
+	if !IsNewer(currentVersion, rel.TagName) {
 		return nil, nil
 	}
 	return rel, nil

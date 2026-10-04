@@ -17,11 +17,30 @@ import (
 )
 
 func TestIsNewerExported(t *testing.T) {
-	if !IsNewer("1.2.2", "1.2.3") {
-		t.Fatal("IsNewer() = false, want true")
-	}
-	if IsNewer("1.2.3", "1.2.3") {
-		t.Fatal("IsNewer() = true for identical versions, want false")
+	for _, tt := range []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		{"1.2.2", "1.2.3", true},
+		{"1.2.3", "1.2.3", false},
+		{"dev", "v1.2.3", true},
+		{"  v1.2.2-dev  ", "v1.2.3", true},
+		{"v1.2.2-3-gabc123-dev", "v1.2.3", true},
+		{"v1.2.2-3-gabc123-dirty", "v1.2.3", true},
+		{"1.2.3-dev", "1.2.3", false},
+		{"1.2.4-dev", "1.2.3", false},
+		{"dev", "dev", false},
+		{"dev", "unknown", false},
+		{"1.2.2-dev", "1.2.3-dev", false},
+		{"", "1.2.3", false},
+		{"unknown", "1.2.3", false},
+	} {
+		t.Run(tt.current+"->"+tt.latest, func(t *testing.T) {
+			if got := IsNewer(tt.current, tt.latest); got != tt.want {
+				t.Fatalf("IsNewer(%q, %q) = %v, want %v", tt.current, tt.latest, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -223,12 +242,26 @@ func TestCheck(t *testing.T) {
 		t.Fatalf("Check(same) = %#v, want nil", rel)
 	}
 
-	rel, err = Check(context.Background(), "dev")
-	if err != nil {
-		t.Fatalf("Check(dev) error = %v", err)
-	}
-	if rel != nil {
-		t.Fatalf("Check(dev) = %#v, want nil", rel)
+	for _, tt := range []struct {
+		version    string
+		wantUpdate bool
+	}{
+		{"dev", true},
+		{"v1.2.2-dev", true},
+		{"v1.2.2-3-gabc123-dev", true},
+		{"v1.2.3-dev", false},
+		{"v1.2.4-dev", false},
+		{"unknown", false},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			rel, err := Check(context.Background(), tt.version)
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			if (rel != nil) != tt.wantUpdate {
+				t.Fatalf("Check() = %#v, want update = %v", rel, tt.wantUpdate)
+			}
+		})
 	}
 }
 

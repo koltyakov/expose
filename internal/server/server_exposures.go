@@ -52,7 +52,9 @@ func (s *Server) handleExposures(w http.ResponseWriter, r *http.Request) {
 	cutoff := time.Now().UTC().Add(-retention)
 	visible := make([]domain.Exposure, 0, len(exposures))
 	for _, exposure := range exposures {
-		if retention > 0 && exposure.Status != domain.TunnelStateConnected && exposure.LastActiveAt.Before(cutoff) {
+		active := exposure.Status == domain.TunnelStateConnected ||
+			(exposure.Type == domain.ExposureTypeSite && exposure.Status == "active")
+		if retention > 0 && !active && exposure.LastActiveAt.Before(cutoff) {
 			continue
 		}
 		host := exposure.Hostname

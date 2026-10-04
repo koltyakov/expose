@@ -37,7 +37,7 @@ func listCommand(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.Usage = func() {
 		_, _ = fmt.Fprintln(fs.Output(), "Usage: expose list [--server URL] [--api-key KEY] [--retention 168h] [--json]")
-		_, _ = fmt.Fprintln(fs.Output(), "List your tunnels and published sites active within the last 7 days. Connected tunnels are always included.")
+		_, _ = fmt.Fprintln(fs.Output(), "List your tunnels and published sites seen within the last 7 days. Connected tunnels and unexpired published sites are always included.")
 		fs.PrintDefaults()
 	}
 	var jsonOutput bool
@@ -45,7 +45,7 @@ func listCommand(ctx context.Context, args []string, out io.Writer) error {
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.BoolVar(&jsonOutput, "json", false, "Print JSON")
-	fs.DurationVar(&retention, "retention", domain.DefaultExposureRetention, "Hide entries inactive longer than this duration (0 shows all)")
+	fs.DurationVar(&retention, "retention", domain.DefaultExposureRetention, "Hide inactive entries last seen longer ago than this duration (0 shows all)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

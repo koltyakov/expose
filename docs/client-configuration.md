@@ -30,9 +30,9 @@ expose list --server=https://example.com --api-key=KEY
 
 `expose client list` is an alias. The command uses your saved login, environment variables, or explicit credential flags. Results are scoped to your API key on the selected server, including tunnels started from other machines.
 
-By default, the list hides entries inactive for more than 7 days. `--retention` accepts a Go duration such as `24h` or `336h`; `0` disables the filter. Connected tunnels always appear. This retention setting controls listing visibility, not deletion or hostname release.
+By default, the list hides inactive entries last seen more than 7 days ago. `--retention` accepts a Go duration such as `24h` or `336h`; `0` disables the filter. Connected tunnels always appear. Published sites always appear until they expire, regardless of last seen; sites without an expiry always appear. This retention setting controls listing visibility, not deletion or hostname release.
 
-Tunnel activity includes registration, connections, disconnections, and public requests. Published-site activity includes publishing, republishing, public requests, and presence heartbeats. Activity survives server restarts; older sites without recorded activity fall back to their creation time. Public-request activity is recorded asynchronously, so a new visit may take a moment to appear in the list.
+Tunnel activity includes registration, connections, disconnections, and public requests. Published-site activity includes publishing, republishing, public requests, and presence heartbeats. Activity survives server restarts; older entries without recorded activity fall back to their creation time. Public-request activity is recorded asynchronously, so the last-seen time may take a moment to update.
 
 The table shows subdomain (`NAME`), type, status, last activity (`SEEN`), and publication expiry. `SEEN` shows time since the last recorded activity, such as `now`, `5m ago`, `2h ago`, or `3d ago`; `-` means unavailable. It includes tunnels created by `http`, `static`, and `up`, plus sites uploaded with `pub`. Each hostname appears once, sorted by hostname. A connected tunnel takes precedence over older sessions; otherwise the latest registration is shown. An `up` configuration with multiple paths under one hostname occupies one row.
 

@@ -162,8 +162,24 @@ func TestExposureRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := domain.PublishedSite{ID: "stale", APIKeyID: keyID, Hostname: "stale.example.com", CreatedAt: time.Now().UTC().Add(-8 * 24 * time.Hour)}
+	now := time.Now().UTC()
+	stale := domain.PublishedSite{ID: "stale", APIKeyID: keyID, Hostname: "stale.example.com", CreatedAt: now.Add(-8 * 24 * time.Hour)}
 	if err := st.CreatePublishedSite(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+	for _, site := range []domain.PublishedSite{
+		{ID: "unexpired", APIKeyID: keyID, Hostname: "unexpired.example.com", CreatedAt: stale.CreatedAt, ExpiresAt: &future},
+		{ID: "expired", APIKeyID: keyID, Hostname: "expired.example.com", CreatedAt: stale.CreatedAt, ExpiresAt: &past},
+		{ID: "seen", APIKeyID: keyID, Hostname: "seen.example.com", CreatedAt: stale.CreatedAt, ExpiresAt: &past},
+	} {
+		if err := st.CreatePublishedSite(ctx, site); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Last seen, not creation time, controls retention for inactive entries.
+	if err := st.TouchDomain(ctx, "seen"); err != nil {
 		t.Fatal(err)
 	}
 	_, tunnel, err := st.AllocateDomainAndTunnel(ctx, keyID, "permanent", "live", "example.com")
@@ -178,10 +194,10 @@ func TestExposureRetention(t *testing.T) {
 		status int
 		count  int
 	}{
-		{"", http.StatusOK, 1},
-		{"?retention=0", http.StatusOK, 2},
-		{"?retention=216h", http.StatusOK, 2},
-		{"?retention=1ns", http.StatusOK, 1}, // Connected tunnels survive any cutoff.
+		{"", http.StatusOK, 4},
+		{"?retention=0", http.StatusOK, 5},
+		{"?retention=216h", http.StatusOK, 5},
+		{"?retention=1ns", http.StatusOK, 3}, // Connected tunnels and active sites survive any cutoff.
 		{"?retention=-1h", http.StatusBadRequest, 0},
 		{"?retention=invalid", http.StatusBadRequest, 0},
 		{"?retention=", http.StatusBadRequest, 0},
@@ -201,12 +217,21 @@ func TestExposureRetention(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil || len(entries) != tc.count {
 				t.Fatalf("listing: %s, error %v", w.Body.String(), err)
 			}
-			if entries[0].ID != tunnel.ID {
-				t.Fatalf("connected tunnel hidden: %+v", entries)
+			listed := make(map[string]bool, len(entries))
+			for _, entry := range entries {
+				listed[entry.ID] = true
+			}
+			for _, id := range []string{tunnel.ID, stale.ID, "unexpired"} {
+				if !listed[id] {
+					t.Fatalf("active exposure %q hidden: %+v", id, entries)
+				}
+			}
+			if tc.query == "" && (!listed["seen"] || listed["expired"]) {
+				t.Fatalf("inactive retention must use last seen: %+v", entries)
 			}
 		})
 	}
-	// Visiting a hidden site records activity through the existing touch queue.
+	// Visiting an active site still records activity through the existing touch queue.
 	root := filepath.Join(srv.publishDir(), stale.ID)
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
@@ -218,7 +243,7 @@ func TestExposureRetention(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.httpHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://"+stale.Hostname+"/", nil))
 	if w.Code != http.StatusOK {
-		t.Fatalf("hidden site is still served: %d %s", w.Code, w.Body.String())
+		t.Fatalf("active site is served: %d %s", w.Code, w.Body.String())
 	}
 	select {
 	case id := <-srv.domainTouches:
@@ -236,6 +261,6 @@ func TestExposureRetention(t *testing.T) {
 	w = httptest.NewRecorder()
 	srv.httpHandler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), stale.Hostname) {
-		t.Fatalf("visited site did not return to listing: %d %s", w.Code, w.Body.String())
+		t.Fatalf("visited site missing from listing: %d %s", w.Code, w.Body.String())
 	}
 }

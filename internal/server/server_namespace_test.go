@@ -114,7 +114,7 @@ func TestServiceNamespaceTunnelForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if err := conn.WriteJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
 		t.Fatal(err)

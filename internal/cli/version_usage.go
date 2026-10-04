@@ -30,6 +30,7 @@ Usage:
   expose soak --port 3000               Run a multi-tunnel client soak test against one local port
   expose auth curl --url URL            Login to a protected route and print curl-ready auth output
   expose login                          Save server URL and API key
+  expose list                           List your tunnels and published sites (--json for scripts)
   expose up                             Start routes from ./expose.yml
   expose up -f expose.yml               Start routes from YAML config
   expose up init                        Create expose.yml via wizard

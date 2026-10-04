@@ -13,9 +13,30 @@ Complete reference for all client flags, environment variables, and credential m
 | `expose soak --port 3000`           | Run many temporary clients against one local port |
 | `expose auth curl --url <url>`       | Authenticate curl against an access-form route    |
 | `expose login`                      | Save server URL and API key                       |
+| `expose list`                       | List your tunnels and published sites            |
 | `expose up`                         | Start routes from `expose.yml`                    |
 | `expose up init`                    | Create `expose.yml` via wizard                    |
 | `expose update`                     | Update to the latest release                      |
+
+## List tunnels and published sites
+
+```bash
+expose list
+expose list --json
+expose list --server=https://example.com --api-key=KEY
+```
+
+`expose client list` is an alias. The command uses your saved login, environment variables, or explicit credential flags. Results are scoped to your API key on the selected server, including tunnels started from other machines.
+
+The table shows type, status, public URL, and publication expiry. It includes tunnels created by `http`, `static`, and `up`, plus sites uploaded with `pub`. Each hostname appears once, sorted by hostname. A connected tunnel takes precedence over older sessions; otherwise the latest registration is shown. An `up` configuration with multiple paths under one hostname occupies one row.
+
+Terminal output includes a count of tunnels, sites, and online entries, highlighted URLs, and colored status indicators. Narrow terminals show a compact entry layout. Set `NO_COLOR=1` to disable color; redirected output is plain text.
+
+Tunnel statuses are `connected`, `disconnected`, or `closed`. Disconnected and closed hostnames remain listed while the server retains their reservations. Temporary hostnames disappear after cleanup. Published sites show `active` or `expired`; expired sites disappear after cleanup. Listing does not renew reservations or publication TTLs.
+
+`--json` returns an array with `id`, `type` (`tunnel` or `site`), `hostname`, `url`, `status`, and `created_at`. Temporary tunnels also include `temporary: true`; sites with an expiry include `expires_at`. An empty list returns `[]`.
+
+Both client and server must support this command. If an older server returns 404, the client asks you to update it. The API is `GET /_expose/v1/exposures`, authenticated with your API key in the `Authorization: Bearer KEY` header.
 
 ## Shared Tunnel Flags & Environment Variables
 

@@ -25,6 +25,8 @@ func Run(args []string) int {
 		return runAuth(ctx, args[1:])
 	case "login":
 		return runClientLogin(ctx, args[1:])
+	case "list":
+		return runList(ctx, args[1:])
 	case "http":
 		return runHTTP(ctx, args[1:])
 	case "static":
@@ -61,6 +63,8 @@ func runClientCommand(ctx context.Context, args []string) int {
 		switch args[0] {
 		case "login":
 			return runClientLogin(ctx, args[1:])
+		case "list":
+			return runList(ctx, args[1:])
 		case "http":
 			return runHTTP(ctx, args[1:])
 		case "static":

@@ -8,6 +8,7 @@ const (
 	V1              = Prefix + "/v1"
 	Health          = Prefix + "/healthz"
 	Sites           = V1 + "/sites"
+	Exposures       = V1 + "/exposures"
 	Register        = V1 + "/tunnels/register"
 	Connect         = V1 + "/tunnels/connect"
 	ConnectH3       = V1 + "/tunnels/connect-h3"

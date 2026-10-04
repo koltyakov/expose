@@ -53,6 +53,8 @@ Republishing makes the remote site match the local folder's public files. Files 
 
 Listing, stats access, and deletion are scoped to the authenticated API key. Revoking a key also stops its published sites from serving.
 
+To list tunnels alongside published sites, use [`expose list`](client-configuration.md#list-tunnels-and-published-sites). Add `--json` for scripts.
+
 All commands accept `--server` and `--api-key`, or use the usual environment variables and saved login. `--json` produces structured upload, listing, and deletion output.
 
 ## Incremental publishing

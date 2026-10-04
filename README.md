@@ -112,6 +112,9 @@ expose static ./public
 expose pub ./dist --ttl=24h
 # Track open pages as active visitors:
 expose pub ./dist --ws
+
+# List your tunnels and published sites across machines
+expose list
 ```
 
 Open the URL shown in the terminal - that's it.

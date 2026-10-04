@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
 )
@@ -27,6 +28,15 @@ func (s *Server) handleExposures(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	retention := domain.DefaultExposureRetention
+	if r.URL.Query().Has("retention") {
+		var err error
+		retention, err = time.ParseDuration(r.URL.Query().Get("retention"))
+		if err != nil || retention < 0 {
+			http.Error(w, "retention must be a non-negative duration, e.g. 168h; 0 includes all entries", http.StatusBadRequest)
+			return
+		}
+	}
 	st, ok := s.store.(exposureStore)
 	if !ok {
 		http.Error(w, "exposure listing unavailable", http.StatusServiceUnavailable)
@@ -39,12 +49,18 @@ func (s *Server) handleExposures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	port := authorityPort(r.Host)
-	for i := range exposures {
-		host := exposures[i].Hostname
+	cutoff := time.Now().UTC().Add(-retention)
+	visible := make([]domain.Exposure, 0, len(exposures))
+	for _, exposure := range exposures {
+		if retention > 0 && exposure.Status != domain.TunnelStateConnected && exposure.LastActiveAt.Before(cutoff) {
+			continue
+		}
+		host := exposure.Hostname
 		if port != "" && port != "443" {
 			host = net.JoinHostPort(host, port)
 		}
-		exposures[i].URL = "https://" + host
+		exposure.URL = "https://" + host
+		visible = append(visible, exposure)
 	}
-	writeJSON(w, http.StatusOK, exposures)
+	writeJSON(w, http.StatusOK, visible)
 }

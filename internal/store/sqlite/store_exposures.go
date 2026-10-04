@@ -15,7 +15,8 @@ func (s *Store) ListExposures(ctx context.Context, keyID string) ([]domain.Expos
 	// Prefer a connected tunnel, otherwise the latest registration. Tunnel IDs
 	// are random and connected_at is NULL for registrations that never connected.
 	rows, err := s.db.QueryContext(ctx, `
-SELECT d.hostname, d.type, d.created_at, t.id, t.state, p.id, p.expires_at
+SELECT d.hostname, d.type, d.created_at, t.id, t.state, p.id, p.expires_at,
+ d.last_seen_at, t.connected_at, t.disconnected_at
 FROM domains d
 LEFT JOIN tunnels t ON t.id = (
 	SELECT id FROM tunnels
@@ -38,8 +39,15 @@ ORDER BY d.hostname`, keyID, keyID, keyID)
 		var domainType string
 		var tunnelID, state, siteID sql.NullString
 		var expires sql.NullTime
-		if err := rows.Scan(&e.Hostname, &domainType, &e.CreatedAt, &tunnelID, &state, &siteID, &expires); err != nil {
+		var lastSeen, connected, disconnected sql.NullTime
+		if err := rows.Scan(&e.Hostname, &domainType, &e.CreatedAt, &tunnelID, &state, &siteID, &expires, &lastSeen, &connected, &disconnected); err != nil {
 			return nil, err
+		}
+		e.LastActiveAt = e.CreatedAt
+		for _, activity := range []sql.NullTime{lastSeen, connected, disconnected} {
+			if activity.Valid && activity.Time.After(e.LastActiveAt) {
+				e.LastActiveAt = activity.Time
+			}
 		}
 		if siteID.Valid {
 			e.ID, e.Type, e.Status = siteID.String, domain.ExposureTypeSite, "active"

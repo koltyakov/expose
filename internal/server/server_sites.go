@@ -441,6 +441,7 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return true
 	}
+	s.queueDomainTouch(site.ID)
 	publish.ServeWithOptions(w, r, filepath.Join(s.publishDir(), site.StorageID()), publish.ServeOptions{WS: site.WS})
 	return true
 }

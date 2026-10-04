@@ -23,20 +23,28 @@ Complete reference for all client flags, environment variables, and credential m
 ```bash
 expose list
 expose list --json
+expose list --retention=336h  # Include the last 14 days
+expose list --retention=0     # Include all retained entries
 expose list --server=https://example.com --api-key=KEY
 ```
 
 `expose client list` is an alias. The command uses your saved login, environment variables, or explicit credential flags. Results are scoped to your API key on the selected server, including tunnels started from other machines.
 
-The table shows type, status, public URL, and publication expiry. It includes tunnels created by `http`, `static`, and `up`, plus sites uploaded with `pub`. Each hostname appears once, sorted by hostname. A connected tunnel takes precedence over older sessions; otherwise the latest registration is shown. An `up` configuration with multiple paths under one hostname occupies one row.
+By default, the list hides entries inactive for more than 7 days. `--retention` accepts a Go duration such as `24h` or `336h`; `0` disables the filter. Connected tunnels always appear. This retention setting controls listing visibility, not deletion or hostname release.
 
-Terminal output includes a count of tunnels, sites, and online entries, highlighted URLs, and colored status indicators. Narrow terminals show a compact entry layout. Set `NO_COLOR=1` to disable color; redirected output is plain text.
+Tunnel activity includes registration, connections, disconnections, and public requests. Published-site activity includes publishing, republishing, public requests, and presence heartbeats. Activity survives server restarts; older sites without recorded activity fall back to their creation time. Public-request activity is recorded asynchronously, so a new visit may take a moment to appear in the list.
 
-Tunnel statuses are `connected`, `disconnected`, or `closed`. Disconnected and closed hostnames remain listed while the server retains their reservations. Temporary hostnames disappear after cleanup. Published sites show `active` or `expired`; expired sites disappear after cleanup. Listing does not renew reservations or publication TTLs.
+The table shows subdomain (`NAME`), type, status, last activity (`SEEN`), and publication expiry. `SEEN` shows time since the last recorded activity, such as `now`, `5m ago`, `2h ago`, or `3d ago`; `-` means unavailable. It includes tunnels created by `http`, `static`, and `up`, plus sites uploaded with `pub`. Each hostname appears once, sorted by hostname. A connected tunnel takes precedence over older sessions; otherwise the latest registration is shown. An `up` configuration with multiple paths under one hostname occupies one row.
 
-`--json` returns an array with `id`, `type` (`tunnel` or `site`), `hostname`, `url`, `status`, and `created_at`. Temporary tunnels also include `temporary: true`; sites with an expiry include `expires_at`. An empty list returns `[]`.
+Terminal output uses one row per hostname, with short type labels (`named`, `temp`, `site`), green online indicators, and dim offline entries. Names omit the selected server's base domain and port, preserving nested subdomains such as `docs.api`. The name column is capped at 28 characters, including `...` for longer names, and shrinks further to fit narrow terminals. Below 72 columns, the expiry column is omitted while `SEEN` stays visible. Expiry times use local time. Set `NO_COLOR=1` to disable color; redirected output uses the same compact table in plain text. Use `--json` for full hostnames, URLs, and timestamps.
+
+JSON tunnel statuses are `connected`, `disconnected`, or `closed`; published site statuses are `active` or `expired`. The table labels connected tunnels and active sites as `online`, and disconnected tunnels as `offline`. Disconnected and closed hostnames appear within the retention window while the server retains their reservations. Temporary hostnames and expired sites disappear after cleanup. Listing does not renew reservations or publication TTLs.
+
+`--json` returns an array with `id`, `type` (`tunnel` or `site`), `hostname`, `url`, `status`, `created_at`, and `last_active_at`. Temporary tunnels also include `temporary: true`; sites with an expiry include `expires_at`. The same retention filter applies to JSON. An empty list returns `[]`.
 
 Both client and server must support this command. If an older server returns 404, the client asks you to update it. The API is `GET /_expose/v1/exposures`, authenticated with your API key in the `Authorization: Bearer KEY` header.
+
+The API also defaults to seven days and accepts a `retention` query parameter, for example `GET /_expose/v1/exposures?retention=336h` or `?retention=0` for all retained entries.
 
 ## Shared Tunnel Flags & Environment Variables
 

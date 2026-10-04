@@ -20,7 +20,7 @@ func (s *Store) CreatePublishedSite(ctx context.Context, site domain.PublishedSi
 		if err := releaseStoppedTunnelHostnameTx(ctx, tx, site); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO domains(id, api_key_id, type, hostname, status, created_at) VALUES(?, ?, 'published_site', ?, 'active', ?)`, site.ID, site.APIKeyID, site.Hostname, site.CreatedAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at) VALUES(?, ?, 'published_site', ?, 'active', ?, ?)`, site.ID, site.APIKeyID, site.Hostname, site.CreatedAt, site.CreatedAt)
 		if err != nil {
 			return siteConflictError(err)
 		}
@@ -107,14 +107,22 @@ func (s *Store) ListPublishedSites(ctx context.Context, key string) ([]domain.Pu
 
 func (s *Store) ReplacePublishedSite(ctx context.Context, site domain.PublishedSite) error {
 	return s.withSerializedWrite(ctx, func() error {
-		result, err := s.db.ExecContext(ctx, `UPDATE published_sites SET content_id = ?, source_id = ?, expires_at = ?, ws = ? WHERE id = ? AND api_key_id = ? AND hostname = ?`, site.ContentID, site.SourceID, site.ExpiresAt, site.WS, site.ID, site.APIKeyID, site.Hostname)
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		result, err := tx.ExecContext(ctx, `UPDATE published_sites SET content_id = ?, source_id = ?, expires_at = ?, ws = ? WHERE id = ? AND api_key_id = ? AND hostname = ?`, site.ContentID, site.SourceID, site.ExpiresAt, site.WS, site.ID, site.APIKeyID, site.Hostname)
 		if err != nil {
 			return err
 		}
 		if n, _ := result.RowsAffected(); n == 0 {
 			return sql.ErrNoRows
 		}
-		return nil
+		if _, err := tx.ExecContext(ctx, `UPDATE domains SET last_seen_at = ? WHERE id = ? AND api_key_id = ?`, time.Now().UTC(), site.ID, site.APIKeyID); err != nil {
+			return err
+		}
+		return tx.Commit()
 	})
 }
 

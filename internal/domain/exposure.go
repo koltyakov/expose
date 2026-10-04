@@ -3,18 +3,20 @@ package domain
 import "time"
 
 const (
-	ExposureTypeTunnel = "tunnel"
-	ExposureTypeSite   = "site"
+	ExposureTypeTunnel       = "tunnel"
+	ExposureTypeSite         = "site"
+	DefaultExposureRetention = 7 * 24 * time.Hour
 )
 
 // Exposure is the client-safe summary of a tunnel hostname or published site.
 type Exposure struct {
-	ID        string     `json:"id"`
-	Type      string     `json:"type"`
-	Hostname  string     `json:"hostname"`
-	URL       string     `json:"url"`
-	Status    string     `json:"status"`
-	Temporary bool       `json:"temporary,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	ID           string     `json:"id"`
+	Type         string     `json:"type"`
+	Hostname     string     `json:"hostname"`
+	URL          string     `json:"url"`
+	Status       string     `json:"status"`
+	Temporary    bool       `json:"temporary,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastActiveAt time.Time  `json:"last_active_at"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }

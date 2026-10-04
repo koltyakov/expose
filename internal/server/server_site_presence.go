@@ -36,6 +36,7 @@ func (s *Server) prepareSitePresence(w http.ResponseWriter, r *http.Request, sit
 		return nil
 	}
 	if r.URL.Path == publish.PresenceScriptPath {
+		s.queueDomainTouch(site.ID)
 		publish.ServePresenceScript(w, r)
 		return nil
 	}
@@ -98,6 +99,7 @@ func (s *Server) runSitePresence(conn *websocket.Conn, site domain.PublishedSite
 			stats.touchVisitorLocked(fingerprint, now)
 		}
 		stats.mu.Unlock()
+		s.queueDomainTouch(site.ID)
 		return conn.SetReadDeadline(now.Add(timeout))
 	})
 	go func() {

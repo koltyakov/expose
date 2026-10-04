@@ -62,7 +62,7 @@ func writeExposureList(out io.Writer, exposures []domain.Exposure, baseDomain st
 		}
 		expires := "-"
 		if e.ExpiresAt != nil {
-			expires = e.ExpiresAt.Local().Format("02 Jan 15:04")
+			expires = exposureExpires(*e.ExpiresAt, now)
 		} else if e.Type == domain.ExposureTypeSite {
 			expires = "Never"
 		}
@@ -114,6 +114,35 @@ func writeExposureList(out io.Writer, exposures []domain.Exposure, baseDomain st
 	b.WriteByte('\n')
 	_, err := io.WriteString(out, b.String())
 	return err
+}
+
+func exposureExpires(at, now time.Time) string {
+	remaining := at.Sub(now)
+	if remaining <= 0 {
+		return "Expired"
+	}
+	if remaining < time.Second {
+		return "<1s"
+	}
+	for _, unit := range []struct {
+		duration  time.Duration
+		label     string
+		next      time.Duration
+		nextLabel string
+	}{
+		{24 * time.Hour, "d", time.Hour, "h"},
+		{time.Hour, "h", time.Minute, "m"},
+		{time.Minute, "m", time.Second, "s"},
+	} {
+		if remaining >= unit.duration {
+			value := fmt.Sprintf("%d%s", remaining/unit.duration, unit.label)
+			if next := remaining % unit.duration / unit.next; next > 0 {
+				value += fmt.Sprintf(" %d%s", next, unit.nextLabel)
+			}
+			return value
+		}
+	}
+	return fmt.Sprintf("%ds", remaining/time.Second)
 }
 
 func exposureLastSeen(at, now time.Time) string {

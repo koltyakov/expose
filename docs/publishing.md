@@ -163,7 +163,7 @@ The root path serves `index.html`. For a path such as `/docs/getting-started`, t
 3. `docs/getting-started/index.html`
 4. The root `index.html`
 
-Trailing slashes use the same fallback order. Exact assets keep their content type. `GET` and `HEAD` support conditional requests and byte ranges. Directory listings are disabled. The existing `/v1/` and `/healthz` server paths remain reserved.
+Trailing slashes use the same fallback order. Exact assets keep their content type. `GET` and `HEAD` support conditional requests and byte ranges. Directory listings are disabled. Expose reserves `/_expose/v1` and its descendants and `/_expose/healthz` for service APIs. Sites can serve their own `/v1/*` and `/healthz` paths.
 
 Published sites use the server's existing WAF, HTTPS certificate handling, trusted-proxy settings, and optional per-host/client-IP public rate limits.
 
@@ -207,13 +207,13 @@ All endpoints require `Authorization: Bearer <API-key>`.
 
 | Method | Path | Operation |
 | --- | --- | --- |
-| `POST` | `/v1/sites?domain=docs&ttl=24h&ws=true` | Upload a gzip-compressed tar body. All query parameters are optional; `ws` defaults to false |
-| `GET` | `/v1/sites/files?domain=docs` | List owned file paths, SHA-256 checksums, and sizes, with a publication revision in `ETag`. Use `source_id` instead of `domain` to select by folder |
-| `POST` | `/v1/sites?domain=docs&incremental=true` | Upload a gzip-compressed delta archive with `If-Match` set to the file listing's `ETag` |
-| `GET` | `/v1/sites` | List sites owned by the key |
-| `GET` | `/v1/sites/{subdomain}` | Get site metadata |
-| `GET` | `/v1/sites/{subdomain}/stats` | Get an owner-only live stats snapshot; expired or deleted sites return `404` |
-| `DELETE` | `/v1/sites/{subdomain}` | Delete files and release the hostname |
+| `POST` | `/_expose/v1/sites?domain=docs&ttl=24h&ws=true` | Upload a gzip-compressed tar body. All query parameters are optional; `ws` defaults to false |
+| `GET` | `/_expose/v1/sites/files?domain=docs` | List owned file paths, SHA-256 checksums, and sizes, with a publication revision in `ETag`. Use `source_id` instead of `domain` to select by folder |
+| `POST` | `/_expose/v1/sites?domain=docs&incremental=true` | Upload a gzip-compressed delta archive with `If-Match` set to the file listing's `ETag` |
+| `GET` | `/_expose/v1/sites` | List sites owned by the key |
+| `GET` | `/_expose/v1/sites/{subdomain}` | Get site metadata |
+| `GET` | `/_expose/v1/sites/{subdomain}/stats` | Get an owner-only live stats snapshot; expired or deleted sites return `404` |
+| `DELETE` | `/_expose/v1/sites/{subdomain}` | Delete files and release the hostname |
 
 Metadata contains the internal storage `id`, `hostname`, `created_at`, the `ws` boolean, optional `expires_at`, and optional `source_id`. The CLI sends `source_id` as a query parameter when uploading to associate the publication with its local folder. Commands accept a folder or `--domain`, so the internal ID is not needed. Listing returns an array. Creating a site returns `201`; replacing it returns `200`; deletion returns `204`. Domain conflicts return `409`.
 

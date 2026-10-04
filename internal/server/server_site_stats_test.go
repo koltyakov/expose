@@ -60,7 +60,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 		srv.handleSites(w, r)
 		return w
 	}
-	w := api("POST", "/v1/sites?domain=stats", "owner", archive.Bytes())
+	w := api("POST", "/_expose/v1/sites?domain=stats", "owner", archive.Bytes())
 	if w.Code != 201 {
 		t.Fatalf("publish: %d %s", w.Code, w.Body.String())
 	}
@@ -70,7 +70,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	}
 	snapshot := func() domain.PublishedSiteStats {
 		t.Helper()
-		w := api("GET", "/v1/sites/stats/stats", "owner", nil)
+		w := api("GET", "/_expose/v1/sites/stats/stats", "owner", nil)
 		if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("stats: %d %s", w.Code, w.Body.String())
 		}
@@ -93,11 +93,11 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 		key    string
 		status int
 	}{{"other", 404}, {"invalid", 401}} {
-		if w := api("GET", "/v1/sites/"+site.ID+"/stats", check.key, nil); w.Code != check.status {
+		if w := api("GET", "/_expose/v1/sites/"+site.ID+"/stats", check.key, nil); w.Code != check.status {
 			t.Fatalf("stats ownership: %d", w.Code)
 		}
 	}
-	if w := api("DELETE", "/v1/sites/"+site.ID+"/stats", "owner", nil); w.Code != 405 {
+	if w := api("DELETE", "/_expose/v1/sites/"+site.ID+"/stats", "owner", nil); w.Code != 405 {
 		t.Fatalf("stats endpoint accepted delete: %d", w.Code)
 	}
 	for _, method := range []string{"GET", "HEAD"} {
@@ -155,7 +155,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if err := publish.Archive(root, &archive); err != nil {
 		t.Fatal(err)
 	}
-	if w := api("POST", "/v1/sites?domain=stats", "owner", archive.Bytes()); w.Code != 200 {
+	if w := api("POST", "/_expose/v1/sites?domain=stats", "owner", archive.Bytes()); w.Code != 200 {
 		t.Fatalf("republish: %d", w.Code)
 	}
 	if next := snapshot(); next.HTTPRequests != stats.HTTPRequests || next.Visitors != stats.Visitors || !next.Since.Equal(stats.Since) {
@@ -202,7 +202,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if err := st.ReplacePublishedSite(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
-	if w := api("GET", "/v1/sites/"+site.ID+"/stats", "owner", nil); w.Code != 404 {
+	if w := api("GET", "/_expose/v1/sites/"+site.ID+"/stats", "owner", nil); w.Code != 404 {
 		t.Fatalf("expired stats available: %d", w.Code)
 	}
 	if err := srv.cleanupPublishedSites(ctx); err != nil {
@@ -214,7 +214,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if visitors, err := st.ListPublishedSiteVisitors(ctx, site.ID); err != nil || len(visitors) != 0 {
 		t.Fatalf("expiry retained durable visitors: %d, %v", len(visitors), err)
 	}
-	w = api("POST", "/v1/sites?domain=stats", "owner", archive.Bytes())
+	w = api("POST", "/_expose/v1/sites?domain=stats", "owner", archive.Bytes())
 	if w.Code != http.StatusCreated {
 		t.Fatalf("publish after expiry: %d %s", w.Code, w.Body.String())
 	}
@@ -224,7 +224,7 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	if err := st.RevokeAPIKey(ctx, owner.ID); err != nil {
 		t.Fatal(err)
 	}
-	if w := api("GET", "/v1/sites/stats/stats", "owner", nil); w.Code != 401 {
+	if w := api("GET", "/_expose/v1/sites/stats/stats", "owner", nil); w.Code != 401 {
 		t.Fatalf("revoked owner can read stats: %d", w.Code)
 	}
 }

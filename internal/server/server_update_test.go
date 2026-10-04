@@ -65,7 +65,7 @@ func TestRegisterNewerClientTriggersUpdateCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			register := func(resumeID string) *httptest.ResponseRecorder {
-				req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(string(data)))
+				req := httptest.NewRequest(http.MethodPost, "https://example.com/_expose/v1/tunnels/register", strings.NewReader(string(data)))
 				if !tt.unauthorized {
 					req.Header.Set("Authorization", "Bearer "+rawKey)
 				}

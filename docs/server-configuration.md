@@ -154,7 +154,15 @@ Protected routes in `form` mode issue a signed edge-session cookie after a succe
 
 ## Health Check
 
-The server exposes `GET /healthz` which returns `200 OK`. This endpoint is exempt from WAF inspection and is useful for load balancer or uptime monitoring probes.
+The server exposes `GET /_expose/healthz` which returns `200 OK`. This endpoint is exempt from WAF inspection and is useful for load balancer or uptime monitoring probes.
+
+### Service API namespace and upgrades
+
+Expose reserves `/_expose/v1` and its descendants for tunnel registration, WebSocket and HTTP/3 connections, and publication management. Health probes use `/_expose/healthz`. Published-site presence continues to use `/_expose/presence` and `/_expose/presence.js`.
+
+Application paths such as `/v1/*` and `/healthz` reach the tunnel or published site and receive normal WAF inspection. There are no legacy service aliases on these paths.
+
+When upgrading from a version using `/v1/*`, upgrade the server and all tunnel and publishing clients together. Older clients cannot register or manage publications against the new API. Update health probes and any reverse-proxy path rules to the new namespace. Stored keys, hostnames, and published files need no migration.
 
 ## Debug Profiling
 
@@ -176,7 +184,7 @@ listener on loopback or restrict it at the network boundary.
 
 ## Rate Limiting
 
-The server applies token-bucket rate limiting to tunnel registration requests (`/v1/tunnels/register`). Limits are per API key:
+The server applies token-bucket rate limiting to tunnel registration requests (`/_expose/v1/tunnels/register`). Limits are per API key:
 
 - **5 registrations/second** sustained rate
 - **10 burst** capacity

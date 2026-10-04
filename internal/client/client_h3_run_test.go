@@ -61,7 +61,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 
 	startTunnelServer := func(done <-chan struct{}) (string, func()) {
 		mux := http.NewServeMux()
-		mux.HandleFunc("/v1/tunnels/connect-h3", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/_expose/v1/tunnels/connect-h3", func(w http.ResponseWriter, r *http.Request) {
 			streamer, ok := w.(http3.HTTPStreamer)
 			if !ok {
 				http.Error(w, "stream takeover unavailable", http.StatusInternalServerError)
@@ -76,7 +76,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 			<-done
 			closeHTTP3TestStream(stream)
 		})
-		mux.HandleFunc("/v1/tunnels/connect-h3/stream", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/_expose/v1/tunnels/connect-h3/stream", func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get(h3SessionHeader) == "" {
 				http.Error(w, "missing h3 session", http.StatusUnauthorized)
 				return
@@ -101,7 +101,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 	defer cleanupFirst()
 
 	registerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/tunnels/register" {
+		if r.URL.Path != "/_expose/v1/tunnels/register" {
 			http.NotFound(w, r)
 			return
 		}
@@ -113,8 +113,8 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(domain.RegisterResponse{
 			TunnelID:     "tun_h3",
 			PublicURL:    "https://demo.example.com",
-			WSURL:        "wss://unused.example.com/v1/tunnels/connect?token=unused",
-			H3URL:        "https://" + currentH3Addr + "/v1/tunnels/connect-h3?token=abc",
+			WSURL:        "wss://unused.example.com/_expose/v1/tunnels/connect?token=unused",
+			H3URL:        "https://" + currentH3Addr + "/_expose/v1/tunnels/connect-h3?token=abc",
 			Capabilities: []string{tunnelCapabilityH3MultistreamV2},
 		})
 	}))
@@ -257,7 +257,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 
 	h3Addr, cleanupH3 := startHTTP3TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/tunnels/connect-h3":
+		case "/_expose/v1/tunnels/connect-h3":
 			streamer, ok := w.(http3.HTTPStreamer)
 			if !ok {
 				http.Error(w, "stream takeover unavailable", http.StatusInternalServerError)
@@ -268,7 +268,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 			stream := streamer.HTTPStream()
 			<-controlDone
 			closeHTTP3TestStream(stream)
-		case "/v1/tunnels/connect-h3/stream":
+		case "/_expose/v1/tunnels/connect-h3/stream":
 			if r.Header.Get(h3SessionHeader) == "" {
 				http.Error(w, "missing h3 session", http.StatusUnauthorized)
 				return
@@ -346,7 +346,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 	}()
 
 	registerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/tunnels/register" {
+		if r.URL.Path != "/_expose/v1/tunnels/register" {
 			http.NotFound(w, r)
 			return
 		}
@@ -354,8 +354,8 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(domain.RegisterResponse{
 			TunnelID:     "tun_h3_display",
 			PublicURL:    "https://demo.example.com",
-			WSURL:        "wss://unused.example.com/v1/tunnels/connect?token=unused",
-			H3URL:        "https://" + h3Addr + "/v1/tunnels/connect-h3?token=abc",
+			WSURL:        "wss://unused.example.com/_expose/v1/tunnels/connect?token=unused",
+			H3URL:        "https://" + h3Addr + "/_expose/v1/tunnels/connect-h3?token=abc",
 			Capabilities: []string{tunnelCapabilityH3MultistreamV2},
 		})
 	}))

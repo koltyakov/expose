@@ -79,12 +79,12 @@ Expected:
 ## 7) Verify HTTP/3 tunnel availability
 
 ```bash
-curl -k -I --http3-only https://127.0.0.1.sslip.io:10443/healthz
+curl -k -I --http3-only https://127.0.0.1.sslip.io:10443/_expose/healthz
 lsof -nP -iUDP:10443
 ./bin/expose http 3000 --domain=myapp --transport=quic
 ```
 
 Expected:
-- `curl --http3-only` succeeds against `/healthz`
+- `curl --http3-only` succeeds against `/_expose/healthz`
 - `lsof` shows the server listening on UDP `:10443`
 - the client connects without falling back to WebSocket

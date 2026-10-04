@@ -40,12 +40,12 @@ sequenceDiagram
     participant C as expose client
     participant A as Local app
 
-    C->>S: POST /v1/tunnels/register (API key)
+    C->>S: POST /_expose/v1/tunnels/register (API key)
     S-->>C: tunnel_id + ws_url + h3_url + capabilities
-    C->>S: WebSocket connect /v1/tunnels/connect
-    C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_compat)
-    C->>S: or HTTP/3 POST /v1/tunnels/connect-h3 (h3_multistream_v2/h3_multistream control)
-    C->>S: HTTP/3 POST /v1/tunnels/connect-h3/stream (worker, X-Expose-H3-Session)
+    C->>S: WebSocket connect /_expose/v1/tunnels/connect
+    C->>S: or HTTP/3 POST /_expose/v1/tunnels/connect-h3 (h3_compat)
+    C->>S: or HTTP/3 POST /_expose/v1/tunnels/connect-h3 (h3_multistream_v2/h3_multistream control)
+    C->>S: HTTP/3 POST /_expose/v1/tunnels/connect-h3/stream (worker, X-Expose-H3-Session)
 
     B->>S: HTTPS GET myapp.example.com/path
     S->>S: Match hostname → tunnel session

@@ -64,7 +64,7 @@ func TestStableTemporarySubdomainRequiresInputs(t *testing.T) {
 }
 
 func TestDecodeJSONBodyRejectsUnknownFields(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","unknown":"x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","unknown":"x"}`))
 	w := httptest.NewRecorder()
 	var body domain.RegisterRequest
 
@@ -77,7 +77,7 @@ func TestParseAndValidateRegisterRequestDefaults(t *testing.T) {
 	t.Parallel()
 
 	srv := &Server{}
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"","password":"secret","client_hostname":"host-a","local_port":"3000"}`))
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"","password":"secret","client_hostname":"host-a","local_port":"3000"}`))
 	rr := httptest.NewRecorder()
 
 	prepared, ok := srv.parseAndValidateRegisterRequest(rr, req)
@@ -108,7 +108,7 @@ func TestParseAndValidateRegisterRequestBasicMode(t *testing.T) {
 	t.Parallel()
 
 	srv := &Server{}
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","password":"secret","access_mode":"basic"}`))
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","password":"secret","access_mode":"basic"}`))
 	rr := httptest.NewRecorder()
 
 	prepared, ok := srv.parseAndValidateRegisterRequest(rr, req)
@@ -124,7 +124,7 @@ func TestParseAndValidateRegisterRequestRejectsInvalidSubdomain(t *testing.T) {
 	t.Parallel()
 
 	srv := &Server{}
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", strings.NewReader(`{"mode":"permanent","subdomain":"incorrect one"}`))
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"permanent","subdomain":"incorrect one"}`))
 	rr := httptest.NewRecorder()
 
 	if _, ok := srv.parseAndValidateRegisterRequest(rr, req); ok {
@@ -143,10 +143,10 @@ func TestRegisterURLsNonDefaultPort(t *testing.T) {
 	if publicURL != "https://abc.example.com:10443" {
 		t.Fatalf("expected public url with custom port, got %q", publicURL)
 	}
-	if wsURL != "wss://127.0.0.1.sslip.io:10443/v1/tunnels/connect?token=token-1" {
+	if wsURL != "wss://127.0.0.1.sslip.io:10443/_expose/v1/tunnels/connect?token=token-1" {
 		t.Fatalf("unexpected ws url: %q", wsURL)
 	}
-	if h3URL != "https://127.0.0.1.sslip.io:10443/v1/tunnels/connect-h3?token=token-1" {
+	if h3URL != "https://127.0.0.1.sslip.io:10443/_expose/v1/tunnels/connect-h3?token=token-1" {
 		t.Fatalf("unexpected h3 url: %q", h3URL)
 	}
 }
@@ -154,7 +154,7 @@ func TestRegisterURLsNonDefaultPort(t *testing.T) {
 func TestHandleConnectRequiresToken(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/v1/tunnels/connect", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/_expose/v1/tunnels/connect", nil)
 	rr := httptest.NewRecorder()
 
 	(&Server{}).handleConnect(rr, req)
@@ -267,7 +267,7 @@ func TestHandleRegisterResumesSameTunnelIDBeforeActiveLimitCheck(t *testing.T) {
 		ConnectTokenTTL: time.Minute,
 	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
 
-	req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","client_machine_id":"machine-1","local_port":"3000"}`))
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","client_machine_id":"machine-1","local_port":"3000"}`))
 	req.Header.Set("Authorization", "Bearer "+rawKey)
 	req.Header.Set(domain.RegisterResumeTunnelHeader, tunnelRec.ID)
 	rr := httptest.NewRecorder()
@@ -1162,7 +1162,7 @@ func TestHandleConnectH3StreamRejectsSessionTokenQueryParam(t *testing.T) {
 	}
 	srv.registerH3SessionToken("h3_query_token", sess)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/connect-h3/stream?session=h3_query_token", nil)
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/connect-h3/stream?session=h3_query_token", nil)
 	rr := httptest.NewRecorder()
 	srv.handleConnectH3Stream(rr, req)
 
@@ -1289,7 +1289,7 @@ func TestHandleConnectH3TokenSetupFailureDoesNotMarkTunnelConnected(t *testing.T
 		h3SessionTokenGenerator = originalTokenGenerator
 	}()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/connect-h3?token="+token, nil)
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/connect-h3?token="+token, nil)
 	req.Header.Set("X-Expose-H3-Mode", "multistream")
 	rr := &fakeHTTP3ResponseWriter{ResponseRecorder: httptest.NewRecorder()}
 
@@ -2221,7 +2221,7 @@ func TestRegisterAdvertisesConnectTokenHeaderCapability(t *testing.T) {
 		ConnectTokenTTL: time.Minute,
 	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
 
-	req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","local_port":"3000"}`))
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","local_port":"3000"}`))
 	req.Header.Set("Authorization", "Bearer "+rawKey)
 	rr := httptest.NewRecorder()
 	srv.handleRegister(rr, req)
@@ -2258,7 +2258,7 @@ func TestRegisterLimitIncludesPendingConnectTokens(t *testing.T) {
 	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
 
 	register := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","local_port":"3000"}`))
+		req := httptest.NewRequest(http.MethodPost, "https://example.com/_expose/v1/tunnels/register", strings.NewReader(`{"mode":"temporary","local_port":"3000"}`))
 		req.Header.Set("Authorization", "Bearer "+rawKey)
 		rr := httptest.NewRecorder()
 		srv.handleRegister(rr, req)
@@ -2305,7 +2305,7 @@ func TestConsumeConnectTokenAcceptsAuthorizationHeader(t *testing.T) {
 	}
 
 	// Authorization: Bearer takes the token out of the URL.
-	req := httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_expose/v1/tunnels/connect", nil)
 	req.Header.Set("Authorization", "Bearer "+newToken())
 	rr := httptest.NewRecorder()
 	tunnelID, ok := srv.consumeConnectToken(rr, req)
@@ -2314,7 +2314,7 @@ func TestConsumeConnectTokenAcceptsAuthorizationHeader(t *testing.T) {
 	}
 
 	// The legacy query parameter still works for older clients.
-	req = httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect?token="+newToken(), nil)
+	req = httptest.NewRequest(http.MethodGet, "/_expose/v1/tunnels/connect?token="+newToken(), nil)
 	rr = httptest.NewRecorder()
 	tunnelID, ok = srv.consumeConnectToken(rr, req)
 	if !ok || tunnelID != tunnelRec.ID {
@@ -2324,7 +2324,7 @@ func TestConsumeConnectTokenAcceptsAuthorizationHeader(t *testing.T) {
 	// The header wins when both are present.
 	queryToken := newToken()
 	headerToken := newToken()
-	req = httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect?token="+queryToken, nil)
+	req = httptest.NewRequest(http.MethodGet, "/_expose/v1/tunnels/connect?token="+queryToken, nil)
 	req.Header.Set("Authorization", "Bearer "+headerToken)
 	rr = httptest.NewRecorder()
 	if _, ok = srv.consumeConnectToken(rr, req); !ok {
@@ -2335,7 +2335,7 @@ func TestConsumeConnectTokenAcceptsAuthorizationHeader(t *testing.T) {
 	}
 
 	// Missing token is a 400.
-	req = httptest.NewRequest(http.MethodGet, "/v1/tunnels/connect", nil)
+	req = httptest.NewRequest(http.MethodGet, "/_expose/v1/tunnels/connect", nil)
 	rr = httptest.NewRecorder()
 	if _, ok = srv.consumeConnectToken(rr, req); ok || rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing token, got ok=%v status=%d", ok, rr.Code)

@@ -25,7 +25,7 @@ func TestPublishedSitePresenceLifecycle(t *testing.T) {
 	}
 	upload := func(query string) domain.PublishedSite {
 		t.Helper()
-		w := incrementalSiteRequest(srv, "POST", "/v1/sites?domain=docs"+query, "owner", "", archive.Bytes())
+		w := incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?domain=docs"+query, "owner", "", archive.Bytes())
 		var site domain.PublishedSite
 		if (w.Code != 200 && w.Code != 201) || json.Unmarshal(w.Body.Bytes(), &site) != nil {
 			t.Fatalf("upload: %d %s", w.Code, w.Body.String())
@@ -48,7 +48,7 @@ func TestPublishedSitePresenceLifecycle(t *testing.T) {
 		t.Fatal("default publication was injected")
 	}
 	for _, value := range []string{"invalid", ""} {
-		w := incrementalSiteRequest(srv, "POST", "/v1/sites?domain=docs&ws="+value, "owner", "", nil)
+		w := incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?domain=docs&ws="+value, "owner", "", nil)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("invalid ws accepted: %d", w.Code)
 		}
@@ -229,7 +229,7 @@ func TestSitePresenceHeartbeatAndTimeout(t *testing.T) {
 			if err := publish.Archive(root, &archive); err != nil {
 				t.Fatal(err)
 			}
-			w := incrementalSiteRequest(srv, "POST", "/v1/sites?domain=docs&ws=true", "owner", "", archive.Bytes())
+			w := incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?domain=docs&ws=true", "owner", "", archive.Bytes())
 			var site domain.PublishedSite
 			if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &site) != nil {
 				t.Fatalf("upload: %d %s", w.Code, w.Body.String())
@@ -286,7 +286,7 @@ func TestSitePresenceHeartbeatAndTimeout(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "deleted":
-				w := incrementalSiteRequest(srv, "DELETE", "/v1/sites/docs", "owner", "", nil)
+				w := incrementalSiteRequest(srv, "DELETE", "/_expose/v1/sites/docs", "owner", "", nil)
 				if w.Code != http.StatusNoContent {
 					t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 				}

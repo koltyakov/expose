@@ -910,7 +910,7 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 		resumeID string
 	}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/tunnels/register" {
+		if r.URL.Path != "/_expose/v1/tunnels/register" {
 			http.NotFound(w, r)
 			return
 		}
@@ -934,7 +934,7 @@ func TestRegisterSendsOptionalPassword(t *testing.T) {
 		result.mode = req.AccessMode
 		resultCh <- result
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc"}`)
+		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/_expose/v1/tunnels/connect?token=abc"}`)
 	}))
 	defer srv.Close()
 
@@ -981,7 +981,7 @@ func TestRegisterSendsWAFIgnorePaths(t *testing.T) {
 			return
 		}
 		pathsCh <- req.WAFIgnorePaths
-		writeJSON := `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc","capabilities":["waf_ignore_paths_v1"]}`
+		writeJSON := `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/_expose/v1/tunnels/connect?token=abc","capabilities":["waf_ignore_paths_v1"]}`
 		_, _ = io.WriteString(w, writeJSON)
 	}))
 	defer srv.Close()
@@ -1004,7 +1004,7 @@ func TestRegisterRejectsUnsupportedWAFIgnorePaths(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/v1/tunnels/connect?token=abc"}`)
+		_, _ = io.WriteString(w, `{"tunnel_id":"t_1","public_url":"https://demo.example.com","ws_url":"wss://example.com/_expose/v1/tunnels/connect?token=abc"}`)
 	}))
 	defer srv.Close()
 
@@ -1028,21 +1028,21 @@ func TestNormalizeWSURLPort(t *testing.T) {
 	}{
 		{
 			name:      "inject non-default server port",
-			wsURL:     "wss://myapp.example.com/v1/tunnels/connect?token=abc",
+			wsURL:     "wss://myapp.example.com/_expose/v1/tunnels/connect?token=abc",
 			serverURL: "https://example.com:10443",
-			want:      "wss://myapp.example.com:10443/v1/tunnels/connect?token=abc",
+			want:      "wss://myapp.example.com:10443/_expose/v1/tunnels/connect?token=abc",
 		},
 		{
 			name:      "keep explicit ws port",
-			wsURL:     "wss://myapp.example.com:9443/v1/tunnels/connect?token=abc",
+			wsURL:     "wss://myapp.example.com:9443/_expose/v1/tunnels/connect?token=abc",
 			serverURL: "https://example.com:10443",
-			want:      "wss://myapp.example.com:9443/v1/tunnels/connect?token=abc",
+			want:      "wss://myapp.example.com:9443/_expose/v1/tunnels/connect?token=abc",
 		},
 		{
 			name:      "ignore default server port",
-			wsURL:     "wss://myapp.example.com/v1/tunnels/connect?token=abc",
+			wsURL:     "wss://myapp.example.com/_expose/v1/tunnels/connect?token=abc",
 			serverURL: "https://example.com",
-			want:      "wss://myapp.example.com/v1/tunnels/connect?token=abc",
+			want:      "wss://myapp.example.com/_expose/v1/tunnels/connect?token=abc",
 		},
 	}
 	for _, tt := range tests {
@@ -1059,7 +1059,7 @@ func TestConnectSessionTransportQUICRequiresH3URL(t *testing.T) {
 
 	c := &Client{cfg: config.ClientConfig{Transport: "quic"}}
 	_, err := c.connectSessionTransport(t.Context(), domain.RegisterResponse{
-		WSURL: "wss://example.com/v1/tunnels/connect?token=abc",
+		WSURL: "wss://example.com/_expose/v1/tunnels/connect?token=abc",
 	})
 	if err == nil {
 		t.Fatal("expected error when h3_url is missing")
@@ -1076,9 +1076,9 @@ func TestHTTP3DialAuthority(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{raw: "https://example.com/v1/tunnels/connect-h3?token=abc", want: "example.com:443"},
-		{raw: "https://example.com:9443/v1/tunnels/connect-h3?token=abc", want: "example.com:9443"},
-		{raw: "https://[2001:db8::1]:9443/v1/tunnels/connect-h3?token=abc", want: "[2001:db8::1]:9443"},
+		{raw: "https://example.com/_expose/v1/tunnels/connect-h3?token=abc", want: "example.com:443"},
+		{raw: "https://example.com:9443/_expose/v1/tunnels/connect-h3?token=abc", want: "example.com:9443"},
+		{raw: "https://[2001:db8::1]:9443/_expose/v1/tunnels/connect-h3?token=abc", want: "[2001:db8::1]:9443"},
 	}
 	for _, tc := range cases {
 		u, err := url.Parse(tc.raw)
@@ -1095,7 +1095,7 @@ func TestCanUseH3Modes(t *testing.T) {
 	t.Parallel()
 
 	reg := domain.RegisterResponse{
-		H3URL:        "https://example.com/v1/tunnels/connect-h3?token=abc",
+		H3URL:        "https://example.com/_expose/v1/tunnels/connect-h3?token=abc",
 		Capabilities: []string{"h3_compat", "h3_multistream_v2", "h3_multistream"},
 	}
 	if !canUseH3Compat(reg) {
@@ -1125,11 +1125,11 @@ func TestCanUseH3Modes(t *testing.T) {
 func TestH3WorkerURL(t *testing.T) {
 	t.Parallel()
 
-	target, err := url.Parse("https://example.com/v1/tunnels/connect-h3?token=abc")
+	target, err := url.Parse("https://example.com/_expose/v1/tunnels/connect-h3?token=abc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := h3WorkerURL(target); got != "https://example.com/v1/tunnels/connect-h3/stream" {
+	if got := h3WorkerURL(target); got != "https://example.com/_expose/v1/tunnels/connect-h3/stream" {
 		t.Fatalf("unexpected worker url %q", got)
 	}
 }

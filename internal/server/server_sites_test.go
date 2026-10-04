@@ -57,7 +57,7 @@ func TestRepublishReplacesWholeSite(t *testing.T) {
 	}
 	upload := func(query string, data []byte, status int) domain.PublishedSite {
 		t.Helper()
-		r := httptest.NewRequest(http.MethodPost, "/v1/sites?"+query, bytes.NewReader(data))
+		r := httptest.NewRequest(http.MethodPost, "/_expose/v1/sites?"+query, bytes.NewReader(data))
 		r.Header.Set("Authorization", "Bearer owner")
 		w := httptest.NewRecorder()
 		srv.handleSites(w, r)
@@ -137,7 +137,7 @@ func TestRepublishReplacesWholeSite(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertBody(first.Hostname, "/", "by domain")
-	r := httptest.NewRequest(http.MethodDelete, "/v1/sites/"+label, nil)
+	r := httptest.NewRequest(http.MethodDelete, "/_expose/v1/sites/"+label, nil)
 	r.Header.Set("Authorization", "Bearer owner")
 	w := httptest.NewRecorder()
 	srv.handleSites(w, r)
@@ -186,7 +186,7 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 		return w
 	}
 	sourceID := strings.Repeat("a", 64)
-	w := request("POST", "/v1/sites?source_id="+sourceID, "owner", archive.Bytes())
+	w := request("POST", "/_expose/v1/sites?source_id="+sourceID, "owner", archive.Bytes())
 	if w.Code != 201 {
 		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
 	}
@@ -202,12 +202,12 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 		t.Fatalf("folder identifier not persisted: %+v, %v", stored, err)
 	}
 	for _, ttl := range []string{"-1h", "0", "invalid"} {
-		w = request("POST", "/v1/sites?ttl="+ttl, "owner", archive.Bytes())
+		w = request("POST", "/_expose/v1/sites?ttl="+ttl, "owner", archive.Bytes())
 		if w.Code != 400 {
 			t.Fatalf("invalid ttl %q: %d", ttl, w.Code)
 		}
 	}
-	w = request("POST", "/v1/sites?ttl=1h", "owner", archive.Bytes())
+	w = request("POST", "/_expose/v1/sites?ttl=1h", "owner", archive.Bytes())
 	if w.Code != 201 {
 		t.Fatalf("TTL upload: %d %s", w.Code, w.Body.String())
 	}
@@ -218,11 +218,11 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 	if timed.ExpiresAt == nil || timed.ExpiresAt.Sub(timed.CreatedAt) != time.Hour {
 		t.Fatalf("TTL not stored: %+v", timed)
 	}
-	w = request("POST", "/v1/sites", "invalid", archive.Bytes())
+	w = request("POST", "/_expose/v1/sites", "invalid", archive.Bytes())
 	if w.Code != 401 {
 		t.Fatalf("unauthenticated upload: %d", w.Code)
 	}
-	w = request("POST", "/v1/sites", "owner", []byte("not an archive"))
+	w = request("POST", "/_expose/v1/sites", "owner", []byte("not an archive"))
 	if w.Code != 400 {
 		t.Fatalf("malformed archive: %d", w.Code)
 	}
@@ -236,22 +236,22 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 	if err := srv.authorizeACMEHost(ctx, site.Hostname); err != nil {
 		t.Fatalf("ACME: %v", err)
 	}
-	w = request("GET", "/v1/sites", "other", nil)
+	w = request("GET", "/_expose/v1/sites", "other", nil)
 	if w.Code != 200 || w.Body.String() != "[]\n" {
 		t.Fatalf("other owner's list: %d %s", w.Code, w.Body.String())
 	}
 	subdomain := strings.TrimSuffix(site.Hostname, ".example.com")
 	for _, method := range []string{"GET", "DELETE"} {
-		w = request(method, "/v1/sites/"+subdomain, "other", nil)
+		w = request(method, "/_expose/v1/sites/"+subdomain, "other", nil)
 		if w.Code != 404 {
 			t.Fatalf("ownership %s: %d", method, w.Code)
 		}
 	}
-	w = request("POST", "/v1/sites?domain=docs", "owner", archive.Bytes())
+	w = request("POST", "/_expose/v1/sites?domain=docs", "owner", archive.Bytes())
 	if w.Code != 201 {
 		t.Fatalf("named upload: %d %s", w.Code, w.Body.String())
 	}
-	w = request("POST", "/v1/sites?domain=docs", "other", archive.Bytes())
+	w = request("POST", "/_expose/v1/sites?domain=docs", "other", archive.Bytes())
 	if w.Code != 409 {
 		t.Fatalf("conflict: %d", w.Code)
 	}
@@ -265,26 +265,26 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 	if err := st.SetTunnelConnected(ctx, live.ID); err != nil {
 		t.Fatal(err)
 	}
-	w = request("POST", "/v1/sites?domain=live", "owner", archive.Bytes())
+	w = request("POST", "/_expose/v1/sites?domain=live", "owner", archive.Bytes())
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "expose http") || !strings.Contains(w.Body.String(), "Ctrl+C") {
 		t.Fatalf("missing tunnel conflict guidance: %d %s", w.Code, w.Body.String())
 	}
-	w = request("PATCH", "/v1/sites/"+subdomain+"?domain=app", "owner", nil)
+	w = request("PATCH", "/_expose/v1/sites/"+subdomain+"?domain=app", "owner", nil)
 	if w.Code != 405 {
 		t.Fatalf("unsupported method: %d %s", w.Code, w.Body.String())
 	}
-	w = request("DELETE", "/v1/sites/"+subdomain, "owner", nil)
+	w = request("DELETE", "/_expose/v1/sites/"+subdomain, "owner", nil)
 	if w.Code != 204 {
 		t.Fatalf("delete hashed subdomain: %d", w.Code)
 	}
-	w = request("POST", "/v1/sites?domain=app", "owner", archive.Bytes())
+	w = request("POST", "/_expose/v1/sites?domain=app", "owner", archive.Bytes())
 	if w.Code != 201 {
 		t.Fatalf("publish app: %d %s", w.Code, w.Body.String())
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &site); err != nil {
 		t.Fatal(err)
 	}
-	w = request("GET", "/v1/sites/app", "owner", nil)
+	w = request("GET", "/_expose/v1/sites/app", "owner", nil)
 	if w.Code != 200 {
 		t.Fatalf("published subdomain not found: %d", w.Code)
 	}
@@ -315,7 +315,7 @@ func TestPublishedSiteLifecycle(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatalf("WAF: %d %s", w.Code, w.Body.String())
 	}
-	w = request("DELETE", "/v1/sites/app", "owner", nil)
+	w = request("DELETE", "/_expose/v1/sites/app", "owner", nil)
 	if w.Code != 204 {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}

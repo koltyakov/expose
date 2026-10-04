@@ -20,6 +20,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/serviceapi"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/waf"
 )
@@ -58,37 +59,7 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.runWAFAuditWorker(ctx)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/sites", s.handleSites)
-	mux.HandleFunc("/v1/sites/", s.handleSites)
-	mux.HandleFunc("/v1/tunnels/register", s.handleRegister)
-	mux.HandleFunc("/v1/tunnels/connect", s.handleConnect)
-	mux.HandleFunc("/v1/tunnels/connect-h3", s.handleConnectH3)
-	mux.HandleFunc("/v1/tunnels/connect-h3/stream", s.handleConnectH3Stream)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/", s.handlePublic)
-
-	var handler http.Handler = mux
-	if s.cfg.WAFEnabled {
-		handler = waf.NewMiddleware(waf.Config{
-			Enabled:          true,
-			AuditOnly:        s.cfg.WAFAuditOnly,
-			BodyInspectLimit: s.cfg.WAFBodyInspectLimit,
-			MaxURILength:     s.cfg.WAFMaxURILength,
-			MaxHeaderCount:   s.cfg.WAFMaxHeaderCount,
-			ShouldInspectBody: func(r *http.Request) bool {
-				return shouldInspectWAFBody(r)
-			},
-			ShouldIgnorePathRule: s.shouldIgnoreWAFPathRule,
-			ClientAddr:           s.clientIP,
-			OnBlock:              s.recordWAFBlock,
-		}, s.log)(handler)
-		s.log.Info("WAF enabled")
-	}
-	handler = requestReadDeadlineMiddleware(handler, s.cfg.RequestTimeout)
+	handler := s.httpHandler()
 
 	var manager *autocert.Manager
 	useDynamicACME := s.cfg.TLSMode != tlsModeWildcard
@@ -305,11 +276,43 @@ func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) htt
 	})
 }
 
+func (s *Server) httpHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc(serviceapi.Sites, s.handleSites)
+	mux.HandleFunc(serviceapi.Sites+"/", s.handleSites)
+	mux.HandleFunc(serviceapi.Register, s.handleRegister)
+	mux.HandleFunc(serviceapi.Connect, s.handleConnect)
+	mux.HandleFunc(serviceapi.ConnectH3, s.handleConnectH3)
+	mux.HandleFunc(serviceapi.ConnectH3Stream, s.handleConnectH3Stream)
+	mux.HandleFunc(serviceapi.Health, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/", s.handlePublic)
+
+	var handler http.Handler = mux
+	if s.cfg.WAFEnabled {
+		handler = waf.NewMiddleware(waf.Config{
+			Enabled:              true,
+			AuditOnly:            s.cfg.WAFAuditOnly,
+			BodyInspectLimit:     s.cfg.WAFBodyInspectLimit,
+			MaxURILength:         s.cfg.WAFMaxURILength,
+			MaxHeaderCount:       s.cfg.WAFMaxHeaderCount,
+			ShouldInspectBody:    shouldInspectWAFBody,
+			ShouldIgnorePathRule: s.shouldIgnoreWAFPathRule,
+			ClientAddr:           s.clientIP,
+			OnBlock:              s.recordWAFBlock,
+		}, s.log)(handler)
+		s.log.Info("WAF enabled")
+	}
+	return requestReadDeadlineMiddleware(handler, s.cfg.RequestTimeout)
+}
+
 func shouldInspectWAFBody(r *http.Request) bool {
 	if r == nil || r.URL == nil {
 		return false
 	}
-	if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/v1/") {
+	if serviceapi.IsServicePath(r.URL.Path) {
 		return false
 	}
 	return true

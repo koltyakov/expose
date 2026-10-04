@@ -19,6 +19,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/publish"
+	"github.com/koltyakov/expose/internal/serviceapi"
 	"golang.org/x/term"
 )
 
@@ -143,7 +144,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return fmt.Errorf("API key is required; run expose login")
 	}
-	endpoint := strings.TrimRight(server, "/") + "/v1/sites"
+	endpoint := strings.TrimRight(server, "/") + serviceapi.Sites
 	client := &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	if action == "connect" {
 		client.Timeout = 10 * time.Second

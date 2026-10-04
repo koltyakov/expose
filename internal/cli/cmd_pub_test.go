@@ -23,7 +23,7 @@ func TestPubDeleteCLI(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if r.URL.Path != "/v1/sites/docs" {
+		if r.URL.Path != "/_expose/v1/sites/docs" {
 			http.NotFound(w, r)
 			return
 		}
@@ -140,14 +140,14 @@ func TestPubFullCLIUploadsValidatedArchive(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodDelete {
-			if r.URL.Path != "/v1/sites/site_test" {
+			if r.URL.Path != "/_expose/v1/sites/site_test" {
 				t.Errorf("wrong folder publication deleted: %s", r.URL.Path)
 			}
 			deleted = true
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if r.Method != "POST" || r.URL.Path != "/v1/sites" || r.URL.Query().Get("domain") != "docs" || r.URL.Query().Get("ttl") != "24h0m0s" {
+		if r.Method != "POST" || r.URL.Path != "/_expose/v1/sites" || r.URL.Query().Get("domain") != "docs" || r.URL.Query().Get("ttl") != "24h0m0s" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
 		}
 		if r.URL.Query().Has("incremental") || r.Header.Get("If-Match") != "" {

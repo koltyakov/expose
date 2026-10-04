@@ -48,10 +48,15 @@ func TestShouldInspectWAFBody(t *testing.T) {
 		t.Fatal("nil request must not be inspected")
 	}
 	for path, want := range map[string]bool{
-		"/healthz":     false,
-		"/v1/register": false,
-		"/":            true,
-		"/api/data":    true,
+		"/_expose/healthz":      false,
+		"/_expose/v1/register":  false,
+		"/_expose/v1":           false,
+		"/healthz":              true,
+		"/v1/register":          true,
+		"/_expose/v10/register": true,
+		"/_expose/presence":     true,
+		"/":                     true,
+		"/api/data":             true,
 	} {
 		r := httptest.NewRequest(http.MethodPost, path, nil)
 		if got := shouldInspectWAFBody(r); got != want {

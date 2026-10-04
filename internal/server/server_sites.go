@@ -17,6 +17,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/publish"
+	"github.com/koltyakov/expose/internal/serviceapi"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
 
@@ -64,7 +65,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/v1/sites")
+	id := strings.TrimPrefix(r.URL.Path, serviceapi.Sites)
 	id = strings.TrimPrefix(id, "/")
 	filesRequest := id == "files" && (r.URL.Query().Has("domain") || r.URL.Query().Has("source_id"))
 	statsRequest := strings.HasSuffix(id, "/stats")

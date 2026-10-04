@@ -13,6 +13,7 @@ import (
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/serviceapi"
 )
 
 type preparedRegisterRequest struct {
@@ -299,7 +300,7 @@ func (s *Server) registerURLs(hostHeader, hostname, token string) (publicURL, ws
 	if port := authorityPort(wsAuthority); port != "" && port != "443" {
 		publicURL = fmt.Sprintf("https://%s:%s", hostname, port)
 	}
-	wsURL = fmt.Sprintf("wss://%s/v1/tunnels/connect?token=%s", wsAuthority, token)
-	h3URL = fmt.Sprintf("https://%s/v1/tunnels/connect-h3?token=%s", wsAuthority, token)
+	wsURL = fmt.Sprintf("wss://%s%s?token=%s", wsAuthority, serviceapi.Connect, token)
+	h3URL = fmt.Sprintf("https://%s%s?token=%s", wsAuthority, serviceapi.ConnectH3, token)
 	return publicURL, wsURL, h3URL
 }

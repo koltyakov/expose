@@ -82,7 +82,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 			if err := publish.Archive(root, &full); err != nil {
 				t.Fatal(err)
 			}
-			w := incrementalSiteRequest(srv, "POST", "/v1/sites?"+query+"&ttl=1h", "owner", "", full.Bytes())
+			w := incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query+"&ttl=1h", "owner", "", full.Bytes())
 			if w.Code != http.StatusCreated {
 				t.Fatalf("initial full upload: %d %s", w.Code, w.Body.String())
 			}
@@ -99,7 +99,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 			srv.handlePublic(httptest.NewRecorder(), visit)
 			assertTotals := func(count int, size int64) {
 				t.Helper()
-				w := incrementalSiteRequest(srv, "GET", "/v1/sites/"+first.ID+"/stats", "owner", "", nil)
+				w := incrementalSiteRequest(srv, "GET", "/_expose/v1/sites/"+first.ID+"/stats", "owner", "", nil)
 				var stats domain.PublishedSiteStats
 				if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &stats) != nil || stats.FileCount != count || stats.FileBytes != size || stats.Visitors != 1 {
 					t.Fatalf("wrong published file totals: %d %s", w.Code, w.Body.String())
@@ -108,7 +108,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 			assertTotals(3, 90011)
 			fetch := func(token string) ([]domain.PublishedFile, string) {
 				t.Helper()
-				w := incrementalSiteRequest(srv, "GET", "/v1/sites/files?"+query, token, "", nil)
+				w := incrementalSiteRequest(srv, "GET", "/_expose/v1/sites/files?"+query, token, "", nil)
 				if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
 					t.Fatalf("manifest response: %d %s", w.Code, w.Body.String())
 				}
@@ -127,7 +127,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 			if len(otherFiles) != 0 || otherRevision != `"new"` {
 				t.Fatal("file listing disclosed another owner's publication")
 			}
-			w = incrementalSiteRequest(srv, "GET", "/v1/sites/files?"+query, "invalid", "", nil)
+			w = incrementalSiteRequest(srv, "GET", "/_expose/v1/sites/files?"+query, "invalid", "", nil)
 			if w.Code != http.StatusUnauthorized {
 				t.Fatalf("unauthenticated manifest: %d", w.Code)
 			}
@@ -144,7 +144,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 			if err := publish.ArchiveDelta(root, &delta, local, remote, nil); err != nil {
 				t.Fatal(err)
 			}
-			w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query+"&incremental=true&ttl=48h", "owner", revision, delta.Bytes())
+			w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query+"&incremental=true&ttl=48h", "owner", revision, delta.Bytes())
 			if w.Code != http.StatusOK {
 				t.Fatalf("incremental replacement: %d %s", w.Code, w.Body.String())
 			}
@@ -169,7 +169,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 				t.Fatalf("removed file survived: %v", err)
 			}
 			// A second publisher working against the same base cannot overwrite it.
-			w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query+"&incremental=true", "owner", revision, delta.Bytes())
+			w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query+"&incremental=true", "owner", revision, delta.Bytes())
 			if w.Code != http.StatusPreconditionFailed {
 				t.Fatalf("stale revision accepted: %d %s", w.Code, w.Body.String())
 			}
@@ -191,7 +191,7 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 				if progress.Files != 0 || progress.Bytes != 0 {
 					t.Fatalf("unchanged contents were uploaded: %+v", progress)
 				}
-				w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query+"&incremental=true", "owner", revision, delta.Bytes())
+				w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query+"&incremental=true", "owner", revision, delta.Bytes())
 				if w.Code != http.StatusOK {
 					t.Fatalf("metadata-only upload: %d %s", w.Code, w.Body.String())
 				}
@@ -227,7 +227,7 @@ func TestIncrementalPublicationGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := "domain=docs&incremental=true"
-	w := incrementalSiteRequest(srv, "GET", "/v1/sites/files?domain=docs", "owner", "", nil)
+	w := incrementalSiteRequest(srv, "GET", "/_expose/v1/sites/files?domain=docs", "owner", "", nil)
 	if w.Code != http.StatusOK || w.Body.String() != "[]\n" || w.Header().Get("ETag") != `"new"` {
 		t.Fatalf("first publication manifest: %d %s", w.Code, w.Body.String())
 	}
@@ -243,13 +243,13 @@ func TestIncrementalPublicationGuards(t *testing.T) {
 		{"bad archive", query, `"new"`, []byte("broken"), http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := incrementalSiteRequest(srv, "POST", "/v1/sites?"+tc.query, "owner", tc.revision, tc.body)
+			w := incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+tc.query, "owner", tc.revision, tc.body)
 			if w.Code != tc.status {
 				t.Fatalf("guard: %d %s, want %d", w.Code, w.Body.String(), tc.status)
 			}
 		})
 	}
-	w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query, "owner", `"new"`, initial.Bytes())
+	w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query, "owner", `"new"`, initial.Bytes())
 	if w.Code != http.StatusCreated {
 		t.Fatalf("first incremental upload: %d %s", w.Code, w.Body.String())
 	}
@@ -260,21 +260,21 @@ func TestIncrementalPublicationGuards(t *testing.T) {
 	revision := publishedSiteRevision(&site)
 	// Watch updates cannot recreate or overwrite another publication at the
 	// same hostname, even if the client has its current content revision.
-	w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query+"&site_id=site_deleted", "owner", revision, unchanged.Bytes())
+	w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query+"&site_id=site_deleted", "owner", revision, unchanged.Bytes())
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("watch ignored publication identity: %d %s", w.Code, w.Body.String())
 	}
 	// "new" cannot be used to overwrite a site created after the file listing.
-	w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query, "owner", `"new"`, initial.Bytes())
+	w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query, "owner", `"new"`, initial.Bytes())
 	if w.Code != http.StatusPreconditionFailed {
 		t.Fatalf("concurrent first publication accepted: %d %s", w.Code, w.Body.String())
 	}
-	w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query, "other", `"new"`, initial.Bytes())
+	w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query, "other", `"new"`, initial.Bytes())
 	if w.Code != http.StatusConflict {
 		t.Fatalf("other owner overwrote publication: %d %s", w.Code, w.Body.String())
 	}
 	srv.cfg.PublishMaxBytes = 10 // Unchanged 9-byte asset plus 4-byte index exceeds it.
-	w = incrementalSiteRequest(srv, "POST", "/v1/sites?"+query, "owner", revision, unchanged.Bytes())
+	w = incrementalSiteRequest(srv, "POST", "/_expose/v1/sites?"+query, "owner", revision, unchanged.Bytes())
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("final site limit ignored unchanged content: %d %s", w.Code, w.Body.String())
 	}
@@ -286,7 +286,7 @@ func TestIncrementalPublicationGuards(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("failed uploads left staging files: %v, %v", entries, err)
 	}
-	for _, path := range []string{"/v1/sites/files?source_id=invalid", "/v1/sites/files?domain=bad_domain", "/v1/sites/files?domain="} {
+	for _, path := range []string{"/_expose/v1/sites/files?source_id=invalid", "/_expose/v1/sites/files?domain=bad_domain", "/_expose/v1/sites/files?domain="} {
 		w = incrementalSiteRequest(srv, "GET", path, "owner", "", nil)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("invalid manifest selector %s: %d %s", path, w.Code, w.Body.String())

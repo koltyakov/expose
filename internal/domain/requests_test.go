@@ -40,8 +40,8 @@ func TestRegisterResponseJSONKeys(t *testing.T) {
 	resp := RegisterResponse{
 		TunnelID:      "t-1",
 		PublicURL:     "https://myapp.example.com",
-		WSURL:         "wss://example.com/v1/tunnels/connect?token=abc",
-		H3URL:         "https://example.com:10443/v1/tunnels/connect-h3?token=abc",
+		WSURL:         "wss://example.com/_expose/v1/tunnels/connect?token=abc",
+		H3URL:         "https://example.com:10443/_expose/v1/tunnels/connect-h3?token=abc",
 		Capabilities:  []string{"h3_compat", "h3_multistream"},
 		ServerTLSMode: "auto",
 		ServerVersion: "v2.0.0",
@@ -69,7 +69,7 @@ func TestRegisterResponseOmitsEmptyH3URL(t *testing.T) {
 	resp := RegisterResponse{
 		TunnelID:  "t-1",
 		PublicURL: "https://myapp.example.com",
-		WSURL:     "wss://example.com/v1/tunnels/connect?token=abc",
+		WSURL:     "wss://example.com/_expose/v1/tunnels/connect?token=abc",
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {

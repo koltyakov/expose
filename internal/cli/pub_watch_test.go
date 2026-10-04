@@ -88,11 +88,11 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			switch r.URL.Path {
-			case "/v1/sites/files":
+			case "/_expose/v1/sites/files":
 				h.fetches++
 				w.Header().Set("ETag", strconv.Quote(fmt.Sprintf("rev-%d", h.revision)))
 				_ = json.NewEncoder(w).Encode(h.files)
-			case "/v1/sites/site_watch/stats":
+			case "/_expose/v1/sites/site_watch/stats":
 				h.stats++
 				if h.statsStatus != 0 {
 					w.WriteHeader(h.statsStatus)
@@ -105,7 +105,7 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 			}
 			return
 		}
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/sites" || r.URL.Query().Get("incremental") != "true" || r.URL.Query().Get("site_id") != h.site.ID {
+		if r.Method != http.MethodPost || r.URL.Path != "/_expose/v1/sites" || r.URL.Query().Get("incremental") != "true" || r.URL.Query().Get("site_id") != h.site.ID {
 			t.Errorf("unexpected watch mutation: %s %s", r.Method, r.URL)
 			http.Error(w, "bad watch request", http.StatusBadRequest)
 			return
@@ -171,7 +171,7 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 		_ = json.NewEncoder(w).Encode(h.site)
 	}))
 	t.Cleanup(server.Close)
-	opts := pubUploadOptions{Folder: root, Endpoint: server.URL + "/v1/sites", Server: server.URL, Key: "token", Name: "docs", SourceID: strings.Repeat("a", 64)}
+	opts := pubUploadOptions{Folder: root, Endpoint: server.URL + "/_expose/v1/sites", Server: server.URL, Key: "token", Name: "docs", SourceID: strings.Repeat("a", 64)}
 	return h, server.Client(), opts, pubUploadResult{Site: h.site, Files: h.files, Diff: diff, Uploaded: true}, snapshot
 }
 
@@ -839,10 +839,10 @@ func testPubWatchCLIInitialUploadAndJSON(t *testing.T, staged bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/sites/files":
+		case r.Method == http.MethodGet && r.URL.Path == "/_expose/v1/sites/files":
 			w.Header().Set("ETag", `"new"`)
 			_, _ = io.WriteString(w, "[]")
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/sites":
+		case r.Method == http.MethodPost && r.URL.Path == "/_expose/v1/sites":
 			posts++
 			dest := t.TempDir()
 			files, err := publish.ExtractDeltaWithLimit(r.Body, dest, publish.MaxExpandedBytes)
@@ -861,7 +861,7 @@ func testPubWatchCLIInitialUploadAndJSON(t *testing.T, staged bool) {
 				t.Errorf("initial watch upload included untracked files: %+v", files)
 			}
 			_ = json.NewEncoder(w).Encode(site)
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/sites/site_watch/stats":
+		case r.Method == http.MethodGet && r.URL.Path == "/_expose/v1/sites/site_watch/stats":
 			stats++
 			if stats == 2 {
 				cancel()

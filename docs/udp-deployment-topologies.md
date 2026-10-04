@@ -52,7 +52,7 @@ Current `expose` versions do not support advertising a different public UDP port
 ## Validation Checklist
 
 1. Confirm TCP path:
-   - `curl -I https://<your-domain>/healthz`
+   - `curl -I https://<your-domain>/_expose/healthz`
 2. Confirm UDP path:
    - `nc -vzu <your-domain> 443` (or your HTTPS public port)
 3. Confirm advertise/connect behavior:

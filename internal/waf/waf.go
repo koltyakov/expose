@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/serviceapi"
 )
 
 // BlockEvent carries context about a single WAF-blocked request so that
@@ -75,7 +76,7 @@ func intOr(v, fallback int) int {
 
 // NewMiddleware returns an http.Handler middleware that inspects every
 // incoming request against the built-in WAF ruleset. Requests that match
-// a rule are rejected with 403 Forbidden. The /healthz endpoint is
+// a rule are rejected with 403 Forbidden. The /_expose/healthz endpoint is
 // always exempt.
 //
 // If cfg.Enabled is false the returned middleware is a no-op passthrough.
@@ -98,7 +99,7 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 			onBlock:       cfg.OnBlock,
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
+			if r.URL.Path == serviceapi.Health {
 				next.ServeHTTP(w, r)
 				return
 			}

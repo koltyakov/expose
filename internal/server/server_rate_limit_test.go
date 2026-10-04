@@ -20,7 +20,7 @@ func TestPreAuthLimiterRejectsBeforeStoreAccess(t *testing.T) {
 
 	srv := &Server{authLimiter: newConfiguredRateLimiter(0, 1, time.Minute)}
 	first := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/tunnels/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/register", nil)
 	req.RemoteAddr = "192.0.2.10:1234"
 	if !srv.allowPreAuthRequest(first, req) {
 		t.Fatal("first request should be allowed")

@@ -61,7 +61,7 @@ func TestWAFDisabled(t *testing.T) {
 
 func TestHealthzExempt(t *testing.T) {
 	handler := newTestMiddleware(t)
-	r := httptest.NewRequest(http.MethodGet, "/healthz?x=<script>alert(1)</script>", nil)
+	r := httptest.NewRequest(http.MethodGet, "/_expose/healthz?x=<script>alert(1)</script>", nil)
 	assertAllowed(t, handler, r)
 }
 
@@ -698,12 +698,12 @@ func TestLegitimateRequestsAllowed(t *testing.T) {
 		ua   string
 	}{
 		{"simple GET", "/", "Mozilla/5.0"},
-		{"API call", "/v1/tunnels/register", "expose-client/1.0"},
+		{"API call", "/_expose/v1/tunnels/register", "expose-client/1.0"},
 		{"static asset", "/assets/style.css", "Mozilla/5.0"},
 		{"query param", "/search?q=hello+world", "Mozilla/5.0"},
 		{"json api", "/api/data?page=2&limit=50", "Mozilla/5.0"},
 		{"path with dots", "/files/report.v2.pdf", "Mozilla/5.0"},
-		{"websocket connect", "/v1/tunnels/connect", "expose-client/1.0"},
+		{"websocket connect", "/_expose/v1/tunnels/connect", "expose-client/1.0"},
 		{"numeric query", "/items?id=42&sort=name", "Chrome/120"},
 		{"complex path", "/api/v2/users/123/profile", "Safari/17"},
 	}

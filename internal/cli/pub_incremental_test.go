@@ -108,12 +108,12 @@ func TestPubIncrementalCLI(t *testing.T) {
 				if tc.byDomain != (r.URL.Query().Get("domain") == "docs") {
 					t.Errorf("wrong domain selector: %s", r.URL)
 				}
-				if r.Method == http.MethodGet && r.URL.Path == "/v1/sites/files" {
+				if r.Method == http.MethodGet && r.URL.Path == "/_expose/v1/sites/files" {
 					w.Header().Set("ETag", revision)
 					_ = json.NewEncoder(w).Encode(remote)
 					return
 				}
-				if r.Method != http.MethodPost || r.URL.Path != "/v1/sites" || r.URL.Query().Get("incremental") != "true" || r.Header.Get("If-Match") != revision {
+				if r.Method != http.MethodPost || r.URL.Path != "/_expose/v1/sites" || r.URL.Query().Get("incremental") != "true" || r.Header.Get("If-Match") != revision {
 					t.Errorf("unexpected incremental upload: %s %s, revision %q", r.Method, r.URL, r.Header.Get("If-Match"))
 				}
 				if r.ContentLength <= 0 || r.Header.Get("Content-Type") != "application/gzip" {
@@ -296,7 +296,7 @@ func TestPubFullSkipsFileComparison(t *testing.T) {
 	requests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/sites" {
+		if r.Method != http.MethodPost || r.URL.Path != "/_expose/v1/sites" {
 			t.Errorf("full upload fetched a file list: %s %s", r.Method, r.URL)
 			http.Error(w, "file listing unsupported", http.StatusNotFound)
 			return

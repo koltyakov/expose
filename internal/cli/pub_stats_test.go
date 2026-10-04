@@ -22,10 +22,10 @@ func TestPubStatsReconnectAndPublicationIdentity(t *testing.T) {
 		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer owner" {
 			t.Errorf("unexpected stats request: %s", r.Method)
 		}
-		if calls <= 2 && r.URL.Path != "/v1/sites/docs/stats" {
+		if calls <= 2 && r.URL.Path != "/_expose/v1/sites/docs/stats" {
 			t.Errorf("initial selection: %s", r.URL.Path)
 		}
-		if calls > 2 && r.URL.Path != "/v1/sites/site_original/stats" {
+		if calls > 2 && r.URL.Path != "/_expose/v1/sites/site_original/stats" {
 			t.Errorf("connection did not pin publication identity: %s", r.URL.Path)
 		}
 		if calls == 1 {
@@ -42,7 +42,7 @@ func TestPubStatsReconnectAndPublicationIdentity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var output bytes.Buffer
-	err := connectPublishedSite(ctx, server.Client(), server.URL+"/v1/sites", "owner", "docs", &output, false, true, time.Millisecond)
+	err := connectPublishedSite(ctx, server.Client(), server.URL+"/_expose/v1/sites", "owner", "docs", &output, false, true, time.Millisecond)
 	var status pubStatsHTTPError
 	if !errors.As(err, &status) || status.status != 404 {
 		t.Fatalf("expected deleted site to stop connection: %v", err)
@@ -79,7 +79,7 @@ func TestPubConnectFolderAndDomain(t *testing.T) {
 					t.Error("stats request missing ownership credentials")
 				}
 				site := domain.PublishedSite{ID: "site_live", Hostname: "docs.example.com", SourceID: source}
-				if r.URL.Path == "/v1/sites" {
+				if r.URL.Path == "/_expose/v1/sites" {
 					lookups++
 					_ = json.NewEncoder(w).Encode([]domain.PublishedSite{site})
 					return
@@ -89,9 +89,9 @@ func TestPubConnectFolderAndDomain(t *testing.T) {
 					cancel()
 					return
 				}
-				want := "/v1/sites/docs/stats"
+				want := "/_expose/v1/sites/docs/stats"
 				if selector[0] == folder {
-					want = "/v1/sites/site_live/stats"
+					want = "/_expose/v1/sites/site_live/stats"
 				}
 				if r.URL.Path != want {
 					t.Errorf("wrong selection: %s, want %s", r.URL.Path, want)

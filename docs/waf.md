@@ -39,7 +39,7 @@ export EXPOSE_WAF_AUDIT_ONLY=true
 export EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
 ```
 
-> The `/healthz` endpoint is always exempt from WAF inspection regardless of
+> The `/_expose/healthz` endpoint is always exempt from WAF inspection regardless of
 > this setting.
 
 ## Built-in Rules

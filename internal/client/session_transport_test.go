@@ -45,7 +45,7 @@ func TestSplitConnectToken(t *testing.T) {
 	legacy := domain.RegisterResponse{Capabilities: []string{"ws_v1"}}
 
 	// Capable server: the token leaves the URL entirely.
-	url, token := splitConnectToken("wss://a.example.com/v1/tunnels/connect?token=secret", withHeader)
+	url, token := splitConnectToken("wss://a.example.com/_expose/v1/tunnels/connect?token=secret", withHeader)
 	if token != "secret" {
 		t.Fatalf("token = %q, want %q", token, "secret")
 	}
@@ -61,7 +61,7 @@ func TestSplitConnectToken(t *testing.T) {
 
 	// Server without the capability only reads the query parameter, so the
 	// URL must be left exactly as issued.
-	const legacyURL = "wss://a.example.com/v1/tunnels/connect?token=secret"
+	const legacyURL = "wss://a.example.com/_expose/v1/tunnels/connect?token=secret"
 	url, token = splitConnectToken(legacyURL, legacy)
 	if url != legacyURL || token != "" {
 		t.Fatalf("splitConnectToken(legacy) = %q, %q; want URL unchanged and no token", url, token)
@@ -91,7 +91,7 @@ func TestConnectWebSocketTransportRejectsPlaintext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, err := c.connectWebSocketTransport(ctx, domain.RegisterResponse{
-		WSURL: "ws://203.0.113.10/v1/tunnels/connect?token=abc",
+		WSURL: "ws://203.0.113.10/_expose/v1/tunnels/connect?token=abc",
 	})
 	if err == nil {
 		t.Fatal("expected plaintext ws:// URL to be rejected")
@@ -108,7 +108,7 @@ func TestConnectHTTP3TransportsRejectPlaintext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	reg := domain.RegisterResponse{
-		H3URL:        "http://203.0.113.10/v1/tunnels/connect-h3?token=abc",
+		H3URL:        "http://203.0.113.10/_expose/v1/tunnels/connect-h3?token=abc",
 		Capabilities: []string{tunnelCapabilityH3CompatV1, tunnelCapabilityH3MultistreamV2},
 	}
 	if _, err := c.connectHTTP3Transport(ctx, reg); err == nil {

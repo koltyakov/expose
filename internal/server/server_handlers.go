@@ -9,6 +9,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/serviceapi"
 	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -151,7 +152,7 @@ func (s *Server) writeRegisterAllocateError(w http.ResponseWriter, keyID string,
 }
 
 func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/healthz" {
+	if serviceapi.IsServicePath(r.URL.Path) {
 		http.NotFound(w, r)
 		return
 	}

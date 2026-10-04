@@ -17,6 +17,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/serviceapi"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
@@ -83,7 +84,7 @@ func (c *Client) register(ctx context.Context) (domain.RegisterResponse, error) 
 		ClientVersion:   c.version,
 		WAFIgnorePaths:  c.cfg.WAFIgnorePaths,
 	})
-	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + "/v1/tunnels/register"
+	u := strings.TrimSuffix(c.cfg.ServerURL, "/") + serviceapi.Register
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return domain.RegisterResponse{}, err

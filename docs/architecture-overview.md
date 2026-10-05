@@ -74,6 +74,8 @@ sequenceDiagram
 - HTTP/3 compatibility mode keeps an outer length prefix so one H3 stream can carry many frames, but the inner frame format is the same as WebSocket.
 - WebSocket text frames are no longer used by the built-in client and server during normal runtime traffic.
 
+Public HTTP request and response bodies have no tunnel-wide total-size cap. Bodies larger than 256 KiB, including requests without a known `Content-Length`, travel in bounded chunks rather than whole-body buffers. This applies to WebSocket, HTTP/3 compatibility, and both HTTP/3 multi-stream protocols. Frame-size bounds, queue limits, backpressure, cancellation, and timeouts still apply. Upstream applications remain responsible for their own upload limits. Registration and server-hosted publication uploads retain their separate size limits.
+
 ## HTTP/3 Protocol Versions
 
 - `h3_compat`: single HTTP/3 stream carrying the same binary frame protocol used by WebSocket compatibility mode, wrapped in a length-prefixed stream record.

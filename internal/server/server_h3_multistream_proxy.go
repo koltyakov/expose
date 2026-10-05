@@ -17,10 +17,6 @@ import (
 )
 
 func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
-	if s.cfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
-		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
-	}
-
 	reqID := s.nextRequestID()
 	if !sess.tryAcquirePending(maxPendingPerSessionFor(s.cfg)) {
 		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)

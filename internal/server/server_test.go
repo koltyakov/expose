@@ -1583,59 +1583,6 @@ func TestHandlePublicAppliesPublicRateLimit(t *testing.T) {
 	}
 }
 
-func TestHandlePublicRejectsTooLargeBody(t *testing.T) {
-	t.Parallel()
-
-	host := "big.example.com"
-	route := domain.TunnelRoute{
-		Domain: domain.Domain{ID: "domain-1", Hostname: host},
-		Tunnel: domain.Tunnel{
-			ID:          "tunnel-1",
-			State:       domain.TunnelStateConnected,
-			IsTemporary: false,
-		},
-	}
-	sess := &session{
-		tunnelID: route.Tunnel.ID,
-		pending:  make(map[string]*pendingRequest),
-	}
-
-	srv := &Server{
-		cfg: config.ServerConfig{
-			MaxBodyBytes: 4,
-		},
-		hub: &hub{
-			sessions: map[string]*session{
-				route.Tunnel.ID: sess,
-			},
-		},
-		routes: routeCache{
-			entries:       make(map[string]routeCacheEntry),
-			hostsByTunnel: make(map[string]map[string]struct{}),
-		},
-	}
-	srv.routes.set(host, route)
-
-	req := httptest.NewRequest(http.MethodPost, "https://"+host+"/upload", strings.NewReader("12345"))
-	req.Host = host
-	rr := httptest.NewRecorder()
-
-	srv.handlePublic(rr, req)
-
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413, got %d", rr.Code)
-	}
-
-	if got := sess.pendingCount.Load(); got != 0 {
-		t.Fatalf("expected pending count 0, got %d", got)
-	}
-	sess.pendingMu.Lock()
-	defer sess.pendingMu.Unlock()
-	if len(sess.pending) != 0 {
-		t.Fatalf("expected no pending requests, got %d", len(sess.pending))
-	}
-}
-
 func TestHandlePublicReturnsServiceUnavailableWhenTunnelPendingLimitReached(t *testing.T) {
 	t.Parallel()
 

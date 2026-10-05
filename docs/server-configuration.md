@@ -61,6 +61,8 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 
 ## HTTP/3 + QUIC Behavior
 
+Tunneled HTTP uploads and downloads have no total-body size limit. Large bodies stream through bounded buffers on both WebSocket and HTTP/3 transports, including chunked requests without `Content-Length`. The upstream application can enforce its own upload limit. WAF inspection remains bounded by `EXPOSE_WAF_BODY_INSPECT_LIMIT`; registration and static-site publishing keep their separate request and extracted-size limits. `EXPOSE_PUBLISH_MAX_BYTES` applies only to server-hosted static sites, not tunneled uploads.
+
 - The server always starts HTTP/3 on the same listen address as HTTPS (`EXPOSE_LISTEN_HTTPS`).
 - There is no separate QUIC listen or advertise setting in current versions.
 - For clients using QUIC (`--transport=quic`), your public TCP and UDP paths must use the same authority/port.

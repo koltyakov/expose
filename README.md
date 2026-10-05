@@ -32,6 +32,8 @@
 2. The **client** registers via API key, then opens a persistent WebSocket or HTTP/3 tunnel to the server
 3. Requests and responses flow over the tunnel as versioned binary frames, with raw body bytes for inline and streamed payloads
 
+Large HTTP uploads and downloads stream in bounded chunks without a total-body size cap. Upstream applications enforce their own upload limits; WAF inspection, frame sizes, queues, and timeouts remain bounded.
+
 For the full request lifecycle and component breakdown, see [Architecture Overview](docs/architecture-overview.md).
 For transport mode details (`ws|quic`) and QUIC requirements, see [Client Configuration](docs/client-configuration.md) and [UDP Deployment Topologies](docs/udp-deployment-topologies.md).
 

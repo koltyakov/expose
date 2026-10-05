@@ -88,3 +88,11 @@ Expected:
 - `curl --http3-only` succeeds against `/_expose/healthz`
 - `lsof` shows the server listening on UDP `:10443`
 - the client connects without falling back to WebSocket
+
+## Streaming regression tests
+
+```bash
+go test -race ./internal/server -run '^TestPublicHTTPStreamsBeyondFormerBodyLimit$'
+```
+
+These tests send 16 MiB bodies over WebSocket and both HTTP/3 multi-stream codecs, with known and unknown content lengths. They verify checksums, bounded body chunks, and delivery of the first chunk before the producer generates the remaining body. Registration and static-site publication limit tests remain part of the full suite.

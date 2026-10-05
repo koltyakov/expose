@@ -57,7 +57,7 @@ type ServerConfig struct {
 	TLSKeyFile             string
 	LogLevel               string
 	RequestTimeout         time.Duration
-	MaxBodyBytes           int64
+	MaxBodyBytes           int64 // WebSocket frame sizing only; HTTP body streams have no total-size cap.
 	ConnectTokenTTL        time.Duration
 	ClientPingTimeout      time.Duration
 	HeartbeatCheckInterval time.Duration

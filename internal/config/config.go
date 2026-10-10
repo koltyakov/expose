@@ -40,6 +40,7 @@ type ClientConfig struct {
 
 // ServerConfig holds all settings required by the expose HTTPS server.
 type ServerConfig struct {
+	TURN                   TURNConfig
 	ListenHTTPS            string
 	ListenHTTP             string
 	PprofListen            string
@@ -243,12 +244,14 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		TrustedProxyCIDRs:      splitCommaSeparated(EnvOrDefault("EXPOSE_TRUSTED_PROXY_CIDRS", "")),
 		RouteCacheTTL:          envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),
 		WAFCounterRetention:    envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
+		TURN:                   turnConfigFromEnv(&envErrs),
 	}
 	if err := errors.Join(envErrs...); err != nil {
 		return cfg, err
 	}
 
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+	cfg.TURN.registerFlags(fs)
 	fs.StringVar(&cfg.ListenHTTPS, "listen", cfg.ListenHTTPS, "HTTPS listen address")
 	fs.StringVar(&cfg.ListenHTTP, "http-challenge-listen", cfg.ListenHTTP, "HTTP-01 challenge listen address")
 	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
@@ -342,6 +345,9 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 	if cfg.WAFCounterRetention <= 0 {
 		return cfg, errors.New("waf counter retention must be > 0")
+	}
+	if err := cfg.TURN.normalizeAndValidate(cfg.BaseDomain); err != nil {
+		return cfg, err
 	}
 
 	return cfg, nil

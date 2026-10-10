@@ -23,6 +23,7 @@
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally
 - **Automatic reconnection** with exponential backoff and keepalive pings
 - **HTTP/3 over QUIC support** - clients can use `--transport=quic` for compatibility or negotiated multi-stream mode
+- **Optional WebRTC TURN relay** on the public server, with UDP, TCP/TLS and short-lived credentials. See [TURN relay](docs/turn-relay.md).
 
 ## How It Works
 

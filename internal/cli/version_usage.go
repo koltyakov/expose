@@ -35,6 +35,7 @@ Usage:
   expose up -f expose.yml               Start routes from YAML config
   expose up init                        Create expose.yml via wizard
   expose server                         Start tunnel server
+  expose server --turn                  Also run a public WebRTC TURN relay (requires TURN env settings)
   expose server init                    Guided server setup + .env write
   expose apikey create --name NAME      Create a new API key
   expose apikey list                    List all API keys
@@ -81,6 +82,10 @@ Environment Variables:
   EXPOSE_WAF_COUNTER_RETENTION    Retention window for in-memory WAF counters (default: 1h)
   EXPOSE_AUTOUPDATE       Enable automatic self-update (true|1|yes)
   EXPOSE_REQUIRE_SIGNATURE  Require cosign verification for self-updates (true|1|yes)
+  EXPOSE_TURN_ENABLE      Enable the public WebRTC TURN relay (default: false)
+  EXPOSE_TURN_PUBLIC_IP   Public IPv4 advertised by the relay
+  EXPOSE_TURN_SECRET      TURN REST shared secret, at least 32 characters
+  EXPOSE_TURN_LISTEN_TLS  Optional TURN TLS listener, separate from HTTPS (e.g. :5349)
 
 For detailed documentation, see: https://github.com/koltyakov/expose`)
 }

@@ -17,6 +17,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 
 ## Features
 
+- [TURN relay](turn-relay.md) - Public WebRTC relay with UDP, TCP/TLS and temporary credentials
 - [Static Sites](static-sites.md) - Expose folders, SPAs, and Markdown docs
 - [Static site publishing](publishing.md) - Upload sites for persistent server-side hosting with optional TTLs
 - [Client Dashboard](client-dashboard.md) - Real-time terminal UI, metrics, and keyboard shortcuts

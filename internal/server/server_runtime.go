@@ -22,6 +22,7 @@ import (
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/serviceapi"
 	"github.com/koltyakov/expose/internal/tunnelproto"
+	"github.com/koltyakov/expose/internal/turnrelay"
 	"github.com/koltyakov/expose/internal/waf"
 )
 
@@ -89,6 +90,18 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	tlsConfig.MinVersion = tls.VersionTLS12
 	tlsConfig.GetCertificate = s.selectCertificate(manager, staticCert, s.cfg.TLSMode)
+	if s.cfg.TURN.Enabled {
+		relay, err := turnrelay.Start(s.cfg.TURN, tlsConfig, s.log)
+		if err != nil {
+			return fmt.Errorf("TURN relay: %w", err)
+		}
+		s.turn = relay
+		defer func() {
+			if err := relay.Close(); err != nil {
+				s.log.Warn("close TURN relay", "err", err)
+			}
+		}()
+	}
 
 	httpsServer := &http.Server{
 		Addr:              s.cfg.ListenHTTPS,
@@ -175,6 +188,9 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) authorizeACMEHost(ctx context.Context, host string) error {
 	host = normalizeHost(host)
 	if host == normalizeHost(s.cfg.BaseDomain) {
+		return nil
+	}
+	if s.cfg.TURN.Enabled && s.cfg.TURN.ListenTLS != "" && host == normalizeHost(s.cfg.TURN.Host) {
 		return nil
 	}
 	if st, ok := s.store.(siteStore); ok {
@@ -279,6 +295,7 @@ func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) htt
 func (s *Server) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(serviceapi.Exposures, s.handleExposures)
+	mux.HandleFunc(serviceapi.TURNCredentials, s.handleTURNCredentials)
 	mux.HandleFunc(serviceapi.Sites, s.handleSites)
 	mux.HandleFunc(serviceapi.Sites+"/", s.handleSites)
 	mux.HandleFunc(serviceapi.Register, s.handleRegister)

@@ -91,6 +91,8 @@ The server accepts HTTP/3 `POST` and `CONNECT` on H3 endpoints for compatibility
 
 ## Tunnel Types
 
+The optional [TURN relay](turn-relay.md) runs directly on the public server. It carries WebRTC packets between peers independently of the HTTP/WebSocket tunnel protocol. HTTP/3 support alone does not provide UDP forwarding or a WebRTC relay.
+
 | Type          | Hostname                                               | Lifetime                                       |
 | ------------- | ------------------------------------------------------ | ---------------------------------------------- |
 | **Temporary** | Auto-generated 6-char slug (e.g. `k3xnz3.example.com`) | Cleaned up after disconnect + retention period |

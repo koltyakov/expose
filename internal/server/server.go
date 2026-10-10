@@ -22,6 +22,7 @@ import (
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
+	"github.com/koltyakov/expose/internal/turnrelay"
 	"github.com/koltyakov/expose/internal/waf"
 )
 
@@ -72,6 +73,7 @@ var _ serverStore = (*sqlite.Store)(nil)
 // Server is the main expose HTTPS server that manages tunnel registrations,
 // WebSocket sessions, TLS certificates, and public HTTP proxying.
 type Server struct {
+	turn             *turnrelay.Relay
 	cfg              config.ServerConfig
 	store            serverStore
 	log              *slog.Logger

@@ -33,6 +33,8 @@ func runHTTP(ctx context.Context, args []string) int {
 	}
 
 	fs := flag.NewFlagSet("http", flag.ContinueOnError)
+	profile := ""
+	fs.StringVar(&profile, "profile", "", "Saved login profile (default when omitted)")
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	transport := strings.TrimSpace(envOr("EXPOSE_TRANSPORT", ""))
@@ -69,9 +71,17 @@ func runHTTP(ctx context.Context, args []string) int {
 	}
 
 	clientArgs := []string{"--port", strconv.Itoa(port)}
+	if profile != "" {
+		clientArgs = append(clientArgs, "--profile", profile)
+	}
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--domain", name)
-	clientArgs = appendFlagIfNotEmpty(clientArgs, "--server", serverURL)
-	clientArgs = appendFlagIfNotEmpty(clientArgs, "--api-key", apiKey)
+	// Do not turn environment credentials into explicit overrides of a profile.
+	if profile == "" || cliFlagPassed(args, "server") {
+		clientArgs = appendFlagIfNotEmpty(clientArgs, "--server", serverURL)
+	}
+	if profile == "" || cliFlagPassed(args, "api-key") {
+		clientArgs = appendFlagIfNotEmpty(clientArgs, "--api-key", apiKey)
+	}
 	clientArgs = appendFlagIfNotEmpty(clientArgs, "--transport", transport)
 	if strings.TrimSpace(protectMode) != "" {
 		clientArgs = append(clientArgs, "--protect", protectMode)
@@ -89,6 +99,8 @@ func runStatic(ctx context.Context, args []string) int {
 	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
 	fs := flag.NewFlagSet("static", flag.ContinueOnError)
+	profile := ""
+	fs.StringVar(&profile, "profile", "", "Saved login profile (default when omitted)")
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	transport := strings.TrimSpace(envOr("EXPOSE_TRANSPORT", ""))
@@ -127,6 +139,7 @@ func runStatic(ctx context.Context, args []string) int {
 	}
 
 	cfg := newStaticClientConfig(serverURL, apiKey, transport, name, protectMode)
+	cfg.Profile = profile
 	cfg.WAFIgnorePaths = commaSeparatedValues(envOr("EXPOSE_WAF_IGNORE_PATHS", ""))
 	cfg.Name = config.NormalizeTunnelSubdomain(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
@@ -217,6 +230,8 @@ func runTunnel(ctx context.Context, args []string) int {
 
 func runClientLogin(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("client-login", flag.ContinueOnError)
+	profile := ""
+	fs.StringVar(&profile, "profile", "", "Saved login profile (default when omitted)")
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
@@ -224,12 +239,17 @@ func runClientLogin(ctx context.Context, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	path, err := settings.ProfilePath(profile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "client login error:", err)
+		return 2
+	}
 	serverURL = strings.TrimSpace(serverURL)
 	apiKey = strings.TrimSpace(apiKey)
 	canPrompt := isInteractiveInput()
 	reader := bufio.NewReader(os.Stdin)
 	var missing bool
-	serverURL, missing, err := resolveRequiredValueContext(ctx, reader, serverURL, canPrompt, "Server host or URL: ")
+	serverURL, missing, err = resolveRequiredValueContext(ctx, reader, serverURL, canPrompt, "Server host or URL: ")
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, "client login canceled")
@@ -266,14 +286,14 @@ func runClientLogin(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "client login error:", err)
 		return 2
 	}
-	if err := settings.Save(settings.Credentials{
+	if err := settings.SaveProfile(profile, settings.Credentials{
 		ServerURL: normalizedServerURL,
 		APIKey:    apiKey,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "client login error:", err)
 		return 1
 	}
-	fmt.Println("saved:", settings.Path())
+	fmt.Println("saved:", path)
 	return 0
 }
 
@@ -476,7 +496,7 @@ func commaSeparatedValues(value string) []string {
 // always trust-checked before the API key is sent anywhere.
 func mergeClientSettingsWithSources(cfg *config.ClientConfig, src clientCredSources) (clientCredSources, error) {
 	hasInlineCreds := hasNonEmpty(cfg.ServerURL) && hasNonEmpty(cfg.APIKey)
-	if !hasInlineCreds {
+	if !hasInlineCreds || cfg.Profile != "" {
 		if err := loadStoredClientSettings(cfg, &src); err != nil {
 			return src, err
 		}

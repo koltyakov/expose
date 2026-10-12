@@ -29,6 +29,8 @@ func runUp(ctx context.Context, args []string) int {
 	}
 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	profile := ""
+	fs.StringVar(&profile, "profile", "", "Saved login profile (default when omitted)")
 	configFile := "expose.yml"
 	fs.StringVar(&configFile, "f", configFile, "Path to expose YAML config")
 	fs.StringVar(&configFile, "file", configFile, "Path to expose YAML config")
@@ -37,11 +39,11 @@ func runUp(ctx context.Context, args []string) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: expose up [-f expose.yml]")
+		fmt.Fprintln(os.Stderr, "usage: expose up [-f expose.yml] [--profile NAME]")
 		return 2
 	}
 
-	return runUpFromFile(ctx, configFile)
+	return runUpFromFileWithProfile(ctx, configFile, profile)
 }
 
 func runUpInit(ctx context.Context, args []string) int {
@@ -73,6 +75,10 @@ func runUpInit(ctx context.Context, args []string) int {
 }
 
 func runUpFromFile(ctx context.Context, path string) int {
+	return runUpFromFileWithProfile(ctx, path, "")
+}
+
+func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 	preEnvServer, preEnvAPIKey := capturePreDotEnv()
 	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
@@ -93,6 +99,7 @@ func runUpFromFile(ctx context.Context, path string) int {
 	// them, so trust-checking inside the per-subdomain loop would repeat the
 	// same warning (and confirmation prompt) for each tunnel.
 	credCfg := config.ClientConfig{
+		Profile:   profile,
 		ServerURL: envOr("EXPOSE_DOMAIN", ""),
 		APIKey:    envOr("EXPOSE_API_KEY", ""),
 	}

@@ -95,6 +95,8 @@ func runSoak(ctx context.Context, args []string) int {
 	dotEnvKeys := loadClientEnvFromDotEnv(".env")
 
 	fs := flag.NewFlagSet("soak", flag.ContinueOnError)
+	profile := ""
+	fs.StringVar(&profile, "profile", "", "Saved login profile (default when omitted)")
 	serverURL := envOr("EXPOSE_DOMAIN", "")
 	apiKey := envOr("EXPOSE_API_KEY", "")
 	port := parseIntEnv("EXPOSE_PORT", 0)
@@ -156,6 +158,7 @@ func runSoak(ctx context.Context, args []string) int {
 	}
 
 	baseCfg := config.ClientConfig{
+		Profile:               profile,
 		ServerURL:             serverURL,
 		APIKey:                apiKey,
 		LocalPort:             port,

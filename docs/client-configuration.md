@@ -53,6 +53,7 @@ The API also defaults to seven days and accepts a `retention` query parameter, f
 | `--domain`       | `EXPOSE_SUBDOMAIN`               | Requested subdomain label (e.g. `myapp`)                                             |
 | `--server`       | `EXPOSE_DOMAIN`                  | Server URL (e.g. `example.com`)                                                      |
 | `--api-key`      | `EXPOSE_API_KEY`                 | API key for authentication                                                           |
+| `--profile`      | -                                | Saved login profile; omitted uses the existing default login                        |
 | `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `ws` (default), `quic`                                             |
 | `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
 | -                | `EXPOSE_USER`                    | Access-form username (default: `admin`)                                              |
@@ -127,6 +128,8 @@ The client resolves server URL and API key from multiple sources, with this prio
 
 This means you can `expose login` once and never pass credentials again, or override per-command with flags or env vars.
 
+An explicit `--profile NAME` changes this order: credential flags come first, followed by the selected profile. Server/API key values in the environment, `.env`, and `expose.yml` are ignored for that command. Other settings, such as transport and tunnel protection, still apply.
+
 ## Transport Selection (`--transport`)
 
 | Value  | Behavior                                                                                          |
@@ -158,6 +161,35 @@ Credentials are stored in:
 | Windows       | `%USERPROFILE%\.expose\settings.json` |
 
 File permissions are set to `0600` (owner-only read/write).
+
+## Client profiles
+
+Save a separate login for each server, then select the profile when running a client command:
+
+```bash
+# Existing login remains the default
+expose login --server example.com --api-key <DEFAULT_KEY>
+
+# Save another server without replacing the default
+expose login --profile work --server work.example.com --api-key <WORK_KEY>
+
+expose http 3000                  # Default login, unchanged
+expose http 3000 --profile work   # Work server and API key
+expose static ./public --profile work
+expose up --profile work
+expose list --profile work
+expose pub ./dist --profile work
+expose pub list --profile work
+expose pub connect ./dist --profile work
+```
+
+`--profile` is supported by `login`, `http`, `static`, `tunnel`, `client`, `list`, all `pub` actions, `up`, and `soak`. Place it after the command, or after the action for commands such as `pub list` and `client login`. It selects a profile for that invocation only, so you can use different servers in separate terminals at the same time.
+
+Without `--profile`, existing clients behave exactly as before. The original `~/.expose/settings.json` remains the default login, with no migration needed. `--profile default` explicitly selects that saved login ahead of environment/project credentials.
+
+Named profiles are stored in `~/.expose/profiles/profile-<name>.json`, or `%USERPROFILE%\.expose\profiles\profile-<name>.json` on Windows, with owner-only file permissions where supported. Names must start with a lowercase letter or digit, may contain lowercase letters, digits, hyphens, and underscores, and must be at most 64 characters long. Logging in again with the same profile updates only that profile.
+
+A missing or invalid profile fails instead of falling back to the default. Explicit `--server` and `--api-key` flags can override the selected profile's credentials for a single command.
 
 ## Tunnel Types
 

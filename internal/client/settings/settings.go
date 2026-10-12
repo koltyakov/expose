@@ -28,6 +28,25 @@ func Path() string {
 	return filepath.Join(dir, ".expose", "settings.json")
 }
 
+// ProfilePath returns the settings path for a profile. Empty and "default"
+// select the original settings file, so existing logins need no migration.
+func ProfilePath(profile string) (string, error) {
+	if profile == "" || profile == "default" {
+		return Path(), nil
+	}
+	if len(profile) > 64 {
+		return "", errors.New("profile name must be at most 64 characters")
+	}
+	for i, c := range profile {
+		alnum := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if !alnum && (i == 0 || c != '-' && c != '_') {
+			return "", errors.New("profile name must start with a lowercase letter or digit and contain only lowercase letters, digits, hyphens, or underscores")
+		}
+	}
+	// The prefix also avoids reserved Windows filenames such as CON.json.
+	return filepath.Join(filepath.Dir(Path()), "profiles", "profile-"+profile+".json"), nil
+}
+
 // Load reads and validates the settings file. Returns an error if the file
 // is missing or contains empty credentials.
 func Load() (Credentials, error) {
@@ -39,7 +58,16 @@ func Load() (Credentials, error) {
 // when the settings file permissions are broader than 0600. The permission
 // check is skipped on Windows where POSIX mode bits do not apply.
 func LoadChecked() (Credentials, string, error) {
-	path := Path()
+	return LoadProfileChecked("")
+}
+
+// LoadProfileChecked loads only the selected profile, never falling back to
+// another profile, and reports insecure file permissions like LoadChecked.
+func LoadProfileChecked(profile string) (Credentials, string, error) {
+	path, err := ProfilePath(profile)
+	if err != nil {
+		return Credentials{}, "", err
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Credentials{}, "", err
@@ -74,12 +102,20 @@ func permissionWarning(path string) string {
 
 // Save writes validated credentials to the settings file with 0600 permissions.
 func Save(s Credentials) error {
+	return SaveProfile("", s)
+}
+
+// SaveProfile writes credentials for one profile without changing any others.
+func SaveProfile(profile string, s Credentials) error {
+	path, err := ProfilePath(profile)
+	if err != nil {
+		return err
+	}
 	s.ServerURL = strings.TrimSpace(s.ServerURL)
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	if s.ServerURL == "" || s.APIKey == "" {
 		return errors.New("`server` and `apiKey` are required")
 	}
-	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

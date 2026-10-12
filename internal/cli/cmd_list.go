@@ -36,12 +36,13 @@ func listCommand(ctx context.Context, args []string, out io.Writer) error {
 	cfg := config.ClientConfig{ServerURL: envOr("EXPOSE_DOMAIN", ""), APIKey: envOr("EXPOSE_API_KEY", "")}
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(fs.Output(), "Usage: expose list [--server URL] [--api-key KEY] [--retention 168h] [--json]")
+		_, _ = fmt.Fprintln(fs.Output(), "Usage: expose list [--profile NAME] [--server URL] [--api-key KEY] [--retention 168h] [--json]")
 		_, _ = fmt.Fprintln(fs.Output(), "List your tunnels and published sites seen within the last 7 days. Connected tunnels and unexpired published sites are always included.")
 		fs.PrintDefaults()
 	}
 	var jsonOutput bool
 	var retention time.Duration
+	fs.StringVar(&cfg.Profile, "profile", "", "Saved login profile (default when omitted)")
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.BoolVar(&jsonOutput, "json", false, "Print JSON")

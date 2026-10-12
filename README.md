@@ -120,6 +120,16 @@ expose pub ./dist --ws
 expose list
 ```
 
+For multiple servers, save a named login and select it per command:
+
+```bash
+expose login --profile work --server work.example.com --api-key <KEY>
+expose http 3000 --profile work
+expose list --profile work
+```
+
+Omit `--profile` to keep using your existing default login. Named logins do not change it. See [Client profiles](docs/client-configuration.md#client-profiles) for details.
+
 Open the URL shown in the terminal - that's it.
 
 > ⚠️ Security notice: if your server is using per-host ACME certificates (`dynamic`, or `auto` without a matching wildcard certificate), new public hostnames are often discovered and probed by bots shortly after they are created. Protect new tunnels immediately and use `--protect` for anything non-public. See [TLS Modes](docs/tls-modes.md) and [Static Sites](docs/static-sites.md).

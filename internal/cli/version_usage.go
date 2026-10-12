@@ -30,6 +30,7 @@ Usage:
   expose soak --port 3000               Run a multi-tunnel client soak test against one local port
   expose auth curl --url URL            Login to a protected route and print curl-ready auth output
   expose login                          Save server URL and API key
+  expose login --profile work            Save a separate server login
   expose list                           List your tunnels and published sites (--json for scripts)
   expose up                             Start routes from ./expose.yml
   expose up -f expose.yml               Start routes from YAML config
@@ -43,6 +44,12 @@ Usage:
   expose update                         Update to the latest release
   expose version                        Print version
   expose help                           Show this help
+
+Client profiles:
+  Add --profile NAME to login, http, static, tunnel, list, pub, up, or soak.
+  Omit it to keep using the existing default login and credential precedence.
+  An explicit profile overrides environment/project credentials, except for --server/--api-key flags.
+  Example: expose http 3000 --profile work
 
 Quick Start:
   1. expose server                                 # start server

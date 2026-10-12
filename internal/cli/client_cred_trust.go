@@ -58,6 +58,21 @@ func capturePreDotEnv() (preEnvServer, preEnvAPIKey bool) {
 // trustworthy. Every command that consumes client credentials must go
 // through here so a ./.env file can never redirect the saved API key.
 func resolveClientCredentials(ctx context.Context, cfg *config.ClientConfig, src clientCredSources) error {
+	if _, err := settings.ProfilePath(cfg.Profile); err != nil {
+		return err
+	}
+	if cfg.Profile != "" {
+		// An explicit profile chooses a server/key pair ahead of environment
+		// and project settings. Only explicit credential flags override it.
+		if !src.serverFlag {
+			cfg.ServerURL = ""
+			src.serverEnv, src.serverDotEnv, src.serverConfigFile = false, false, false
+		}
+		if !src.apiKeyFlag {
+			cfg.APIKey = ""
+			src.apiKeyEnv, src.apiKeyDotEnv, src.apiKeyConfigFile = false, false, false
+		}
+	}
 	src, err := mergeClientSettingsWithSources(cfg, src)
 	if err != nil {
 		return err
@@ -176,8 +191,11 @@ func verifyClientCredentialTrust(ctx context.Context, serverURL string, src clie
 // flags for values still missing from cfg, and surfaces the settings file
 // permission warning.
 func loadStoredClientSettings(cfg *config.ClientConfig, src *clientCredSources) error {
-	stored, warning, err := settings.LoadChecked()
+	stored, warning, err := settings.LoadProfileChecked(cfg.Profile)
 	if err != nil {
+		if cfg.Profile != "" {
+			return fmt.Errorf("cannot load profile %q; run `expose login --profile %s --server https://example.com --api-key <key>`: %w", cfg.Profile, cfg.Profile, err)
+		}
 		return missingClientCredentialsError(err)
 	}
 	if warning != "" {

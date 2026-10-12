@@ -20,6 +20,7 @@ import (
 
 // ClientConfig holds all settings required by the tunnel client.
 type ClientConfig struct {
+	Profile               string
 	ServerURL             string
 	APIKey                string
 	Transport             string
@@ -123,6 +124,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	}
 
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
+	fs.StringVar(&cfg.Profile, "profile", "", "Saved login profile (default when omitted)")
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.StringVar(&cfg.Transport, "transport", cfg.Transport, "Tunnel transport: ws|quic")

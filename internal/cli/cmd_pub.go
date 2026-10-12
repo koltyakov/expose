@@ -54,7 +54,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("pub "+action, flag.ContinueOnError)
 	if action == "delete" || action == "connect" {
 		fs.Usage = func() {
-			_, _ = fmt.Fprintf(fs.Output(), "Usage: expose pub %s <folder> | --domain=<subdomain> [--server URL] [--api-key KEY] [--json]\n", action)
+			_, _ = fmt.Fprintf(fs.Output(), "Usage: expose pub %s <folder> | --domain=<subdomain> [--profile NAME] [--server URL] [--api-key KEY] [--json]\n", action)
 			if action == "connect" {
 				_, _ = fmt.Fprintln(fs.Output(), "Show live hosting stats. Ctrl+C disconnects and leaves the site hosted. --json streams snapshots as NDJSON.")
 			} else {
@@ -71,6 +71,7 @@ func pubCommand(ctx context.Context, args []string) error {
 	var watch bool
 	var staged bool
 	var ws bool
+	fs.StringVar(&cfg.Profile, "profile", "", "Saved login profile (default when omitted)")
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.StringVar(&name, "domain", "", "Public subdomain label; defaults to a persistent random hash")

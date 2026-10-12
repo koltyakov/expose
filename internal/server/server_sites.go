@@ -189,6 +189,10 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if _, reserved := s.bypasses[host]; reserved {
+		http.Error(w, s.hostnameConflict(r.Context(), key, host).Error(), http.StatusConflict)
+		return
+	}
 	if err := os.MkdirAll(s.publishDir(), 0700); err != nil {
 		s.siteError(w, err)
 		return
@@ -261,6 +265,10 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		if site.SourceID == "" {
 			site.SourceID = previous.SourceID
 		}
+	}
+	if _, reserved := s.bypasses[site.Hostname]; reserved {
+		http.Error(w, s.hostnameConflict(r.Context(), key, site.Hostname).Error(), http.StatusConflict)
+		return
 	}
 	final := filepath.Join(s.publishDir(), id)
 	if err := os.Rename(dir, final); err != nil {

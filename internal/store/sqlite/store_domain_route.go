@@ -132,7 +132,7 @@ func (s *Store) generateSubdomain(ctx context.Context, baseDomain string) (strin
 
 	for _, slug := range slugs {
 		hostname := fmt.Sprintf("%s.%s", slug, baseDomain)
-		if _, conflict := taken[hostname]; !conflict {
+		if _, conflict := taken[hostname]; !conflict && !s.isReservedHostname(hostname) {
 			return slug, nil
 		}
 	}

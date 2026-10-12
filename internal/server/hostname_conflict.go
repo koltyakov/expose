@@ -10,6 +10,9 @@ import (
 
 // Only describe exposures owned by the authenticated key.
 func (s *Server) hostnameConflict(ctx context.Context, keyID, host string) error {
+	if _, reserved := s.bypasses[normalizeHost(host)]; reserved {
+		return sqlite.ErrHostnameInUse
+	}
 	if st, ok := s.store.(siteStore); ok {
 		// Include expired publications whose reservations await cleanup.
 		if sites, err := st.ListPublishedSites(ctx, keyID); err == nil {

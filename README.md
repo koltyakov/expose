@@ -15,6 +15,7 @@
 - **Static site publishing** via `expose static` for quick docs, SPAs, and local folders
 - **Server-hosted static sites** via `expose pub`, with persistent URLs, optional expiry, guarded archive uploads, and live stats via `expose pub connect`
 - **Multi-route configs** via `expose.yml` - expose multiple services under one subdomain with path-based routing
+- **Server-local services** via `EXPOSE_BYPASSES` - reserve subdomains for local HTTP ports, with WAF enabled by default. See [server configuration](docs/server-configuration.md#server-local-services).
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
 - **Auto-update** - server and client can self-update in the background with automatic restart and client reconnection
 - **Password-protected tunnels** with a built-in access form and edge session cookie (per-tunnel or per-config)

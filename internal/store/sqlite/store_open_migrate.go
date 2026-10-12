@@ -22,7 +22,8 @@ var ErrStoreClosed = errors.New("sqlite store closed")
 
 // Store wraps a SQLite database connection for all expose persistence operations.
 type Store struct {
-	db *sql.DB
+	db                *sql.DB
+	reservedHostnames atomic.Value // immutable map[string]struct{}, configured before serving
 
 	resolveAPIKeyIDStmt      *sql.Stmt
 	activeTunnelCountStmt    *sql.Stmt

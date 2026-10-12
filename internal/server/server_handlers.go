@@ -37,6 +37,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, reserved := s.bypasses[prepared.request.Subdomain+"."+normalizeHost(s.cfg.BaseDomain)]; reserved {
+		s.writeRegisterAllocateError(w, keyID, s.hostnameConflict(r.Context(), keyID, prepared.request.Subdomain+"."+normalizeHost(s.cfg.BaseDomain)))
+		return
+	}
 	resumeTunnelID := r.Header.Get(domain.RegisterResumeTunnelHeader)
 	if err := s.prepareRegisterPasswordHash(r.Context(), keyID, resumeTunnelID, &prepared); err != nil {
 		http.Error(w, "failed to hash password", http.StatusInternalServerError)
@@ -158,6 +162,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := normalizeHost(r.Host)
+	if s.serveBypass(w, r, host) {
+		return
+	}
 	if !s.allowPublicRouteLookup(host, r) {
 		w.Header().Set("Retry-After", "1")
 		w.Header().Set("Cache-Control", "no-store")

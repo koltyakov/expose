@@ -198,6 +198,9 @@ WHERE t.id = ?`, tunnelID).Scan(
 		if d.APIKeyID != keyID || t.APIKeyID != keyID {
 			return ErrHostnameInUse
 		}
+		if s.isReservedHostname(d.Hostname) {
+			return ErrHostnameInUse
+		}
 		if t.State == domain.TunnelStateClosed {
 			return sql.ErrNoRows
 		}
@@ -289,13 +292,18 @@ func (s *Store) TrySetTunnelConnected(ctx context.Context, tunnelID string) erro
 
 		var keyID string
 		var state string
+		var hostname string
 		var revokedAt sql.NullTime
 		if err = tx.QueryRowContext(ctx, `
-SELECT t.api_key_id, t.state, k.revoked_at
+SELECT t.api_key_id, t.state, k.revoked_at, d.hostname
 FROM tunnels t
 JOIN api_keys k ON k.id = t.api_key_id
-WHERE t.id = ?`, tunnelID).Scan(&keyID, &state, &revokedAt); err != nil {
+JOIN domains d ON d.id = t.domain_id
+WHERE t.id = ?`, tunnelID).Scan(&keyID, &state, &revokedAt, &hostname); err != nil {
 			return err
+		}
+		if s.isReservedHostname(hostname) {
+			return ErrHostnameInUse
 		}
 		if revokedAt.Valid {
 			return domain.ErrAPIKeyRevoked

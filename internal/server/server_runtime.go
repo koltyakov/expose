@@ -193,6 +193,12 @@ func (s *Server) authorizeACMEHost(ctx context.Context, host string) error {
 	if s.cfg.TURN.Enabled && s.cfg.TURN.ListenTLS != "" && host == normalizeHost(s.cfg.TURN.Host) {
 		return nil
 	}
+	if _, ok := s.bypasses[host]; ok {
+		if !s.allowACMEIssuance(host) {
+			return errors.New("certificate issuance rate limit exceeded")
+		}
+		return nil
+	}
 	if st, ok := s.store.(siteStore); ok {
 		if _, err := st.FindPublishedSite(ctx, host); err == nil {
 			if !s.allowACMEIssuance(host) {
@@ -310,7 +316,7 @@ func (s *Server) httpHandler() http.Handler {
 
 	var handler http.Handler = mux
 	if s.cfg.WAFEnabled {
-		handler = waf.NewMiddleware(waf.Config{
+		protected := waf.NewMiddleware(waf.Config{
 			Enabled:              true,
 			AuditOnly:            s.cfg.WAFAuditOnly,
 			BodyInspectLimit:     s.cfg.WAFBodyInspectLimit,
@@ -321,6 +327,13 @@ func (s *Server) httpHandler() http.Handler {
 			ClientAddr:           s.clientIP,
 			OnBlock:              s.recordWAFBlock,
 		}, s.log)(handler)
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if route, ok := s.bypasses[normalizeHost(r.Host)]; ok && route.DisableWAF && !serviceapi.IsServicePath(r.URL.Path) {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			protected.ServeHTTP(w, r)
+		})
 		s.log.Info("WAF enabled")
 	}
 	return requestReadDeadlineMiddleware(handler, s.cfg.RequestTimeout)

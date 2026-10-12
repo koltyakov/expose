@@ -15,6 +15,9 @@ func (s *Server) shouldIgnoreWAFPathRule(r *http.Request, rule string) bool {
 		return false
 	}
 	host := normalizeHost(r.Host)
+	if _, reserved := s.bypasses[host]; reserved {
+		return false
+	}
 	if snap, ok := s.liveRoutes.lookupHost(host); ok {
 		return tunnelWAFPathIgnored(snap.route.Tunnel, r.URL.Path)
 	}

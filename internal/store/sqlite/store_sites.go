@@ -11,6 +11,9 @@ import (
 )
 
 func (s *Store) CreatePublishedSite(ctx context.Context, site domain.PublishedSite) error {
+	if s.isReservedHostname(site.Hostname) {
+		return ErrHostnameInUse
+	}
 	return s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -106,6 +109,9 @@ func (s *Store) ListPublishedSites(ctx context.Context, key string) ([]domain.Pu
 }
 
 func (s *Store) ReplacePublishedSite(ctx context.Context, site domain.PublishedSite) error {
+	if s.isReservedHostname(site.Hostname) {
+		return ErrHostnameInUse
+	}
 	return s.withSerializedWrite(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {

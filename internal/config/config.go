@@ -42,6 +42,7 @@ type ClientConfig struct {
 // ServerConfig holds all settings required by the expose HTTPS server.
 type ServerConfig struct {
 	TURN                   TURNConfig
+	Bypasses               []ServerBypass
 	ListenHTTPS            string
 	ListenHTTP             string
 	PprofListen            string
@@ -210,6 +211,7 @@ func NormalizeProtectFlagArgs(args []string) []string {
 // ParseServerFlags parses CLI flags and env vars into a [ServerConfig].
 func ParseServerFlags(args []string) (ServerConfig, error) {
 	var envErrs []error
+	bypassesJSON := EnvOrDefault("EXPOSE_BYPASSES", "")
 	cfg := ServerConfig{
 		ListenHTTPS:            EnvOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
 		ListenHTTP:             EnvOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
@@ -253,6 +255,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+	fs.StringVar(&bypassesJSON, "bypasses", bypassesJSON, "Server-only local service routes as a JSON array")
 	cfg.TURN.registerFlags(fs)
 	fs.StringVar(&cfg.ListenHTTPS, "listen", cfg.ListenHTTPS, "HTTPS listen address")
 	fs.StringVar(&cfg.ListenHTTP, "http-challenge-listen", cfg.ListenHTTP, "HTTP-01 challenge listen address")
@@ -286,6 +289,11 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		return cfg, err
 	}
 	cfg.BaseDomain = normalizeDomainHost(cfg.BaseDomain)
+	var err error
+	cfg.Bypasses, err = parseServerBypasses(bypassesJSON, cfg.BaseDomain)
+	if err != nil {
+		return cfg, err
+	}
 	cfg.TLSMode = normalizeLowerOrDefault(cfg.TLSMode, "auto")
 	switch cfg.TLSMode {
 	case "auto", "dynamic", "wildcard":

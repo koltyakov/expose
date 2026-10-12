@@ -49,6 +49,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			s.liveRoutes.deleteHostIfDomain(snap.route.Domain.Hostname, snap.route.Domain.ID)
 		}
 	}()
+	if _, reserved := s.bypasses[normalizeHost(snap.route.Domain.Hostname)]; reserved {
+		s.writeRegisterAllocateError(w, snap.route.Domain.APIKeyID, s.hostnameConflict(r.Context(), snap.route.Domain.APIKeyID, snap.route.Domain.Hostname))
+		return
+	}
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -129,6 +133,10 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 			s.liveRoutes.deleteHostIfDomain(snap.route.Domain.Hostname, snap.route.Domain.ID)
 		}
 	}()
+	if _, reserved := s.bypasses[normalizeHost(snap.route.Domain.Hostname)]; reserved {
+		s.writeRegisterAllocateError(w, snap.route.Domain.APIKeyID, s.hostnameConflict(r.Context(), snap.route.Domain.APIKeyID, snap.route.Domain.Hostname))
+		return
+	}
 	httpStreamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
 		http.Error(w, "http3 stream takeover unavailable", http.StatusInternalServerError)

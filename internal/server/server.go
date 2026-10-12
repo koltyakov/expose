@@ -93,6 +93,7 @@ type Server struct {
 	acmeIssueMu      sync.Mutex
 	acmeIssueHosts   map[string]time.Time
 	trustedProxies   []netip.Prefix
+	bypasses         map[string]*serverBypass
 	basicAuthCache   basicAuthSuccessCache
 	routes           routeCache
 	routeLookups     lookupGroup[liveRouteSnapshot]
@@ -269,7 +270,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		}
 		trustedProxies = append(trustedProxies, prefix)
 	}
-	return &Server{
+	s := &Server{
 		cfg:              cfg,
 		store:            store,
 		log:              logger,
@@ -293,6 +294,8 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		disconnectQ:      make(map[string]struct{}),
 		wafAuditQueue:    make(chan wafAuditEvent, wafAuditQueueSize),
 	}
+	s.initBypasses(store)
+	return s
 }
 
 func newEphemeralAccessCookieSecret() string {

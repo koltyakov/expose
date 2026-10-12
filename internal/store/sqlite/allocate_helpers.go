@@ -37,6 +37,9 @@ func (s *Store) buildAllocationInput(ctx context.Context, mode, subdomain, baseD
 	} else if subdomain == "" {
 		return allocationInput{}, errors.New("permanent mode requires subdomain")
 	}
+	if s.isReservedHostname(subdomain + "." + baseDomain) {
+		return allocationInput{}, ErrHostnameInUse
+	}
 
 	return allocationInput{
 		isTemporary: isTemporary,

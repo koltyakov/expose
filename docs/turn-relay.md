@@ -81,7 +81,7 @@ Alternatively, a trusted signaling server can generate standard TURN REST creden
 - Password is Base64 of HMAC-SHA1 of that username, keyed by `EXPOSE_TURN_SECRET`.
 - Expiry must be in the future, no more than 24 hours ahead.
 
-For Varro App, its signaling server needs external TURN configuration or a credential-provider integration to distribute these URLs and credentials. Enabling this Expose service alone does not update Varro's current ICE list.
+A signaling backend that supports standard TURN REST credentials can issue compatible temporary credentials using the same secret as `EXPOSE_TURN_SECRET`. Configure its ICE server URLs to match the relay's public listeners, and distribute temporary credentials through authenticated signaling. Enabling the Expose relay alone does not update an application's ICE list. The signaling backend can run behind either an HTTP tunnel or a [server-local bypass route](server-configuration.md#server-local-services); TURN itself still needs separately reachable network ports.
 
 ## Configuration reference
 

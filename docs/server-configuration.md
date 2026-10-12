@@ -28,6 +28,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | Flag                      | Env Variable                     | Default       | Description                                                    |
 | ------------------------- | -------------------------------- | ------------- | -------------------------------------------------------------- |
 | `--domain`                | `EXPOSE_DOMAIN`                  | _(required)_  | Public base domain (e.g. `example.com`)                        |
+| `--bypasses`              | `EXPOSE_BYPASSES`                | `[]`          | JSON array of server-only subdomain routes to local HTTP ports |
 | `--listen`                | `EXPOSE_LISTEN_HTTPS`            | `:10443`      | HTTPS listen address                                           |
 | `--http-challenge-listen` | `EXPOSE_LISTEN_HTTP_CHALLENGE`   | `:10080`      | ACME HTTP-01 challenge listener                                |
 | `--pprof-listen`          | `EXPOSE_PPROF_LISTEN`            | -             | Optional pprof listen address (loopback only unless `EXPOSE_PPROF_ALLOW_REMOTE=true`) |
@@ -58,6 +59,37 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_WAF_COUNTER_RETENTION`   | `1h`          | Retention window for in-memory per-host WAF counters           |
 | -                         | `EXPOSE_AUTOUPDATE`              | `false`       | Enable automatic self-update (`true`/`1`/`yes`)                |
 | -                         | `EXPOSE_REQUIRE_SIGNATURE`       | `false`       | Require cosign verification for self-updates                   |
+
+## Server-local services
+
+Use bypass routes to expose services running on the same server without a tunnel client. Each route reserves a subdomain and proxies requests directly to an HTTP service on `127.0.0.1` at the configured port.
+
+Add this to the server's `.env`:
+
+```bash
+EXPOSE_BYPASSES='[{"subdomain":"app","port":3000},{"subdomain":"ci","port":8080,"disable_waf":true}]'
+```
+
+With `EXPOSE_DOMAIN=example.com`, `https://app.example.com` reaches `127.0.0.1:3000`, and `https://ci.example.com` reaches `127.0.0.1:8080`. Bind those services to loopback so callers cannot reach them directly and skip expose's protections.
+
+You can also pass the JSON array through `expose server --bypasses='[...]'`. A flag replaces the environment value; `--bypasses='[]'` disables all configured bypass routes. Restart the server to apply changes.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `subdomain` | required | Subdomain relative to `EXPOSE_DOMAIN`, using the same naming rules as tunnels |
+| `port` | required | Local HTTP service port, from 1 to 65535 |
+| `disable_waf` | `false` | Skip WAF inspection for this route's application requests |
+| `disable_rate_limit` | `false` | Skip the configured public request rate limit for this route |
+
+"Bypass" means bypassing the tunnel transport, not bypassing security. Routes inherit the server's WAF settings and public rate limits unless explicitly opted out. WAF is enabled by default; public rate limiting still requires `EXPOSE_PUBLIC_RATE_LIMIT_RPS`. TLS termination, trusted client-IP resolution, forwarding-header sanitization, request deadlines, and the per-route in-flight limit remain active. `EXPOSE_MAX_PENDING_PER_TUNNEL` also limits concurrent requests and WebSocket connections per bypass route.
+
+HTTP bodies stream without a total-size cap, and WebSocket upgrades are supported. The public hostname, path, query, application credentials, and application cookies reach the service. Expose's access cookie does not. The `/_expose/v1` service namespace and health endpoint keep their existing behavior, including WAF inspection of service API requests even on a route with `disable_waf`.
+
+Bypasses and their security opt-outs are server-only. Clients cannot create, change, or claim them. `expose http`, `expose static`, and `expose pub` receive the usual hostname-in-use conflict for a reserved name, even when the local service is offline. Unknown configuration fields and duplicate subdomains cause a startup error.
+
+A configured bypass takes precedence over an existing client tunnel or publication at the same hostname. Existing client records remain intact, but the tunnel cannot resume or reconnect and the publication cannot be replaced while its name is reserved. Removing the bypass releases the server-side reservation on restart.
+
+WebRTC signaling services can use a bypass for their HTTP and WebSocket endpoints without disabling WAF. SDP and ICE candidates travel over the application WebSocket; WebRTC packets flow directly between peers or through a public TURN relay. TURN/STUN listeners and relay allocation traffic need separately reachable network ports, not HTTP bypass routes. See [TURN relay](turn-relay.md) for external ICE URLs and temporary credentials.
 
 ## HTTP/3 + QUIC Behavior
 

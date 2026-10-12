@@ -89,6 +89,7 @@ type Server struct {
 	lookupLimiter    *rateLimiter
 	publicLimiter    *rateLimiter
 	accessLimiter    *rateLimiter
+	accessChecks     atomic.Int64
 	acmeIssueLimiter *rateLimiter
 	acmeIssueMu      sync.Mutex
 	acmeIssueHosts   map[string]time.Time

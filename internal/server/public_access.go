@@ -77,26 +77,16 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 		return true
 	}
 	if publicAccessMode(route) == access.ModeBasic {
-		expectedUser := publicAccessExpectedUser(route)
 		user, password, hasCreds := r.BasicAuth()
 		if hasCreds {
-			limitKey := s.accessAuthLimitKey(route, r)
-			if s.accessLimiter.exhausted(limitKey) {
+			valid, throttled := s.checkPublicAccessPassword(r, route, user, password, true)
+			if throttled {
 				writeAccessAuthThrottled(w)
 				return false
 			}
-			if isAuthorizedBasicUser(user, expectedUser) {
-				now := time.Now()
-				cacheKey := s.basicAuthSuccessKey(route, user, password)
-				if s.basicAuthCache.valid(cacheKey, now) {
-					return true
-				}
-				if auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
-					s.basicAuthCache.remember(cacheKey, now)
-					return true
-				}
+			if valid {
+				return true
 			}
-			s.accessLimiter.allow(limitKey)
 		}
 		writeBasicAuthChallenge(w)
 		return false
@@ -124,6 +114,39 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 
 	writePublicAccessDenied(w)
 	return false
+}
+
+// Reserve the failure budget before bcrypt so simultaneous requests cannot
+// all pass an exhaustion check. A server-wide cap also bounds work spread over
+// many client addresses. Cached Basic credentials avoid expensive verification.
+func (s *Server) checkPublicAccessPassword(r *http.Request, route domain.TunnelRoute, user, password string, cache bool) (valid, throttled bool) {
+	limitKey := s.accessAuthLimitKey(route, r)
+	if !s.accessLimiter.allow(limitKey) {
+		return false, true
+	}
+	if !isAuthorizedBasicUser(user, publicAccessExpectedUser(route)) {
+		return false, false
+	}
+	now := time.Now()
+	cacheKey := s.basicAuthSuccessKey(route, user, password)
+	if cache && s.basicAuthCache.valid(cacheKey, now) {
+		s.accessLimiter.refund(limitKey)
+		return true, false
+	}
+	if s.accessChecks.Add(1) > maxAccessChecks {
+		s.accessChecks.Add(-1)
+		s.accessLimiter.refund(limitKey)
+		return false, true
+	}
+	defer s.accessChecks.Add(-1)
+	if !auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
+		return false, false
+	}
+	s.accessLimiter.refund(limitKey)
+	if cache {
+		s.basicAuthCache.remember(cacheKey, now)
+	}
+	return true, false
 }
 
 func (s *Server) basicAuthSuccessKey(route domain.TunnelRoute, user, password string) [sha256.Size]byte {
@@ -246,8 +269,9 @@ func (s *Server) handlePublicAccessLogin(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	limitKey := s.accessAuthLimitKey(route, r)
-	if s.accessLimiter.exhausted(limitKey) {
+	password := r.Form.Get(publicAccessFormPasswordField)
+	valid, throttled := s.checkPublicAccessPassword(r, route, state.User, password, false)
+	if throttled {
 		clearPublicAccessCookie(w)
 		state.ErrorText = "Too many failed attempts. Try again in a moment."
 		if state.User == "" {
@@ -258,9 +282,7 @@ func (s *Server) handlePublicAccessLogin(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	password := r.Form.Get(publicAccessFormPasswordField)
-	if !isAuthorizedBasicUser(state.User, expectedUser) || !auth.VerifyPasswordHash(route.Tunnel.AccessPasswordHash, password) {
-		s.accessLimiter.allow(limitKey)
+	if !valid {
 		clearPublicAccessCookie(w)
 		state.ErrorText = "Incorrect username or password."
 		if state.User == "" {

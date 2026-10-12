@@ -14,10 +14,12 @@ const (
 	// accessAuthFailBurst wrong passwords from one hostname+IP, further
 	// attempts are rejected before bcrypt runs, refilling one attempt
 	// every 1/accessAuthFailRate seconds. Successful requests never
-	// consume tokens, so legitimate users are unaffected.
+	// consume tokens: attempts reserve a token before checking credentials
+	// and return it on success.
 	accessAuthFailRate   = 0.2 // one retry allowed per 5 seconds
 	accessAuthFailBurst  = 10.0
 	accessAuthCleanupAge = 15 * time.Minute
+	maxAccessChecks      = 4 // bound expensive password checks across all hosts/IPs
 
 	// rateLimiterShards controls how many independent shards the rate limiter
 	// uses.  Each shard has its own mutex, which drastically reduces lock
@@ -108,9 +110,21 @@ func (rl *rateLimiter) allow(key string) bool {
 	return true
 }
 
+// refund returns a reserved attempt without erasing failures from other requests.
+func (rl *rateLimiter) refund(key string) {
+	if rl == nil {
+		return
+	}
+	s := rl.shard(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b, ok := s.buckets[key]; ok {
+		b.tokens = min(rl.burst, b.tokens+1)
+	}
+}
+
 // exhausted reports whether key has no tokens left, without consuming one.
-// Used for failure-driven throttling where only failed attempts (recorded
-// via allow) should drain the bucket.
+// Admission must use allow instead so concurrent callers reserve distinct tokens.
 func (rl *rateLimiter) exhausted(key string) bool {
 	if rl == nil {
 		return false

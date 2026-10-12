@@ -15,7 +15,7 @@ func normalizeHost(host string) string {
 	return netutil.NormalizeHost(host)
 }
 
-// injectForwardedFor replaces every client-supplied X-Forwarded-For spelling
+// injectForwardedFor replaces client-supplied X-Forwarded-For and X-Real-IP
 // with the client IP already resolved under the server's trusted-proxy policy.
 // Preserving an untrusted incoming chain lets callers spoof the leftmost hop
 // seen by local frameworks that trust expose as their reverse proxy.
@@ -29,7 +29,7 @@ func injectForwardedFor(h map[string][]string, resolvedClientAddr string) {
 	}
 	ip = strings.TrimSpace(ip)
 	for key := range h {
-		if strings.EqualFold(key, "X-Forwarded-For") {
+		if strings.EqualFold(key, "X-Forwarded-For") || strings.EqualFold(key, "X-Real-IP") || strings.EqualFold(key, "Forwarded") {
 			delete(h, key)
 		}
 	}
@@ -37,6 +37,7 @@ func injectForwardedFor(h map[string][]string, resolvedClientAddr string) {
 		return
 	}
 	h["X-Forwarded-For"] = []string{ip}
+	h["X-Real-Ip"] = []string{ip}
 }
 
 // injectForwardedProxyHeaders overwrites proxy-derived host, protocol, and

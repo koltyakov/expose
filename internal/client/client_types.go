@@ -153,6 +153,11 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 		},
 		fwdClient: &http.Client{
 			Transport: newForwardHTTPTransport(cfg),
+			// Redirects belong to the public caller. Following them here can
+			// turn an application's redirect endpoint into access to the LAN.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }

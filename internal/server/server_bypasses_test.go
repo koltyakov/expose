@@ -54,6 +54,7 @@ func TestBypassProxyHTTP(t *testing.T) {
 	r.Header.Set("Content-Type", "text/plain")
 	r.Header.Set("Authorization", "Bearer application-token")
 	r.Header.Set("X-Forwarded-For", "spoofed")
+	r.Header.Set("X-Real-IP", "127.0.0.1")
 	r.Header.Set("X-Forwarded-Host", "spoofed.example")
 	r.Header.Set("X-Forwarded-Proto", "http")
 	r.Header.Set("Forwarded", "for=spoofed")
@@ -70,7 +71,7 @@ func TestBypassProxyHTTP(t *testing.T) {
 		t.Fatalf("request changed: %s %s %s", got.Method, got.Host, got.URL)
 	}
 	for name, want := range map[string]string{
-		"X-Forwarded-For": "203.0.113.7", "X-Forwarded-Host": r.Host,
+		"X-Forwarded-For": "203.0.113.7", "X-Real-IP": "203.0.113.7", "X-Forwarded-Host": r.Host,
 		"X-Forwarded-Proto": "https", "X-Forwarded-Port": "10443",
 		"Authorization": "Bearer application-token", "Cookie": "app=value",
 		"Forwarded": "", "X-Hop": "",
@@ -251,6 +252,7 @@ func TestBypassWebSocket(t *testing.T) {
 	srv, st := newIncrementalTestServer(t)
 	srv.cfg.Bypasses = []config.ServerBypass{{Subdomain: "ws", Port: bypassTestPort(t, upstream)}}
 	srv.cfg.WAFEnabled = true
+	srv.cfg.RequestTimeout = 50 * time.Millisecond
 	srv.initBypasses(st)
 	front := httptest.NewServer(srv.httpHandler())
 	defer front.Close()
@@ -264,6 +266,8 @@ func TestBypassWebSocket(t *testing.T) {
 	if conn.Subprotocol() != "echo" {
 		t.Fatalf("subprotocol = %q", conn.Subprotocol())
 	}
+	// Response-body inactivity timeouts must not terminate upgraded sockets.
+	time.Sleep(100 * time.Millisecond)
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}

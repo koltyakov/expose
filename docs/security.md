@@ -48,6 +48,10 @@ Tunnels can require a password for public access. When enabled:
 - On success, the server sets a signed cookie so repeat visits don't re-prompt
 - Form output is rendered through `html/template`, whose contextual autoescaping prevents XSS
 
+### Local Upstream Redirects
+
+The tunnel client returns upstream redirects to the public caller without following them. An application's redirect endpoint therefore cannot make the client fetch a redirect destination inside its private network.
+
 ## Cookie Security
 
 Access cookies for password-protected tunnels use:
@@ -99,6 +103,7 @@ Key design decisions:
 - Tunnel registration is rate-limited (5 requests/second with burst allowance)
 - Rate limiter uses 16 shards with FNV hashing to minimize lock contention
 - Idle rate limiter entries are cleaned up after 5 minutes to prevent unbounded memory growth
+- Password attempts reserve their per-hostname/IP failure budget before verification and return the reservation on success. At most four expensive public password checks run concurrently across the server; excess attempts receive HTTP 429.
 
 ## Data Storage
 
@@ -114,7 +119,7 @@ All security-sensitive random values (API key generation, token creation, epheme
 
 ## Forwarded Headers
 
-The server injects standard reverse-proxy headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`). Client-supplied `X-Forwarded-For` values are replaced with one client address resolved under the trusted-proxy policy, preventing callers from spoofing the leftmost hop seen by a local framework.
+The server injects standard reverse-proxy headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`) and `X-Real-IP`. Client-supplied `X-Forwarded-For` and `X-Real-IP` values are replaced with one client address resolved under the trusted-proxy policy. Client-supplied RFC `Forwarded` headers are removed so frameworks cannot prefer an untrusted alternative identity.
 
 **Trust rule**: when expose sits behind a known reverse proxy or CDN, set `EXPOSE_TRUSTED_PROXY_CIDRS` to a comma-separated list of trusted proxy CIDRs (e.g. `10.0.0.0/8,203.0.113.10/32`). When the immediate peer matches a trusted CIDR, the client IP is derived from the rightmost XFF hop that is NOT in a trusted CIDR. The default is empty, which means no XFF hop is trusted and the forwarded client IP is always the connection's `RemoteAddr`.
 

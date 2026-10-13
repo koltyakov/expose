@@ -394,3 +394,29 @@ func TestParseClientFlagsRejectsInvalidEnvValues(t *testing.T) {
 		t.Fatalf("ParseClientFlags(bad port) error = %v, want invalid env error", err)
 	}
 }
+
+func TestParseServerFlagsPublicHTTP3IsOptIn(t *testing.T) {
+	cfg, err := ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PublicHTTP3 {
+		t.Fatal("HTTP/3 must not be advertised unless the operator opts in")
+	}
+
+	t.Setenv("EXPOSE_PUBLIC_HTTP3", "true")
+	cfg, err = ParseServerFlags([]string{"--domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PublicHTTP3 {
+		t.Fatal("expected EXPOSE_PUBLIC_HTTP3 to enable the advertisement")
+	}
+	cfg, err = ParseServerFlags([]string{"--domain", "example.com", "--public-http3=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PublicHTTP3 {
+		t.Fatal("expected the flag to override the environment")
+	}
+}

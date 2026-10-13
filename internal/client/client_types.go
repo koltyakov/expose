@@ -126,10 +126,16 @@ const (
 	tlsProvisioningInfoRetries   = 3
 	streamingThreshold           = 256 * 1024
 	streamingChunkSize           = 256 * 1024
-	streamingReqBodyBufSize      = 64
-	wsWriteControlQueueSize      = 64
-	wsWriteDataQueueSize         = 128
-	visitorRetention             = 10 * time.Minute
+	// inlineResponseWindow bounds how long a response body may keep arriving
+	// and still be sent inline with its headers. Slower bodies are streamed.
+	inlineResponseWindow    = 25 * time.Millisecond
+	streamingReqBodyBufSize = 64
+	// localWSWriteQueueSize bounds messages queued for one local websocket.
+	// A consumer that falls further behind is closed, as on the server.
+	localWSWriteQueueSize   = 256
+	wsWriteControlQueueSize = 64
+	wsWriteDataQueueSize    = 128
+	visitorRetention        = 10 * time.Minute
 	// tunnelWSBufferSize sizes the tunnel websocket read buffers. Tunnel
 	// frames carry up to streamingChunkSize payloads; the gorilla default of
 	// 4KB fragments each chunk into dozens of small reads and syscalls.

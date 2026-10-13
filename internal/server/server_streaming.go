@@ -256,6 +256,13 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// flushResponse sends buffered headers and body bytes to the public client.
+func flushResponse(w http.ResponseWriter) {
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // streamSend attempts to write msg to ch without blocking the read loop for
 // too long. Mirrors wsPendingSend but for HTTP body streaming channels.
 func (s *session) streamSend(ch chan []byte, payload []byte, wait time.Duration) bool {

@@ -25,7 +25,7 @@ const (
 	h3SessionHeader          = "X-Expose-H3-Session"
 	h3WorkerConnectTimeout   = 15 * time.Second
 	h3WorkerIdleTTL          = 30 * time.Second
-	h3WorkerOpenCountFloor   = 2
+	h3WorkerOpenCountFloor   = 4
 	h3WorkerOpenCountCeiling = 64
 )
 
@@ -293,18 +293,34 @@ func (rt *clientH3MultiStreamRuntime) initialWorkerCount() int {
 func (rt *clientH3MultiStreamRuntime) openWorker() {
 	rt.workerWG.Go(func() {
 		rt.h3Workers.opened()
-		defer rt.h3Workers.closed()
+		pooled := true
+		// A worker that carries a websocket never returns to the pool. It stops
+		// counting against the worker limit and is replaced at once, so the
+		// next request does not wait a round trip for a new worker.
+		leavePool := func() {
+			if !pooled {
+				return
+			}
+			pooled = false
+			rt.h3Workers.closed()
+			rt.h3Workers.request(1)
+		}
+		defer func() {
+			if pooled {
+				rt.h3Workers.closed()
+			}
+		}()
 
 		backoff := 100 * time.Millisecond
 		for {
 			if rt.ctx.Err() != nil {
 				return
 			}
-			err := rt.runWorkerStream()
+			err := rt.runWorkerStream(leavePool)
 			if rt.ctx.Err() != nil {
 				return
 			}
-			if err == nil {
+			if err == nil || !pooled {
 				return
 			}
 			if rt.client.log != nil {
@@ -323,7 +339,7 @@ func (rt *clientH3MultiStreamRuntime) openWorker() {
 	})
 }
 
-func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
+func (rt *clientH3MultiStreamRuntime) runWorkerStream(leavePool func()) error {
 	openCtx, cancel := context.WithTimeout(rt.ctx, h3WorkerConnectTimeout)
 	defer cancel()
 
@@ -383,6 +399,7 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream() error {
 				return err
 			}
 		case tunnelproto.KindWSOpen:
+			leavePool()
 			return rt.handleWorkerWS(stream, msg.WSOpen)
 		}
 	}

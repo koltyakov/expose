@@ -1143,8 +1143,8 @@ func TestClientH3MultiStreamRuntimeInitialWorkerCount(t *testing.T) {
 		want    int
 	}{
 		{name: "below floor", maxOpen: 1, want: 1},
-		{name: "at floor", maxOpen: 2, want: 2},
-		{name: "above floor", maxOpen: 8, want: 2},
+		{name: "at floor", maxOpen: h3WorkerOpenCountFloor, want: h3WorkerOpenCountFloor},
+		{name: "above floor", maxOpen: 8, want: h3WorkerOpenCountFloor},
 	}
 
 	for _, tc := range cases {
@@ -1367,6 +1367,118 @@ func TestForwardAndSendLargeResponseStreamed(t *testing.T) {
 		if reassembled[i] != largeBody[i] {
 			t.Fatalf("body mismatch at byte %d", i)
 		}
+	}
+}
+
+func TestForwardAndSendStreamsSlowResponsesAsTheyArrive(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: first\n\n"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte("data: last\n\n"))
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{fwdClient: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 5 * time.Second}}}
+	// Cancelled before srv.Close, so a failing run ends the upstream handler.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgs := make(chan tunnelproto.Message, 8)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.forwardAndSend(ctx, base, &tunnelproto.HTTPRequest{
+			ID:     "req_events",
+			Method: http.MethodGet,
+			Path:   "/events",
+		}, nil, func(msg tunnelproto.Message) error {
+			msgs <- retainTestMessage(msg)
+			return nil
+		}, nil)
+	}()
+
+	next := func() tunnelproto.Message {
+		t.Helper()
+		select {
+		case msg := <-msgs:
+			return msg
+		case <-time.After(2 * time.Second):
+			t.Fatal("an open stream was not forwarded while the upstream was still producing it")
+			return tunnelproto.Message{}
+		}
+	}
+	header := next()
+	if header.Kind != tunnelproto.KindResponse || header.Response == nil || !header.Response.Streamed || header.Response.Status != http.StatusOK {
+		t.Fatalf("expected streamed response headers, got %#v", header)
+	}
+	first := next()
+	if first.Kind != tunnelproto.KindRespBody {
+		t.Fatalf("expected first event as a body chunk, got %q", first.Kind)
+	}
+	if data, _ := first.BodyChunk.Payload(); string(data) != "data: first\n\n" {
+		t.Fatalf("unexpected first chunk %q", data)
+	}
+
+	close(release)
+	<-done
+	var rest []byte
+	for {
+		msg := next()
+		if msg.Kind == tunnelproto.KindRespBodyEnd {
+			if msg.BodyChunk != nil && msg.BodyChunk.Error != "" {
+				t.Fatalf("stream ended with an error: %s", msg.BodyChunk.Error)
+			}
+			break
+		}
+		data, _ := msg.BodyChunk.Payload()
+		rest = append(rest, data...)
+	}
+	if string(rest) != "data: last\n\n" {
+		t.Fatalf("unexpected remaining body %q", rest)
+	}
+}
+
+func TestForwardAndSendInlinesSmallChunkedResponse(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"part":1,`))
+		w.(http.Flusher).Flush()
+		_, _ = w.Write([]byte(`"part2":2}`))
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{fwdClient: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 5 * time.Second}}}
+	var msgs []tunnelproto.Message
+	c.forwardAndSend(context.Background(), base, &tunnelproto.HTTPRequest{ID: "req_chunked", Method: http.MethodGet, Path: "/json"}, nil, func(msg tunnelproto.Message) error {
+		msgs = append(msgs, retainTestMessage(msg))
+		return nil
+	}, nil)
+	if len(msgs) != 1 || msgs[0].Kind != tunnelproto.KindResponse || msgs[0].Response.Streamed {
+		t.Fatalf("expected one inline response for a body that completes promptly, got %d messages", len(msgs))
+	}
+	if string(msgs[0].Response.Body) != `{"part":1,"part2":2}` {
+		t.Fatalf("unexpected inline body %q", msgs[0].Response.Body)
 	}
 }
 

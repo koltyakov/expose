@@ -254,6 +254,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	}
 	respHeaders := resp.Headers
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
+	stripUpstreamAltSvc(respHeaders)
 	for k, vals := range respHeaders {
 		for _, v := range vals {
 			w.Header().Add(k, v)
@@ -261,6 +262,9 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	}
 	w.WriteHeader(normalizeUpstreamStatus(resp.Status))
 	if resp.Streamed {
+		// Send headers now: a stream such as server-sent events may not
+		// produce its first chunk for a while.
+		flushResponse(w)
 		if !s.writeStreamedResponseBody(w, r, pending, s.cfg.RequestTimeout) {
 			s.abortPendingRequest(sess, reqID)
 			if r.Context().Err() == nil {

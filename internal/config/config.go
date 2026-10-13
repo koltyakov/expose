@@ -78,6 +78,9 @@ type ServerConfig struct {
 	TrustedProxyCIDRs      []string
 	RouteCacheTTL          time.Duration
 	WAFCounterRetention    time.Duration
+	// PublicHTTP3 advertises the HTTP/3 listener to browsers with Alt-Svc.
+	// The public UDP port must match the public TCP port.
+	PublicHTTP3 bool
 
 	// Timeout and pool tuning (optional - zero values fall back to sane
 	// defaults defined in the server package).
@@ -248,6 +251,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		TrustedProxyCIDRs:      splitCommaSeparated(EnvOrDefault("EXPOSE_TRUSTED_PROXY_CIDRS", "")),
 		RouteCacheTTL:          envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),
 		WAFCounterRetention:    envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
+		PublicHTTP3:            envBool("EXPOSE_PUBLIC_HTTP3", false, &envErrs),
 		TURN:                   turnConfigFromEnv(&envErrs),
 	}
 	if err := errors.Join(envErrs...); err != nil {
@@ -273,6 +277,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.TLSCertFile, "tls-cert-file", cfg.TLSCertFile, "Static TLS cert PEM file (optional, DNS-01 wildcard)")
 	fs.StringVar(&cfg.TLSKeyFile, "tls-key-file", cfg.TLSKeyFile, "Static TLS key PEM file (optional, DNS-01 wildcard)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
+	fs.BoolVar(&cfg.PublicHTTP3, "public-http3", cfg.PublicHTTP3, "Advertise HTTP/3 (Alt-Svc) to browsers; public UDP must use the same port as TCP")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}

@@ -39,6 +39,10 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 				pr.Out.Header.Del("Host")
 				injectForwardedFor(pr.Out.Header, s.clientIP(pr.In))
 			},
+			ModifyResponse: func(resp *http.Response) error {
+				stripUpstreamAltSvc(resp.Header)
+				return nil
+			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				if s.log != nil {
 					s.log.Warn("local service proxy failed", "host", normalizeHost(r.Host), "err", err)

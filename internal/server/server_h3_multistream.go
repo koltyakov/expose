@@ -110,6 +110,14 @@ func (p *h3StreamPool) acquire(ctx context.Context, timeout time.Duration) (*htt
 	}
 }
 
+// idle reports how many workers are ready for a request.
+func (p *h3StreamPool) idle() int {
+	if p == nil {
+		return 0
+	}
+	return len(p.ready)
+}
+
 func (p *h3StreamPool) close() {
 	if p == nil {
 		return
@@ -156,6 +164,11 @@ func (s *session) acquireH3Worker(ctx context.Context, timeout time.Duration) (*
 	}
 	stream, err := s.h3StreamPool.acquire(ctx, h3WorkerFastWait)
 	if err == nil {
+		// Keep a worker ready ahead of the next request, so it does not wait
+		// a tunnel round trip for the client to open one.
+		if s.h3StreamPool.idle() == 0 {
+			s.requestH3Workers(1)
+		}
 		return stream, nil
 	}
 	s.requestH3Workers(1)

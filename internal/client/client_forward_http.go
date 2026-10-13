@@ -14,6 +14,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/netutil"
+	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/traffic"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -275,37 +276,56 @@ func (c *Client) forwardAndSend(
 		return
 	}
 
-	// Try to read the first chunk to decide inline vs streamed response.
-	firstBufRef := responseFirstChunkPool.Get().(*[]byte)
-	firstBuf := *firstBufRef
-	if cap(firstBuf) < streamingThreshold+1 {
-		firstBuf = make([]byte, streamingThreshold+1)
-	} else {
-		firstBuf = firstBuf[:streamingThreshold+1]
-	}
-	*firstBufRef = firstBuf
-	defer responseFirstChunkPool.Put(firstBufRef)
-	n, readErr := io.ReadFull(resp.Body, firstBuf)
-	if n > 0 {
+	// Send bodies that complete promptly inline with their headers. Anything
+	// still arriving after inlineResponseWindow, or larger than
+	// streamingThreshold, is streamed as it arrives, so slow producers such as
+	// server-sent events and long polls are not held back.
+	pump := startResponseBodyPump(resp.Body, func(n int) {
 		c.recordTraffic(traffic.DirectionOutbound, int64(n))
-	}
+	})
+	defer pump.close()
 
-	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		// Small response - send inline. Passing the pooled buffer without a
-		// copy is safe: writeMsg blocks until the message has been fully
-		// written (or failed).
-		_ = writeMsg(tunnelproto.Message{
-			Kind: tunnelproto.KindResponse,
-			Response: &tunnelproto.HTTPResponse{
-				ID:      req.ID,
-				Status:  resp.StatusCode,
-				Headers: respHeaders,
-				Body:    firstBuf[:n],
-			},
-		})
-		c.logForwardResult(req, resp.StatusCode, started)
-		return
+	window := timerpool.Acquire(inlineResponseWindow)
+	defer timerpool.Release(window)
+
+	var (
+		head     bodyRead // the first read owns the buffer that small bodies accumulate in
+		buffered []byte
+		overflow bodyRead
+		complete bool
+		readErr  error
+	)
+	defer func() { head.release() }()
+collect:
+	for len(buffered) <= streamingThreshold {
+		select {
+		case read := <-pump.reads:
+			switch {
+			case read.n == 0:
+			case head.ref == nil:
+				head, buffered = read, read.data()
+			case len(buffered)+read.n <= cap(buffered):
+				buffered = append(buffered, read.data()...)
+				read.release()
+			default:
+				overflow = read
+			}
+			if read.err != nil {
+				if errors.Is(read.err, io.EOF) || errors.Is(read.err, io.ErrUnexpectedEOF) {
+					complete = true
+				} else {
+					readErr = read.err
+				}
+				break collect
+			}
+			if overflow.ref != nil {
+				break collect
+			}
+		case <-window.C:
+			break collect
+		}
 	}
+	defer func() { overflow.release() }()
 
 	if readErr != nil {
 		_ = writeMsg(tunnelproto.Message{
@@ -321,7 +341,22 @@ func (c *Client) forwardAndSend(
 		return
 	}
 
-	// Large response - stream it.
+	if complete && overflow.ref == nil && len(buffered) <= streamingThreshold {
+		// Passing the pooled buffer without a copy is safe: writeMsg blocks
+		// until the message has been fully written (or failed).
+		_ = writeMsg(tunnelproto.Message{
+			Kind: tunnelproto.KindResponse,
+			Response: &tunnelproto.HTTPResponse{
+				ID:      req.ID,
+				Status:  resp.StatusCode,
+				Headers: respHeaders,
+				Body:    buffered,
+			},
+		})
+		c.logForwardResult(req, resp.StatusCode, started)
+		return
+	}
+
 	if err := writeMsg(tunnelproto.Message{
 		Kind: tunnelproto.KindResponse,
 		Response: &tunnelproto.HTTPResponse{
@@ -335,68 +370,135 @@ func (c *Client) forwardAndSend(
 		return
 	}
 
-	// Send the already-read data as the first body chunk.
-	if writeRespBodyChunk != nil {
-		if err := writeRespBodyChunk(req.ID, firstBuf[:n]); err != nil {
-			c.logForwardResult(req, resp.StatusCode, started)
-			return
+	sendChunk := func(data []byte) error {
+		if len(data) == 0 {
+			return nil
 		}
-	} else if err := writeMsg(tunnelproto.Message{
-		Kind:      tunnelproto.KindRespBody,
-		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: firstBuf[:n]},
-	}); err != nil {
+		if writeRespBodyChunk != nil {
+			return writeRespBodyChunk(req.ID, data)
+		}
+		return writeMsg(tunnelproto.Message{
+			Kind:      tunnelproto.KindRespBody,
+			BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: append([]byte(nil), data...)},
+		})
+	}
+	if err := sendChunk(buffered); err != nil {
+		c.logForwardResult(req, resp.StatusCode, started)
+		return
+	}
+	if err := sendChunk(overflow.data()); err != nil {
 		c.logForwardResult(req, resp.StatusCode, started)
 		return
 	}
 
-	// Read remaining body in chunks.
-	chunkBufRef := responseStreamChunkPool.Get().(*[]byte)
-	chunkBuf := *chunkBufRef
-	if cap(chunkBuf) < streamingChunkSize {
-		chunkBuf = make([]byte, streamingChunkSize)
-	} else {
-		chunkBuf = chunkBuf[:streamingChunkSize]
-	}
-	*chunkBufRef = chunkBuf
-	defer responseStreamChunkPool.Put(chunkBufRef)
-	for {
-		cn, err := resp.Body.Read(chunkBuf)
-		if cn > 0 {
-			c.recordTraffic(traffic.DirectionOutbound, int64(cn))
-			if writeRespBodyChunk != nil {
-				if wErr := writeRespBodyChunk(req.ID, chunkBuf[:cn]); wErr != nil {
-					c.logForwardResult(req, resp.StatusCode, started)
-					return
-				}
-			} else if wErr := writeMsg(tunnelproto.Message{
-				Kind:      tunnelproto.KindRespBody,
-				BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Data: append([]byte(nil), chunkBuf[:cn]...)},
-			}); wErr != nil {
-				c.logForwardResult(req, resp.StatusCode, started)
-				return
-			}
-		}
+	for !complete {
+		read := <-pump.reads
+		err := sendChunk(read.data())
+		read.release()
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				// Tell the server the stream failed so it aborts the public
-				// request immediately instead of waiting out the chunk timeout.
-				_ = writeMsg(tunnelproto.Message{
-					Kind:      tunnelproto.KindRespBodyEnd,
-					BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Error: "local upstream read failed"},
-				})
-				c.logForwardResult(req, http.StatusBadGateway, started)
-				return
-			}
-			break
+			c.logForwardResult(req, resp.StatusCode, started)
+			return
 		}
+		if read.err == nil {
+			continue
+		}
+		if !errors.Is(read.err, io.EOF) {
+			// Tell the server the stream failed so it aborts the public
+			// request immediately instead of waiting out the chunk timeout.
+			_ = writeMsg(tunnelproto.Message{
+				Kind:      tunnelproto.KindRespBodyEnd,
+				BodyChunk: &tunnelproto.BodyChunk{ID: req.ID, Error: "local upstream read failed"},
+			})
+			c.logForwardResult(req, http.StatusBadGateway, started)
+			return
+		}
+		complete = true
 	}
 
-	// Signal end of response body.
+	// Signal end of response buffered.
 	_ = writeMsg(tunnelproto.Message{
 		Kind:      tunnelproto.KindRespBodyEnd,
 		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID},
 	})
 	c.logForwardResult(req, resp.StatusCode, started)
+}
+
+// bodyRead is one read from a local response body. Its pooled buffer belongs
+// to whoever holds the bodyRead, which returns it with release.
+type bodyRead struct {
+	ref  *[]byte
+	pool *sync.Pool
+	n    int
+	err  error
+}
+
+func (r bodyRead) data() []byte {
+	if r.ref == nil {
+		return nil
+	}
+	return (*r.ref)[:r.n]
+}
+
+func (r bodyRead) release() {
+	if r.ref != nil {
+		r.pool.Put(r.ref)
+	}
+}
+
+// responseBodyPump reads a local response body in the background, so the
+// forwarder can choose inline or streamed delivery without blocking on a slow
+// producer. The first read uses a buffer that can hold a whole inline body.
+type responseBodyPump struct {
+	reads chan bodyRead
+	stop  chan struct{}
+}
+
+func startResponseBodyPump(body io.Reader, onRead func(int)) *responseBodyPump {
+	p := &responseBodyPump{reads: make(chan bodyRead), stop: make(chan struct{})}
+	go p.run(body, onRead)
+	return p
+}
+
+func (p *responseBodyPump) run(body io.Reader, onRead func(int)) {
+	pool, size := &responseFirstChunkPool, streamingThreshold+1
+	for {
+		ref := pool.Get().(*[]byte)
+		if cap(*ref) < size {
+			*ref = make([]byte, size)
+		}
+		*ref = (*ref)[:size]
+		n, err := body.Read(*ref)
+		if n > 0 && onRead != nil {
+			onRead(n)
+		}
+		if n == 0 && err == nil {
+			pool.Put(ref)
+			continue
+		}
+		read := bodyRead{ref: ref, pool: pool, n: n, err: err}
+		if n == 0 {
+			pool.Put(ref)
+			read.ref = nil
+		}
+		select {
+		case p.reads <- read:
+		case <-p.stop:
+			read.release()
+			return
+		}
+		if err != nil {
+			return
+		}
+		if n > 0 {
+			pool, size = &responseStreamChunkPool, streamingChunkSize
+		}
+	}
+}
+
+// close stops delivery. A read still blocked on the body ends once the
+// caller closes the body.
+func (p *responseBodyPump) close() {
+	close(p.stop)
 }
 
 func setForwardedContentLength(req *http.Request, headers map[string][]string, fallback int64) {

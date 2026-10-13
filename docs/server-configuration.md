@@ -45,6 +45,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | random, persisted | Explicit pepper for API key hashing                         |
 | `--access-cookie-secret`  | `EXPOSE_ACCESS_COOKIE_SECRET`    | random, persisted | Secret used to sign protected-route access cookies          |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`               | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`                |
+| `--public-http3`          | `EXPOSE_PUBLIC_HTTP3`            | `false`       | Advertise HTTP/3 to browsers with `Alt-Svc` (public UDP must use the same port as TCP) |
 | -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |
 | -                         | `EXPOSE_WAF_AUDIT_ONLY`          | `false`       | Evaluate WAF rules without blocking requests                   |
 | -                         | `EXPOSE_WAF_BODY_INSPECT_LIMIT`  | `16384`       | Max public request-body bytes the WAF inspects (`0` disables)  |
@@ -98,9 +99,11 @@ For the separate optional WebRTC TURN service, see [TURN relay](turn-relay.md). 
 Tunneled HTTP uploads and downloads have no total-body size limit. Large bodies stream through bounded buffers on both WebSocket and HTTP/3 transports, including chunked requests without `Content-Length`. The upstream application can enforce its own upload limit. WAF inspection remains bounded by `EXPOSE_WAF_BODY_INSPECT_LIMIT`; registration and static-site publishing keep their separate request and extracted-size limits. `EXPOSE_PUBLISH_MAX_BYTES` applies only to server-hosted static sites, not tunneled uploads.
 
 - The server always starts HTTP/3 on the same listen address as HTTPS (`EXPOSE_LISTEN_HTTPS`).
-- There is no separate QUIC listen or advertise setting in current versions.
+- There is no separate QUIC listen setting in current versions.
 - For clients using QUIC (`--transport=quic`), your public TCP and UDP paths must use the same authority/port.
 - If UDP is unavailable, clients connect over WebSocket (the default transport).
+- Browsers use HTTP/3 for public sites only when `EXPOSE_PUBLIC_HTTP3=true`. The server then sends `Alt-Svc: h3=":<port>"` on TCP responses, using the port of the requested authority (`443` when none is given). Later connections save the separate TCP and TLS round trips. Enable it only when that public UDP port reaches the server: a browser that tries an unreachable QUIC endpoint first waits before falling back to TCP. WebSockets always use TCP.
+- A local upstream's own `Alt-Svc` header is removed from public responses, because it names an address public clients cannot reach.
 
 ## `.env` File Support
 

@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/koltyakov/expose/internal/timerpool"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
@@ -97,8 +95,9 @@ type clientSessionRuntime struct {
 	readErr      chan error
 	keepaliveErr chan error
 
-	wsMu    sync.RWMutex
-	wsConns map[string]*websocket.Conn
+	wsMu     sync.RWMutex
+	wsConns  map[string]*localWebSocket
+	wsClosed bool
 
 	streamedMu       sync.Mutex
 	streamedReqState map[string]*streamedRequestState
@@ -119,7 +118,7 @@ func newClientSessionRuntimeFromConn(c *Client, parentCtx context.Context, local
 		msgCh:            make(chan tunnelproto.Message, wsMessageBufferSize),
 		readErr:          make(chan error, 1),
 		keepaliveErr:     make(chan error, 1),
-		wsConns:          make(map[string]*websocket.Conn),
+		wsConns:          make(map[string]*localWebSocket),
 		streamedReqState: make(map[string]*streamedRequestState),
 	}
 	rt.transport.SetReadLimit(clientWSReadLimit)
@@ -155,12 +154,7 @@ func (rt *clientSessionRuntime) close() {
 			rt.writer.Close()
 		}
 
-		rt.wsMu.Lock()
-		for id, streamConn := range rt.wsConns {
-			delete(rt.wsConns, id)
-			_ = streamConn.Close()
-		}
-		rt.wsMu.Unlock()
+		rt.closeWSConns()
 
 		rt.streamedMu.Lock()
 		states := make([]*streamedRequestState, 0, len(rt.streamedReqState))
@@ -222,7 +216,8 @@ func (rt *clientSessionRuntime) handleMessage(msg tunnelproto.Message) error {
 	case tunnelproto.KindReqCancel:
 		rt.handleRequestCancel(msg.ReqCancel)
 	case tunnelproto.KindWSOpen:
-		rt.handleWSOpen(msg.WSOpen)
+		open := msg.WSOpen
+		rt.requestWG.Go(func() { rt.handleWSOpen(open) })
 	case tunnelproto.KindWSData:
 		rt.handleWSData(msg.WSData)
 	case tunnelproto.KindWSClose:

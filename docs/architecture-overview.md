@@ -74,7 +74,7 @@ sequenceDiagram
 - HTTP/3 compatibility mode keeps an outer length prefix so one H3 stream can carry many frames, but the inner frame format is the same as WebSocket.
 - WebSocket text frames are no longer used by the built-in client and server during normal runtime traffic.
 
-Public HTTP request and response bodies have no tunnel-wide total-size cap. Bodies larger than 256 KiB, including requests without a known `Content-Length`, travel in bounded chunks rather than whole-body buffers. This applies to WebSocket, HTTP/3 compatibility, and both HTTP/3 multi-stream protocols. Frame-size bounds, queue limits, backpressure, cancellation, and timeouts still apply. Upstream applications remain responsible for their own upload limits. Registration and server-hosted publication uploads retain their separate size limits.
+Public HTTP request and response bodies have no tunnel-wide total-size cap. Bodies larger than 256 KiB, including requests without a known `Content-Length`, travel in bounded chunks rather than whole-body buffers. A response body is sent inline with its headers only when it completes within 25 ms of the headers and fits in 256 KiB. Otherwise the client forwards the headers and streams the body as it arrives, so server-sent events, long polls and progressive output reach the visitor without waiting for the response to end. The server flushes streamed response headers immediately. This applies to WebSocket, HTTP/3 compatibility, and both HTTP/3 multi-stream protocols. Frame-size bounds, queue limits, backpressure, cancellation, and timeouts still apply. Upstream applications remain responsible for their own upload limits. Registration and server-hosted publication uploads retain their separate size limits.
 
 ## HTTP/3 Protocol Versions
 
@@ -82,6 +82,7 @@ Public HTTP request and response bodies have no tunnel-wide total-size cap. Bodi
 - `h3_multistream_v2`: preferred multi-stream mode using the v2 stream codec.
 - `h3_multistream`: legacy variant of the multi-stream protocol.
 - Both multi-stream modes use one long-lived control stream for keepalive/lifecycle and short-lived worker streams for individual forwarded HTTP requests or proxied WebSockets.
+- The client opens four worker streams up front. A worker that carries a WebSocket leaves the pool and is replaced at once, and the server asks for another worker whenever handing one out leaves none idle, so requests rarely wait a tunnel round trip for a worker.
 - Registration currently advertises `ws_v1`, `h3_compat`, `h3_multistream_v2`, `h3_multistream`, `waf_ignore_paths_v1` (per-tunnel WAF paths), and `connect_token_header_v1` (bearer authentication for tunnel connect) capabilities.
 - Client transport selection:
   - `--transport=ws` (default): `ws_v1`

@@ -254,3 +254,61 @@ func newStreamingLimitTestPeer(t *testing.T, transport string) (*session, func()
 			return tunnelproto.WriteStreamJSON(stream, msg)
 		}
 }
+
+func TestPublicHTTPStreamedResponseSendsHeadersBeforeFirstChunk(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	sess, read, _ := newStreamingLimitTestPeer(t, "ws")
+	srv := New(config.ServerConfig{RequestTimeout: 10 * time.Second}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+	const host = "events.example.test"
+	srv.hub.sessions[sess.tunnelID] = sess
+	srv.routes.set(host, domain.TunnelRoute{
+		Domain: domain.Domain{ID: "events-domain", Hostname: host},
+		Tunnel: domain.Tunnel{ID: sess.tunnelID, State: domain.TunnelStateConnected},
+	})
+	public := httptest.NewServer(http.HandlerFunc(srv.handlePublic))
+	defer public.Close()
+
+	pendingCh := make(chan *pendingRequest, 1)
+	go func() {
+		request, err := read()
+		if err != nil || request.Request == nil {
+			return
+		}
+		pending, ok := sess.pendingLoad(request.Request.ID)
+		if !ok {
+			return
+		}
+		pending.deliverHeader(&tunnelproto.HTTPResponse{
+			ID: request.Request.ID, Status: http.StatusOK, Streamed: true,
+			Headers: map[string][]string{"Content-Type": {"text/event-stream"}},
+		})
+		pendingCh <- pending
+	}()
+
+	headerCtx, headerCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer headerCancel()
+	req, err := http.NewRequestWithContext(headerCtx, http.MethodGet, public.URL+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	resp, err := public.Client().Do(req)
+	if err != nil {
+		t.Fatalf("streamed response headers were held until the first body chunk: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("unexpected response %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	pending := <-pendingCh
+	if !pending.sendBody(sess, []byte("data: ready\n\n"), time.Second) {
+		t.Fatal("body chunk was not accepted")
+	}
+	buf := make([]byte, len("data: ready\n\n"))
+	if _, err := io.ReadFull(resp.Body, buf); err != nil || string(buf) != "data: ready\n\n" {
+		t.Fatalf("first event not delivered: %q, %v", buf, err)
+	}
+	pending.finish()
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/serviceapi"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
@@ -2373,4 +2374,80 @@ func writeTLSKeyPairFiles(t testing.TB, cert tls.Certificate) (string, string) {
 		t.Fatalf("write key file: %v", err)
 	}
 	return certFile, keyFile
+}
+
+func TestAcquireH3WorkerRequestsASpareWhenThePoolEmpties(t *testing.T) {
+	t.Parallel()
+
+	writer := &testSessionWriter{}
+	sess := &session{writer: writer, h3StreamPool: newH3StreamPool(4)}
+	for range 2 {
+		if !sess.h3StreamPool.enqueue(&http3.Stream{}) {
+			t.Fatal("enqueue worker")
+		}
+	}
+	workerRequests := func() int {
+		writer.mu.Lock()
+		defer writer.mu.Unlock()
+		desired := 0
+		for _, msg := range writer.msgs {
+			if msg.Kind == tunnelproto.KindWorkerCtrl && msg.WorkerCtrl != nil {
+				desired += msg.WorkerCtrl.Desired
+			}
+		}
+		return desired
+	}
+
+	if _, err := sess.acquireH3Worker(context.Background(), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := workerRequests(); got != 0 {
+		t.Fatalf("a worker is still ready, but %d more were requested", got)
+	}
+	if _, err := sess.acquireH3Worker(context.Background(), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := workerRequests(); got != 1 {
+		t.Fatalf("expected one spare worker request once the pool emptied, got %d", got)
+	}
+}
+
+func TestPublicHTTP3AdvertisementIsOptInAndUsesThePublicPort(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	request := func(handler http.Handler, host string, protoMajor int) string {
+		req := httptest.NewRequest(http.MethodGet, serviceapi.Health, nil)
+		req.Host = host
+		req.ProtoMajor = protoMajor
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr.Header().Get("Alt-Svc")
+	}
+
+	disabled := New(config.ServerConfig{RequestTimeout: time.Second}, nil, logger, "test").httpHandler()
+	if got := request(disabled, "app.example.com", 2); got != "" {
+		t.Fatalf("HTTP/3 must not be advertised by default, got %q", got)
+	}
+
+	enabled := New(config.ServerConfig{RequestTimeout: time.Second, PublicHTTP3: true}, nil, logger, "test").httpHandler()
+	if got := request(enabled, "app.example.com", 2); got != `h3=":443"; ma=86400` {
+		t.Fatalf("expected the default HTTPS port, got %q", got)
+	}
+	if got := request(enabled, "app.example.com:10443", 1); got != `h3=":10443"; ma=86400` {
+		t.Fatalf("expected the request's port, got %q", got)
+	}
+	if got := request(enabled, "app.example.com", 3); got != "" {
+		t.Fatalf("HTTP/3 responses need no advertisement, got %q", got)
+	}
+}
+
+func TestStripUpstreamAltSvc(t *testing.T) {
+	t.Parallel()
+
+	headers := map[string][]string{"Alt-Svc": {`h3=":3000"`}, "alt-svc": {`h2=":3000"`}, "Content-Type": {"text/plain"}}
+	stripUpstreamAltSvc(headers)
+	if len(headers) != 1 || headers["Content-Type"] == nil {
+		t.Fatalf("expected only the upstream Alt-Svc headers to be removed, got %v", headers)
+	}
 }

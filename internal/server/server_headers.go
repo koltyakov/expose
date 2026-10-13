@@ -140,3 +140,13 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst 
 	}
 	return nil
 }
+
+// stripUpstreamAltSvc removes a local upstream's Alt-Svc header. It names the
+// upstream's own address, which public clients cannot reach.
+func stripUpstreamAltSvc(headers map[string][]string) {
+	for key := range headers {
+		if strings.EqualFold(key, "Alt-Svc") {
+			delete(headers, key)
+		}
+	}
+}

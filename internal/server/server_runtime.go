@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -336,7 +337,26 @@ func (s *Server) httpHandler() http.Handler {
 		})
 		s.log.Info("WAF enabled")
 	}
+	if s.cfg.PublicHTTP3 {
+		handler = advertiseHTTP3(handler)
+	}
 	return requestReadDeadlineMiddleware(handler, s.cfg.RequestTimeout)
+}
+
+// advertiseHTTP3 tells browsers on TCP that the same authority also serves
+// HTTP/3, so later connections can skip the separate TCP and TLS round trips.
+// WebSockets keep using TCP.
+func advertiseHTTP3(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor < 3 {
+			port := "443"
+			if _, p, err := net.SplitHostPort(r.Host); err == nil && p != "" {
+				port = p
+			}
+			w.Header().Set("Alt-Svc", `h3=":`+port+`"; ma=86400`)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func shouldInspectWAFBody(r *http.Request) bool {

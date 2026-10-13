@@ -78,6 +78,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	}
 	respHeaders := resp.Headers
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)
+	stripUpstreamAltSvc(respHeaders)
 	for k, vals := range respHeaders {
 		for _, v := range vals {
 			w.Header().Add(k, v)
@@ -86,6 +87,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(normalizeUpstreamStatus(resp.Status))
 
 	if resp.Streamed {
+		flushResponse(w)
 		if !writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2()) {
 			requeue = false
 			return

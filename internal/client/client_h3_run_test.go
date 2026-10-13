@@ -625,3 +625,123 @@ func selfSignedCertForLoopback(t testing.TB) tls.Certificate {
 	}
 	return cert
 }
+
+func TestClientRunH3ReplacesWorkerTakenByWebSocket(t *testing.T) {
+	asyncErrCh := make(chan error, 8)
+	localUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			recordAsyncTestError(asyncErrCh, "upgrade local websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer localUpstream.Close()
+	localBase, err := url.Parse(localUpstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort, err := strconv.Atoi(localBase.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	controlDone := make(chan struct{})
+	ackCh := make(chan tunnelproto.Message, 1)
+	var workers atomic.Int32
+	h3Addr, cleanupH3 := startHTTP3TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		streamer, ok := w.(http3.HTTPStreamer)
+		if !ok {
+			http.Error(w, "stream takeover unavailable", http.StatusInternalServerError)
+			return
+		}
+		switch r.URL.Path {
+		case "/_expose/v1/tunnels/connect-h3":
+			w.Header().Set(h3SessionHeader, "session-token")
+			w.WriteHeader(http.StatusOK)
+			stream := streamer.HTTPStream()
+			<-controlDone
+			closeHTTP3TestStream(stream)
+		case "/_expose/v1/tunnels/connect-h3/stream":
+			w.WriteHeader(http.StatusOK)
+			stream := streamer.HTTPStream()
+			defer closeHTTP3TestStream(stream)
+			// The server never asks for more workers in this test.
+			if workers.Add(1) == 1 {
+				if err := tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{
+					Kind:   tunnelproto.KindWSOpen,
+					WSOpen: &tunnelproto.WSOpen{ID: "ws_long_lived", Method: http.MethodGet, Path: "/ws"},
+				}); err != nil {
+					recordAsyncTestError(asyncErrCh, "write websocket open: %v", err)
+					return
+				}
+				var ack tunnelproto.Message
+				if err := tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &ack); err != nil {
+					recordAsyncTestError(asyncErrCh, "read websocket open ack: %v", err)
+					return
+				}
+				ackCh <- ack
+			}
+			<-controlDone
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() {
+		close(controlDone)
+		cleanupH3()
+	}()
+
+	registerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(domain.RegisterResponse{
+			TunnelID:     "tun_h3_workers",
+			PublicURL:    "https://demo.example.com",
+			WSURL:        "wss://unused.example.com/_expose/v1/tunnels/connect?token=unused",
+			H3URL:        "https://" + h3Addr + "/_expose/v1/tunnels/connect-h3?token=abc",
+			Capabilities: []string{tunnelCapabilityH3MultistreamV2},
+		})
+	}))
+	defer registerSrv.Close()
+
+	c := New(config.ClientConfig{
+		ServerURL: registerSrv.URL,
+		APIKey:    "test-key",
+		Transport: "quic",
+		LocalPort: localPort,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c.h3TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- c.Run(ctx) }()
+
+	ack := waitForCondition(t, 8*time.Second, "websocket open ack on h3 worker", func() (tunnelproto.Message, bool) {
+		select {
+		case msg := <-ackCh:
+			return msg, true
+		default:
+			return tunnelproto.Message{}, false
+		}
+	})
+	if ack.WSOpenAck == nil || !ack.WSOpenAck.OK {
+		t.Fatalf("expected successful websocket open ack, got %+v", ack.WSOpenAck)
+	}
+	waitForCondition(t, 5*time.Second, "replacement worker for the websocket", func() (int32, bool) {
+		n := workers.Load()
+		return n, n >= h3WorkerOpenCountFloor+1
+	})
+	requireNoAsyncTestError(t, asyncErrCh)
+	cancel()
+	select {
+	case <-runErrCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("client did not stop")
+	}
+}

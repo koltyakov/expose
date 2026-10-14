@@ -34,6 +34,8 @@ expose.db
 expose.db-*
 *.db.sites/
 tmp/
+research_notes/
+reports/
 
 # Editor/IDE
 # .idea/

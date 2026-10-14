@@ -27,6 +27,8 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 		host := config.NormalizeTunnelSubdomain(cfg.Subdomain) + "." + normalizeHost(s.cfg.BaseDomain)
 		target := &url.URL{Scheme: "http", Host: "127.0.0.1:" + strconv.Itoa(cfg.Port)}
 		transport := http.DefaultTransport.(*http.Transport).Clone()
+		// Forward the caller's coding negotiation and upstream representation unchanged.
+		transport.DisableCompression = true
 		transport.Proxy = nil // Local services must never go through HTTP_PROXY.
 		transport.ResponseHeaderTimeout = durationOr(s.cfg.RequestTimeout, 30*time.Second)
 		proxy := &httputil.ReverseProxy{

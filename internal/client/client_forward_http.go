@@ -285,9 +285,6 @@ func (c *Client) forwardAndSend(
 	})
 	defer pump.close()
 
-	window := timerpool.Acquire(inlineResponseWindow)
-	defer timerpool.Release(window)
-
 	var (
 		head     bodyRead // the first read owns the buffer that small bodies accumulate in
 		buffered []byte
@@ -296,33 +293,37 @@ func (c *Client) forwardAndSend(
 		readErr  error
 	)
 	defer func() { head.release() }()
-collect:
-	for len(buffered) <= streamingThreshold {
-		select {
-		case read := <-pump.reads:
-			switch {
-			case read.n == 0:
-			case head.ref == nil:
-				head, buffered = read, read.data()
-			case len(buffered)+read.n <= cap(buffered):
-				buffered = append(buffered, read.data()...)
-				read.release()
-			default:
-				overflow = read
-			}
-			if read.err != nil {
-				if errors.Is(read.err, io.EOF) || errors.Is(read.err, io.ErrUnexpectedEOF) {
-					complete = true
-				} else {
-					readErr = read.err
+	if !shouldStreamResponseImmediately(req.Method, resp) {
+		window := timerpool.Acquire(inlineResponseWindow)
+		defer timerpool.Release(window)
+	collect:
+		for len(buffered) <= streamingThreshold {
+			select {
+			case read := <-pump.reads:
+				switch {
+				case read.n == 0:
+				case head.ref == nil:
+					head, buffered = read, read.data()
+				case len(buffered)+read.n <= cap(buffered):
+					buffered = append(buffered, read.data()...)
+					read.release()
+				default:
+					overflow = read
 				}
+				if read.err != nil {
+					if errors.Is(read.err, io.EOF) {
+						complete = true
+					} else {
+						readErr = read.err
+					}
+					break collect
+				}
+				if overflow.ref != nil {
+					break collect
+				}
+			case <-window.C:
 				break collect
 			}
-			if overflow.ref != nil {
-				break collect
-			}
-		case <-window.C:
-			break collect
 		}
 	}
 	defer func() { overflow.release() }()
@@ -386,10 +387,16 @@ collect:
 		c.logForwardResult(req, resp.StatusCode, started)
 		return
 	}
+	// Both writers finish consuming the bytes before returning. Clear the
+	// deferred owner so long streams do not retain this probe.
+	head.release()
+	head = bodyRead{}
 	if err := sendChunk(overflow.data()); err != nil {
 		c.logForwardResult(req, resp.StatusCode, started)
 		return
 	}
+	overflow.release()
+	overflow = bodyRead{}
 
 	for !complete {
 		read := <-pump.reads
@@ -421,6 +428,14 @@ collect:
 		BodyChunk: &tunnelproto.BodyChunk{ID: req.ID},
 	})
 	c.logForwardResult(req, resp.StatusCode, started)
+}
+
+func shouldStreamResponseImmediately(method string, resp *http.Response) bool {
+	if method == http.MethodHead || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified || resp.Body == http.NoBody {
+		return false
+	}
+	contentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+	return resp.ContentLength > streamingThreshold || strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 }
 
 // bodyRead is one read from a local response body. Its pooled buffer belongs

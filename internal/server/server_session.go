@@ -446,7 +446,7 @@ func (s *Server) readLoop(sess *session) {
 			if !sess.wsPendingSend(msg.WSData.ID, msg, wsDataDispatchWait) {
 				s.log.Warn("closing websocket due stream backpressure", "tunnel_id", sess.tunnelID, "stream_id", msg.WSData.ID)
 				sess.wsPendingAbort(msg.WSData.ID)
-				_ = sess.writeJSON(tunnelproto.Message{
+				_ = sess.writeJSONAsync(tunnelproto.Message{
 					Kind: tunnelproto.KindWSClose,
 					WSClose: &tunnelproto.WSClose{
 						ID:   msg.WSData.ID,

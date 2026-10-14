@@ -107,6 +107,15 @@ type rule struct {
 	// invariant "pattern matches => some trigger present" directly against
 	// the compiled patterns.
 	triggers []string
+	// triggerGroups is an optional stronger ASCII prefilter. At least one
+	// group must have all of its lowercase ASCII substrings present, in any
+	// order. This keeps standalone quotes in malformed JSON from forcing a
+	// whole-suffix regex scan when the accompanying SQL syntax cannot occur.
+	triggerGroups [][]string
+	// shortTriggerIndex buckets triggers by their first ASCII byte. For short
+	// JSON fragments this avoids probing every keyword separately. Long inputs
+	// retain the optimized strings.Contains path.
+	shortTriggerIndex *[128][]string
 	// literalsFolded and triggersFolded mirror the above pre-lowercased, so
 	// matching never allocates. Derived by defaultRules; never set by hand.
 	literalsFolded []string
@@ -120,25 +129,49 @@ func (r *rule) matches(in scanInput) bool {
 	}
 	if len(r.literalsFolded) > 0 {
 		if !in.asciiOnly {
-			return containsAnyFoldSlow(in.raw, r.literals)
+			// Unicode simple folding includes equivalences such as s/ſ that
+			// strings.ToLower does not preserve. Use the original semantics.
+			return r.pattern.MatchString(in.raw)
 		}
 		return containsAnyFolded(in.folded, r.literalsFolded)
 	}
-	if len(r.triggersFolded) > 0 && in.asciiOnly &&
-		!containsAnyFolded(in.folded, r.triggersFolded) {
+	if len(r.triggersFolded) > 0 && in.asciiOnly {
+		if r.shortTriggerIndex != nil && len(in.folded) <= 64 {
+			if !containsIndexedTrigger(in.folded, r.shortTriggerIndex) {
+				return false
+			}
+		} else if !containsAnyFolded(in.folded, r.triggersFolded) {
+			return false
+		}
+	}
+	if len(r.triggerGroups) > 0 && in.asciiOnly && !containsTriggerGroup(in.folded, r.triggerGroups) {
 		return false
 	}
 	return r.pattern.MatchString(in.raw)
 }
 
-// containsAnyFoldSlow is the non-ASCII fallback for literal rules. It uses
-// Unicode-aware case folding to match the semantics of a (?i) pattern.
-func containsAnyFoldSlow(s string, literals []string) bool {
-	lower := strings.ToLower(s)
-	for _, lit := range literals {
-		if strings.Contains(lower, lit) {
-			return true
+// containsIndexedTrigger requires ASCII input. It is only called after the
+// request's scanInput established that property.
+func containsIndexedTrigger(folded string, index *[128][]string) bool {
+	for i := range len(folded) {
+		for _, trigger := range index[folded[i]] {
+			if strings.HasPrefix(folded[i:], trigger) {
+				return true
+			}
 		}
+	}
+	return false
+}
+
+func containsTriggerGroup(folded string, groups [][]string) bool {
+group:
+	for _, triggers := range groups {
+		for _, trigger := range triggers {
+			if !strings.Contains(folded, trigger) {
+				continue group
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -151,6 +184,25 @@ func defaultRules() []rule {
 		rl := &rules[i]
 		rl.literalsFolded = foldAll(rl.literals)
 		rl.triggersFolded = foldAll(rl.triggers)
+		if rl.name == "sql-injection" {
+			index := new([128][]string)
+			for _, trigger := range rl.triggersFolded {
+				// Empty/non-ASCII triggers use the general matcher instead.
+				if trigger == "" || !newScanInput(trigger).asciiOnly {
+					index = nil
+					break
+				}
+				index[trigger[0]] = append(index[trigger[0]], trigger)
+			}
+			rl.shortTriggerIndex = index
+		}
+		if len(rl.literals) > 0 {
+			alternatives := make([]string, len(rl.literals))
+			for j, literal := range rl.literals {
+				alternatives[j] = regexp.QuoteMeta(literal)
+			}
+			rl.pattern = regexp.MustCompile("(?i)(?:" + strings.Join(alternatives, "|") + ")")
+		}
 	}
 	return rules
 }
@@ -169,9 +221,21 @@ func foldAll(values []string) []string {
 func builtinRules() []rule {
 	return []rule{
 		{
-			name:     "sql-injection",
-			triggers: []string{"union", ";", "'", "\"", "/*", "benchmark", "sleep", "waitfor", "load_file", "into"},
-			targets:  targetPath | targetQuery | targetHeaders | targetBody,
+			name: "sql-injection",
+			// Each regex branch requires a keyword, quote, or inline comment:
+			// UNION; stacked-statement actions; quoted tautologies/comments;
+			// keyword/comment adjacency; quoted hex; function calls; file I/O.
+			// Bare ';' and 'into' also appear in ordinary browser UAs/cookies.
+			triggers: []string{"union", "drop", "delete", "insert", "update", "alter", "'", "\"", "/*", "benchmark", "sleep", "waitfor", "load_file", "outfile", "dumpfile"},
+			// Quoted tautologies require OR/AND, quoted comments require ';',
+			// and hex literals require x'. All other branches have a required
+			// keyword/comment trigger independent of their quotes.
+			triggerGroups: [][]string{
+				{"union"}, {"drop"}, {"delete"}, {"insert"}, {"update"}, {"alter"}, {"/*"},
+				{"benchmark"}, {"sleep"}, {"waitfor"}, {"load_file"}, {"outfile"}, {"dumpfile"},
+				{"'", "or"}, {"'", "and"}, {"'", ";"}, {"x'"}, {"\"", "or"}, {"\"", "and"},
+			},
+			targets: targetPath | targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`union(?:\s|/\*[^*]*\*/)+(?:all(?:\s|/\*[^*]*\*/)+)?select` +

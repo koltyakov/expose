@@ -171,6 +171,8 @@ func New(cfg config.ClientConfig, logger *slog.Logger) *Client {
 func newForwardHTTPTransport(cfg config.ClientConfig) *http.Transport {
 	base, _ := http.DefaultTransport.(*http.Transport)
 	tr := base.Clone()
+	// Forward the caller's coding negotiation and upstream representation unchanged.
+	tr.DisableCompression = true
 	tr.MaxIdleConns = 100
 	tr.MaxIdleConnsPerHost = 100
 	tr.MaxConnsPerHost = maxConcurrentForwardsFor(cfg)

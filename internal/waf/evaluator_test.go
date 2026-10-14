@@ -1,7 +1,6 @@
 package waf
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,32 +49,33 @@ func TestGenericBodyValues(t *testing.T) {
 	}
 }
 
-func TestCollectJSONStrings(t *testing.T) {
+func TestCollectJSONTokens(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		value   any
+		body    string
 		wantLen int
 	}{
-		{"nil value", nil, 0},
-		{"string value", "hello", 1},
-		{"number value", json.Number("42"), 1},
-		{"sensitive key value scanned", "secret123", 1},
-		{"number under sensitive key scanned", json.Number("1234"), 1},
-		{"nested map", map[string]any{"a": "val"}, 2}, // key "a" + value "val"
-		{"array of strings", []any{"x", "y"}, 2},
-		{"nested array in map", map[string]any{"items": []any{"one", "two"}}, 3}, // "items" + "one" + "two"
-		{"bool value ignored", true, 0},
-		{"empty map", map[string]any{}, 0},
-		{"empty array", []any{}, 0},
+		{"null value", `null`, 0},
+		{"string value", `"hello"`, 1},
+		{"number value", `42`, 1},
+		{"nested map", `{"a":"val"}`, 2}, // key "a" + value "val"
+		{"array of strings", `["x","y"]`, 2},
+		{"nested array in map", `{"items":["one","two"]}`, 3}, // "items" + "one" + "two"
+		{"bool value ignored", `true`, 0},
+		{"empty map", `{}`, 0},
+		{"empty array", `[]`, 0},
+		// Duplicate keys: both values are kept (a map decode would keep
+		// only the last), so an attack in the first value is still seen.
+		{"duplicate keys keep both values", `{"k":"first","k":"second"}`, 3},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			set := newValueSet(1 << 20)
-			collectJSONStrings(tt.value, set)
+			collectJSONTokens(set, []byte(tt.body))
 			out := valueStrings(set.values)
 			if len(out) != tt.wantLen {
 				t.Errorf("got %d values %v, want %d", len(out), out, tt.wantLen)
@@ -211,7 +211,10 @@ func TestCollectBodyValues(t *testing.T) {
 				}
 			}
 
-			got := collectBodyValues(r, tt.limit, nil)
+			got, overflow := collectBodyValues(r, tt.limit, nil)
+			if overflow {
+				t.Fatal("unexpected body scan budget overflow")
+			}
 
 			if tt.wantNil {
 				if got != nil {
@@ -233,9 +236,9 @@ func TestCollectBodyValuesBodyGuard(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 
 	// Body guard returns false — inspection skipped
-	got := collectBodyValues(r, 1024, func(*http.Request) bool { return false })
-	if got != nil {
-		t.Fatalf("expected nil when body guard rejects, got %v", got)
+	got, overflow := collectBodyValues(r, 1024, func(*http.Request) bool { return false })
+	if got != nil || overflow {
+		t.Fatalf("expected no values or overflow when body guard rejects, got %v, %v", got, overflow)
 	}
 }
 
@@ -243,9 +246,9 @@ func TestCollectBodyValuesNoBody(t *testing.T) {
 	t.Parallel()
 
 	r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
-	got := collectBodyValues(r, 1024, nil)
-	if got != nil {
-		t.Fatalf("expected nil for http.NoBody, got %v", got)
+	got, overflow := collectBodyValues(r, 1024, nil)
+	if got != nil || overflow {
+		t.Fatalf("expected no values or overflow for http.NoBody, got %v, %v", got, overflow)
 	}
 }
 
@@ -367,6 +370,53 @@ func TestValueSetBudget(t *testing.T) {
 	}
 	if !set.dropped {
 		t.Error("expected dropped to be set once a value was rejected")
+	}
+}
+
+func TestValueSetBudgetDuplicates(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{2, valueSetLinearDedupMax + 1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			t.Parallel()
+			set := newValueSet(count * 3)
+			for i := range count {
+				set.add(fmt.Sprintf("%03d", i))
+			}
+			if set.budget != 0 {
+				t.Fatalf("budget = %d, want 0", set.budget)
+			}
+			set.add("")
+			set.add("000")
+			if set.dropped || len(set.values) != count {
+				t.Fatal("empty or duplicate value overflowed an exactly full budget")
+			}
+			set.add("new")
+			set.add("000")
+			if !set.dropped || len(set.values) != count {
+				t.Fatal("overflow must remain set without retaining additional values")
+			}
+		})
+	}
+}
+
+func TestCollectBodyValuesOverflow(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("x", 1000) + "%2541+"
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	r.Header.Set("Content-Type", "text/plain")
+	values, overflow := collectBodyValues(r, 2048, nil)
+	if !overflow {
+		t.Fatal("distinct decoded variants exceeding the scan budget must report overflow")
+	}
+	total := 0
+	for _, value := range values {
+		total += len(value.raw)
+	}
+	if total > len(body)*bodyScanBudgetFactor {
+		t.Fatalf("retained %d bytes beyond the scan budget", total)
+	}
+	if len(values) == 0 || values[0].raw != body {
+		t.Fatal("overflow must still retain raw fragments that fit")
 	}
 }
 

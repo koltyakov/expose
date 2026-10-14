@@ -70,11 +70,52 @@ func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts S
 		etag := sha256.Sum256([]byte(validator))
 		w.Header().Set("ETag", fmt.Sprintf(`"%x"`, etag))
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeContent(w, r, candidate, info.ModTime(), content)
+		http.ServeContent(&publicationContentWriter{ResponseWriter: w}, r, candidate, info.ModTime(), content)
 		_ = f.Close()
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// ServeContent removes cache headers on range errors. Restore no-store at the
+// point it commits any error, including precondition failures.
+type publicationContentWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *publicationContentWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *publicationContentWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	if status >= http.StatusBadRequest {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	if status >= 200 || status == http.StatusSwitchingProtocols {
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *publicationContentWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// Keep the underlying writer's optimized copy path when it has one. Optional
+// controller methods such as Flush are reached through Unwrap instead.
+func (w *publicationContentWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(r)
+	}
+	return io.Copy(struct{ io.Writer }{w}, r)
 }
 
 func isHTML(f *os.File, name string) bool {

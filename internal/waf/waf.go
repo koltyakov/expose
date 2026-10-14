@@ -30,6 +30,9 @@ type Config struct {
 	AuditOnly bool
 	// BodyInspectLimit controls how many bytes of a request body are inspected.
 	// Set to 0 to disable body inspection.
+	// Requests whose distinct extracted and decoded fragments exceed twice
+	// the inspected byte count match body-scan-budget-exceeded. AuditOnly
+	// reports this match without blocking, just like other WAF matches.
 	BodyInspectLimit int64
 	// MaxURILength overrides the default maximum URI length (8192 bytes).
 	// URIs exceeding this length are blocked as suspicious.

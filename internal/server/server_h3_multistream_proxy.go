@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -30,8 +31,18 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 	requeue := true
+	// Reset only this worker when the public caller leaves. Besides unblocking
+	// local stream I/O, STOP_SENDING cancels the client's upstream request.
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(r.Context(), func() {
+		closeH3Stream(stream)
+		close(cancelDone)
+	})
 	defer func() {
-		if requeue {
+		if !stopCancel() {
+			<-cancelDone // Do not return a worker while its reset is in flight.
+		}
+		if requeue && r.Context().Err() == nil {
 			if !sess.addH3Worker(stream) {
 				closeH3Stream(stream)
 			}
@@ -90,6 +101,11 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		flushResponse(w)
 		if !writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2()) {
 			requeue = false
+			if r.Context().Err() == nil {
+				// The status and partial body already went out. Match the WS
+				// path: do not finish an unknown-length body as a clean EOF.
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
 	} else {

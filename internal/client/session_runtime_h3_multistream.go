@@ -241,7 +241,10 @@ func (rt *clientH3MultiStreamRuntime) handleControlMessage(msg tunnelproto.Messa
 
 func (rt *clientH3MultiStreamRuntime) handlePingPong(msg tunnelproto.Message) error {
 	if msg.Kind == tunnelproto.KindPing {
-		if err := rt.writeControlJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && rt.ctx.Err() == nil {
+		if rt.writer == nil {
+			return tunneltransport.ErrWritePumpClosed
+		}
+		if err := rt.writer.WriteJSONAsync(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && !errors.Is(err, tunneltransport.ErrWritePumpBackpressure) && rt.ctx.Err() == nil {
 			return err
 		}
 	}
@@ -412,6 +415,10 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	reqCopy := *req
 	reqCtx, cancel := requestContext(rt.ctx, &reqCopy)
 	defer cancel()
+	// A worker reset includes STOP_SENDING, which cancels the stream's send
+	// context. Inline requests have no body reader to observe that reset.
+	stopCancel := context.AfterFunc(stream.Context(), cancel)
+	defer stopCancel()
 
 	var bodyCh <-chan []byte
 	var bodyDone chan struct{}
@@ -429,6 +436,9 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	}, func(id string, payload []byte) error {
 		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameRespBody, id, 0, payload, rt.useStreamV2)
 	})
+	if err := reqCtx.Err(); err != nil {
+		return err
+	}
 	if bodyDone != nil {
 		cancel()
 		select {
@@ -461,6 +471,9 @@ func pumpStreamedRequestBodyMessages(
 			return
 		}
 		if msg.Kind == tunnelproto.KindReqBodyEnd && msg.BodyChunk != nil && msg.BodyChunk.ID == reqID {
+			if msg.BodyChunk.Error != "" && cancel != nil {
+				cancel()
+			}
 			return
 		}
 		if msg.Kind == tunnelproto.KindReqCancel && msg.ReqCancel != nil && msg.ReqCancel.ID == reqID {

@@ -82,6 +82,25 @@ const maxURILength = 8192
 const maxHeaderCount = 64
 
 func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
+	// Preserve structural-rule precedence without decoding/folding inputs that
+	// will be rejected. Header limits count values, not distinct header names.
+	if len(r.RequestURI) > maxURI {
+		return requestView{uriTooLong: true}
+	}
+	headerCount := 0
+	for name, values := range r.Header {
+		if _, skip := skipHeaders[name]; skip {
+			continue
+		}
+		if len(values) > maxHeaders-headerCount {
+			return requestView{tooManyHdrs: true}
+		}
+		headerCount += len(values)
+	}
+	if headerCount > maxHeaders {
+		return requestView{tooManyHdrs: true}
+	}
+
 	rawQuery := r.URL.RawQuery
 	decodedQuery := rawQuery
 	if strings.Contains(rawQuery, "%") {
@@ -124,30 +143,38 @@ func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 
 	// r.Header keys are already in canonical MIME form, so skipHeaders is
 	// keyed the same way and needs no per-header lowercasing.
-	headerValues := make([]scanInput, 0, len(r.Header))
+	userAgent := newScanInput(r.UserAgent())
+	headerValues := make([]scanInput, 0, headerCount)
 	for name, values := range r.Header {
 		if _, skip := skipHeaders[name]; skip {
 			continue
 		}
 		for _, v := range values {
-			headerValues = append(headerValues, newScanInput(v))
+			headerValues = append(headerValues, reuseScanInput(v, userAgent))
 		}
 	}
 
-	return requestView{
-		requestURI:       newScanInput(r.RequestURI),
-		decodedURI:       newScanInput(decodedURI),
-		doubleDecodedURI: newScanInput(doubleDecodedURI),
-		path:             newScanInput(r.URL.Path),
-		rawQuery:         newScanInput(rawQuery),
-		decodedQuery:     newScanInput(decodedQuery),
-		plusDecoded:      newScanInput(plusDecoded),
-		doubleDecoded:    newScanInput(doubleDecoded),
-		userAgent:        newScanInput(r.UserAgent()),
-		headerValues:     headerValues,
-		uriTooLong:       len(r.RequestURI) > maxURI,
-		tooManyHdrs:      len(headerValues) > maxHeaders,
+	view := requestView{userAgent: userAgent, headerValues: headerValues}
+	view.requestURI = newScanInput(r.RequestURI)
+	view.decodedURI = reuseScanInput(decodedURI, view.requestURI)
+	view.doubleDecodedURI = reuseScanInput(doubleDecodedURI, view.requestURI, view.decodedURI)
+	view.path = reuseScanInput(r.URL.Path, view.requestURI, view.decodedURI, view.doubleDecodedURI)
+	view.rawQuery = newScanInput(rawQuery)
+	view.decodedQuery = reuseScanInput(decodedQuery, view.rawQuery)
+	view.plusDecoded = reuseScanInput(plusDecoded, view.rawQuery, view.decodedQuery)
+	view.doubleDecoded = reuseScanInput(doubleDecoded, view.rawQuery, view.decodedQuery, view.plusDecoded)
+	return view
+}
+
+// reuseScanInput avoids folding identical variants more than once. Inputs are
+// immutable, and non-ASCII variants retain the same regex fallback behavior.
+func reuseScanInput(raw string, previous ...scanInput) scanInput {
+	for _, in := range previous {
+		if raw == in.raw {
+			return in
+		}
 	}
+	return newScanInput(raw)
 }
 
 // check tests the request against every rule and returns on the first match.
@@ -162,7 +189,11 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 		return true, "too-many-headers"
 	}
 
-	view.bodyValues = collectBodyValues(r, fw.bodyLimit, fw.bodyGuard)
+	var bodyOverflow bool
+	view.bodyValues, bodyOverflow = collectBodyValues(r, fw.bodyLimit, fw.bodyGuard)
+	if bodyOverflow {
+		return true, "body-scan-budget-exceeded"
+	}
 
 	for i := range fw.rules {
 		rl := &fw.rules[i]
@@ -177,9 +208,10 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 		}
 		if rl.targets&targetQuery != 0 && view.rawQuery.raw != "" {
 			if rl.matches(view.rawQuery) ||
-				rl.matches(view.decodedQuery) ||
-				rl.matches(view.plusDecoded) ||
-				(view.doubleDecoded.raw != view.decodedQuery.raw && rl.matches(view.doubleDecoded)) {
+				(view.decodedQuery.raw != view.rawQuery.raw && rl.matches(view.decodedQuery)) ||
+				(view.plusDecoded.raw != view.rawQuery.raw && view.plusDecoded.raw != view.decodedQuery.raw && rl.matches(view.plusDecoded)) ||
+				(view.doubleDecoded.raw != view.rawQuery.raw && view.doubleDecoded.raw != view.decodedQuery.raw &&
+					view.doubleDecoded.raw != view.plusDecoded.raw && rl.matches(view.doubleDecoded)) {
 				return true, rl.name
 			}
 		}
@@ -273,6 +305,8 @@ type replayBody struct {
 // otherwise produce several times its own size in values, each scanned by
 // every rule. The budget makes worst-case CPU per request a function of the
 // configured inspection limit alone, regardless of body shape.
+// Requests exceeding the budget are rejected rather than partially inspected:
+// early decoded variants must not hide later raw or encoded attacks.
 const bodyScanBudgetFactor = 2
 
 // valueSetLinearDedupMax is the number of fragments below which dedup uses a
@@ -313,11 +347,12 @@ func (s *valueSet) add(value string) {
 	if value == "" {
 		return
 	}
-	if s.budget <= 0 || len(value) > s.budget {
-		s.dropped = true
+	// A duplicate needs no additional scanning, even when the budget is full.
+	if s.contains(value) {
 		return
 	}
-	if s.contains(value) {
+	if s.budget <= 0 || len(value) > s.budget {
+		s.dropped = true
 		return
 	}
 
@@ -344,17 +379,19 @@ func (s *valueSet) addAll(values ...string) {
 
 func (s *valueSet) empty() bool { return len(s.values) == 0 }
 
-func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Request) bool) []scanInput {
+// collectBodyValues reports overflow whenever a distinct fragment could not be
+// retained. Callers must reject that request instead of trusting a partial scan.
+func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Request) bool) ([]scanInput, bool) {
 	if r == nil || r.Body == nil || r.Body == http.NoBody || limit <= 0 {
-		return nil
+		return nil, false
 	}
 	if bodyGuard != nil && !bodyGuard(r) {
-		return nil
+		return nil, false
 	}
 
 	body, mediaType, ok := previewRequestBody(r, limit)
 	if !ok || len(body) == 0 {
-		return nil
+		return nil, false
 	}
 
 	set := newValueSet(len(body) * bodyScanBudgetFactor)
@@ -368,9 +405,9 @@ func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Reques
 	case utf8.Valid(body):
 		collectGenericValues(set, string(body))
 	default:
-		return nil
+		return nil, false
 	}
-	return set.values
+	return set.values, set.dropped
 }
 
 // collectJSONTokens extracts strings and numbers from a JSON document that may
@@ -381,7 +418,7 @@ func collectBodyValues(r *http.Request, limit int64, bodyGuard func(*http.Reques
 // the whole raw blob, so bodies at or over the limit were both the most
 // expensive to inspect and the least precisely inspected. Streaming tokens
 // keeps extraction structured right up to the truncation point.
-func collectJSONTokens(set *valueSet, body []byte) bool {
+func collectJSONTokens(set *valueSet, body []byte) (bool, int) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
@@ -391,14 +428,18 @@ func collectJSONTokens(set *valueSet, body []byte) bool {
 		inObject  []bool
 		expectKey bool
 		found     bool
+		offset    int
 	)
 
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			// io.EOF or a truncation error: keep whatever was extracted.
-			return found
+			// The decoder may consume a separator before a failed token, or
+			// read ahead into its buffer. Keep the last successful token's
+			// end, not the reader position or InputOffset after the error.
+			return found, offset
 		}
+		offset = int(dec.InputOffset())
 
 		switch v := tok.(type) {
 		case json.Delim:
@@ -554,48 +595,118 @@ func rawPartFilename(part *multipart.Part) string {
 }
 
 func collectJSONBodyValues(set *valueSet, body []byte) {
-	var payload any
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	if err := dec.Decode(&payload); err == nil {
-		var extra any
-		if err := dec.Decode(&extra); err == io.EOF {
-			collectJSONStrings(payload, set)
-			if !set.empty() {
-				return
-			}
-		}
-	}
-
-	// Not a single well-formed document: most often a body truncated at the
-	// inspection limit. Recover what structure we can before falling back to
-	// scanning the raw bytes.
-	if collectJSONTokens(set, body) {
+	// Stream tokens directly instead of decoding into an any tree first.
+	// The tree decode allocated a map, slice, and boxed value per node and
+	// then walked (and key-sorted) the whole structure; the token stream
+	// extracts the same keys, strings, and numbers in one pass. It also
+	// keeps values under duplicate keys, which a map decode would collapse.
+	// Incomplete documents retain their complete tokens. Wire order is safe
+	// because the firewall rejects extraction budget overflow.
+	found, offset := collectJSONTokens(set, body)
+	if !found {
+		collectJSONTailValues(set, string(body))
+		collectJSONStringPrefix(set, body[offset:])
 		return
 	}
-	collectGenericValues(set, string(body))
+	// A successful key or value must not hide a malformed/truncated suffix.
+	// Scanning only that suffix avoids charging complete tokens a second time
+	// and keeps ordinary large documents within the existing byte budget.
+	if tail := bytes.TrimSpace(body[offset:]); len(tail) > 0 {
+		collectJSONTailValues(set, string(tail))
+		collectJSONStringPrefix(set, tail)
+	}
 }
 
-func collectJSONStrings(value any, set *valueSet) {
-	switch v := value.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(v))
-		for key := range v {
-			keys = append(keys, key)
+// collectJSONTailValues also recovers URL escapes before a failed escape. A
+// preview can cut the final %xx sequence while an earlier encoded attack is
+// wholly inside the inspection prefix. QueryUnescape of the whole suffix would
+// otherwise fail and silently omit that decoded attack. Recovery stops at the
+// first invalid escape and keeps the usual maximum of two decoding layers.
+func collectJSONTailValues(set *valueSet, raw string) {
+	collectGenericValues(set, raw)
+	for range 2 {
+		if !strings.Contains(raw, "%") {
+			return
 		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			set.add(key)
-			collectJSONStrings(v[key], set)
+		prefix := raw
+		for i := 0; i < len(raw); i++ {
+			if raw[i] != '%' {
+				continue
+			}
+			if i+2 >= len(raw) || !isHexByte(raw[i+1]) || !isHexByte(raw[i+2]) {
+				prefix = raw[:i]
+				break
+			}
+			i += 2
 		}
-	case []any:
-		for _, item := range v {
-			collectJSONStrings(item, set)
+		// Plus-only normalization already exists for the whole raw suffix.
+		// Do not charge a redundant prefix when no percent escape was decoded.
+		if !strings.Contains(prefix, "%") {
+			return
 		}
-	case string:
-		collectGenericValues(set, v)
-	case json.Number:
-		set.add(v.String())
+		decoded, err := url.QueryUnescape(prefix)
+		if err != nil || decoded == prefix {
+			return
+		}
+		set.add(decoded)
+		raw = decoded
+	}
+}
+
+func isHexByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+// collectJSONStringPrefix decodes the valid prefix of a failed string token. It
+// recovers JSON escapes before a missing quote, incomplete escape or malformed
+// character without claiming that the whole remainder is valid JSON.
+func collectJSONStringPrefix(set *valueSet, tail []byte) {
+	// Separators can follow the last completed key/value/container token.
+	value := bytes.TrimLeft(tail, ",: \t\r\n")
+	if len(value) == 0 || value[0] != '"' || bytes.IndexByte(value, '\\') < 0 {
+		return
+	}
+	end, escaped := 1, false
+scan:
+	for end < len(value) {
+		c := value[end]
+		if c == '"' || c < 0x20 {
+			break
+		}
+		if c != '\\' {
+			end++
+			continue
+		}
+		if end+1 >= len(value) {
+			break
+		}
+		switch value[end+1] {
+		case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+			end += 2
+		case 'u':
+			if end+6 > len(value) {
+				break scan
+			}
+			for _, hex := range value[end+2 : end+6] {
+				if !isHexByte(hex) {
+					break scan
+				}
+			}
+			end += 6
+		default:
+			break scan
+		}
+		escaped = true
+	}
+	if !escaped {
+		return
+	}
+	fragment := make([]byte, end+1)
+	copy(fragment, value[:end])
+	fragment[end] = '"'
+	var decoded string
+	if json.Unmarshal(fragment, &decoded) == nil {
+		collectJSONTailValues(set, decoded)
 	}
 }
 

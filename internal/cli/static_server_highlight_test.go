@@ -106,6 +106,14 @@ func TestHighlightYAMLAndHelpers(t *testing.T) {
 	}
 }
 
+func BenchmarkHighlightMarkup(b *testing.B) {
+	const code = "<!-- note --><div class=\"hero\" id=\"main\"><a href=\"/x\">Hi</a></div>"
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = highlightMarkup(code)
+	}
+}
+
 func TestHighlightMarkupAndCSS(t *testing.T) {
 	t.Parallel()
 

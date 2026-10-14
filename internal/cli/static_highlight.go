@@ -3,9 +3,9 @@ package cli
 
 import (
 	"html"
-	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 func highlightCodeBlock(lang, code string) string {
@@ -362,19 +362,178 @@ func highlightYAMLScalar(s string) string {
 }
 
 func highlightMarkup(code string) string {
-	escaped := html.EscapeString(code)
-	escaped = regexp.MustCompile(`&lt;!--[\s\S]*?--&gt;`).ReplaceAllStringFunc(escaped, func(m string) string {
-		return wrapToken("tok-comment", html.UnescapeString(m))
-	})
-	escaped = regexp.MustCompile(`&lt;/?[A-Za-z0-9:_-]+`).ReplaceAllStringFunc(escaped, func(m string) string {
-		return wrapToken("tok-tag", html.UnescapeString(m))
-	})
-	escaped = regexp.MustCompile(`\s([A-Za-z_:][-A-Za-z0-9_:.]*)(=)`).ReplaceAllString(escaped, ` <span class="tok-attr">$1</span><span class="tok-punct">$2</span>`)
-	escaped = regexp.MustCompile(`"[^"]*"`).ReplaceAllStringFunc(escaped, func(m string) string {
-		return wrapToken("tok-string", html.UnescapeString(m))
-	})
-	escaped = strings.ReplaceAll(escaped, "&gt;", wrapToken("tok-tag", ">"))
-	return escaped
+	// Scan only the source, never the spans we emit. Escaping happens once,
+	// after token boundaries are known, so entities and whitespace stay intact.
+	var out strings.Builder
+	out.Grow(len(code))
+	for i := 0; i < len(code); {
+		if code[i] != '<' {
+			j := strings.IndexByte(code[i:], '<')
+			if j < 0 {
+				j = len(code) - i
+			}
+			writeMarkupText(&out, code[i:i+j])
+			i += j
+			continue
+		}
+		if strings.HasPrefix(code[i:], "<!--") {
+			j := strings.Index(code[i+4:], "-->")
+			if j < 0 {
+				j = len(code)
+			} else {
+				j += i + 7
+			}
+			writeMarkupToken(&out, "tok-comment", code[i:j])
+			i = j
+			continue
+		}
+		if strings.HasPrefix(code[i:], "<![CDATA[") {
+			writeMarkupToken(&out, "tok-tag", code[i:i+9])
+			i += 9
+			j := strings.Index(code[i:], "]]>")
+			if j < 0 {
+				writeMarkupText(&out, code[i:])
+				break
+			}
+			writeMarkupText(&out, code[i:i+j])
+			i += j
+			writeMarkupToken(&out, "tok-tag", code[i:i+3])
+			i += 3
+			continue
+		}
+		j := i + 1
+		if j < len(code) && (code[j] == '/' || code[j] == '?' || code[j] == '!') {
+			j++
+		}
+		end := markupNameEnd(code, j)
+		if end == j {
+			writeMarkupText(&out, code[i:i+1])
+			i++
+			continue
+		}
+		writeMarkupToken(&out, "tok-tag", code[i:end])
+		i = highlightMarkupAttributes(&out, code, end)
+	}
+	return out.String()
+}
+
+func highlightMarkupAttributes(out *strings.Builder, code string, i int) int {
+	value := false
+	for i < len(code) {
+		if code[i] == '>' || ((code[i] == '/' || code[i] == '?') && i+1 < len(code) && code[i+1] == '>') {
+			j := i + 1
+			if code[i] != '>' {
+				j++
+			}
+			writeMarkupToken(out, "tok-tag", code[i:j])
+			return j
+		}
+		if strings.ContainsRune(" \t\r\n\f", rune(code[i])) {
+			j := i + 1
+			for j < len(code) && strings.ContainsRune(" \t\r\n\f", rune(code[j])) {
+				j++
+			}
+			writeMarkupText(out, code[i:j])
+			i = j
+			continue
+		}
+		if code[i] == '"' || code[i] == '\'' {
+			quote := code[i]
+			j := i + 1
+			for j < len(code) {
+				if code[j] == '\\' && j+1 < len(code) {
+					j += 2
+					continue
+				}
+				if code[j] == quote {
+					j++
+					break
+				}
+				j++
+			}
+			writeMarkupToken(out, "tok-string", code[i:j])
+			i, value = j, false
+			continue
+		}
+		if code[i] == '=' {
+			writeMarkupToken(out, "tok-punct", code[i:i+1])
+			i++
+			value = true
+			continue
+		}
+		if value {
+			j := i
+			for j < len(code) && !strings.ContainsRune(" \t\r\n\f>", rune(code[j])) {
+				if (code[j] == '/' || code[j] == '?') && j+1 < len(code) && code[j+1] == '>' {
+					break
+				}
+				j++
+			}
+			writeMarkupToken(out, "tok-string", code[i:j])
+			i, value = j, false
+			continue
+		}
+		if j := markupNameEnd(code, i); j > i {
+			writeMarkupToken(out, "tok-attr", code[i:j])
+			i = j
+			continue
+		}
+		writeMarkupText(out, code[i:i+1])
+		i++
+	}
+	return i
+}
+
+func markupNameEnd(code string, i int) int {
+	j := i
+	for j < len(code) {
+		r, size := utf8.DecodeRuneInString(code[j:])
+		valid := r == '_' || r == ':' || unicode.IsLetter(r)
+		if j > i {
+			valid = valid || r == '-' || r == '.' || unicode.IsDigit(r) || unicode.IsMark(r)
+		}
+		if !valid {
+			break
+		}
+		j += size
+	}
+	return j
+}
+
+func writeMarkupToken(out *strings.Builder, className, text string) {
+	out.WriteString(`<span class="`)
+	out.WriteString(className)
+	out.WriteString(`">`)
+	writeMarkupText(out, text)
+	out.WriteString(`</span>`)
+}
+
+func writeMarkupText(out *strings.Builder, text string) {
+	start := 0
+	for i := 0; i < len(text); i++ {
+		var escaped string
+		switch text[i] {
+		case '&':
+			escaped = "&amp;"
+		case '<':
+			escaped = "&lt;"
+		case '>':
+			escaped = "&gt;"
+		case '"':
+			escaped = "&#34;"
+		case '\'':
+			escaped = "&#39;"
+		case '\r':
+			// Literal CR is normalized by HTML parsers, unlike a character reference.
+			escaped = "&#13;"
+		default:
+			continue
+		}
+		out.WriteString(text[start:i])
+		out.WriteString(escaped)
+		start = i + 1
+	}
+	out.WriteString(text[start:])
 }
 
 func highlightCSS(code string) string {

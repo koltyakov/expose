@@ -291,6 +291,15 @@ func (rt *clientSessionRuntime) writeJSON(msg tunnelproto.Message) error {
 	return rt.writer.WriteJSON(msg)
 }
 
+// writeJSONAsync is only for self-contained control messages. Shared message
+// dispatch must not wait behind a blocked tunnel writer or queue pooled bytes.
+func (rt *clientSessionRuntime) writeJSONAsync(msg tunnelproto.Message) error {
+	if rt.writer == nil {
+		return tunneltransport.ErrWritePumpClosed
+	}
+	return rt.writer.WriteJSONAsync(msg)
+}
+
 func (rt *clientSessionRuntime) writeBinary(frameKind byte, id string, wsMessageType int, payload []byte) error {
 	if rt.writer == nil {
 		return tunneltransport.ErrWritePumpClosed
@@ -479,7 +488,7 @@ func requestContext(parent context.Context, req *tunnelproto.HTTPRequest) (conte
 
 func (rt *clientSessionRuntime) handlePingPong(msg tunnelproto.Message) error {
 	if msg.Kind == tunnelproto.KindPing {
-		if err := rt.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && rt.ctx.Err() == nil {
+		if err := rt.writeJSONAsync(tunnelproto.Message{Kind: tunnelproto.KindPong}); err != nil && !errors.Is(err, tunneltransport.ErrWritePumpBackpressure) && rt.ctx.Err() == nil {
 			return err
 		}
 	}

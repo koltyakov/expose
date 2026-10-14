@@ -45,6 +45,35 @@ func BenchmarkEncodeBodySmall(b *testing.B) {
 	}
 }
 
+// BenchmarkWriteRequestMessage covers the control-frame hot path: one
+// json.Marshal metadata encode plus the binary frame write for a typical
+// forwarded request with a small inline body.
+func BenchmarkWriteRequestMessage(b *testing.B) {
+	msg := Message{
+		Kind: KindRequest,
+		Request: &HTTPRequest{
+			ID:     "req_1",
+			Method: "GET",
+			Path:   "/api/v1/items",
+			Query:  "page=2&sort=name",
+			Headers: map[string][]string{
+				"User-Agent": {"Mozilla/5.0"},
+				"Accept":     {"text/html"},
+				"Cookie":     {"sid=abc123"},
+			},
+			Body: []byte("hello"),
+		},
+	}
+	var buf bytes.Buffer
+	b.ReportAllocs()
+	for b.Loop() {
+		buf.Reset()
+		if err := WriteMessage(&buf, msg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkCompatibilityModeWSVsH3Stream(b *testing.B) {
 	payload := make([]byte, 32*1024)
 	for i := range payload {

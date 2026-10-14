@@ -210,7 +210,7 @@ func (rt *clientSessionRuntime) handleWSData(data *tunnelproto.WSData) {
 		// Like the server, drop a consumer that cannot keep up instead of
 		// blocking every other stream behind it.
 		rt.deleteWSConn(data.ID)
-		_ = rt.writeJSON(tunnelproto.Message{
+		_ = rt.writeJSONAsync(tunnelproto.Message{
 			Kind:    tunnelproto.KindWSClose,
 			WSClose: &tunnelproto.WSClose{ID: data.ID, Code: websocket.ClosePolicyViolation, Text: "stream consumer too slow"},
 		})

@@ -1,9 +1,14 @@
 package waf
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// Independent copy of the real legacy alternation, not built from the current
+// literal list or its fallback implementation.
+var legacyScannerPattern = regexp.MustCompile(`(?i)(?:sqlmap|nikto|nmap|masscan|dirbuster|gobuster|nuclei|zgrab|httpx-toolkit|nessus|openvas|acunetix|w3af|arachni|burpsuite|havij|commix|wpscan|whatweb|joomscan|ffuf|feroxbuster|subfinder|amass|fierce|wfuzz|jaeles|xray)`)
 
 // collectValuesForTest runs a collector against a generous budget and returns
 // the extracted fragments as plain strings.
@@ -125,15 +130,19 @@ func TestScannerUALiteralsMatchLegacyPattern(t *testing.T) {
 		"w3af.org", "Arachni/v1", "BurpSuite", "havij", "commix/v3", "WPScan v3",
 		"WhatWeb/0.5", "joomscan", "ffuf/1.3", "feroxbuster/2", "subfinder",
 		"amass", "fierce", "wfuzz/3", "jaeles", "xray",
+		"ſqlmap", "neſſuſ", "niKto", "ſubfinder", "burpſuite",
 		// Negatives, including near-misses.
 		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0",
 		"curl/8.4.0", "Go-http-client/2.0", "PostmanRuntime/7.36.0", "",
 		"my-app/1.0", "Xraylabs", "amassador",
 	}
+	for _, literal := range scanner.literals {
+		uas = append(uas, literal, strings.ToUpper(literal),
+			"agent/"+strings.NewReplacer("s", "ſ", "k", "K").Replace(literal)+"/1")
+	}
 
 	for _, ua := range uas {
-		want := strings.Contains(strings.ToLower(ua), "sqlmap") ||
-			containsAnyFoldSlow(ua, scanner.literals)
+		want := legacyScannerPattern.MatchString(ua)
 		got := scanner.matches(newScanInput(ua))
 		if got != want {
 			t.Errorf("UA %q: matches=%v, want %v", ua, got, want)

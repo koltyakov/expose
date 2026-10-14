@@ -211,6 +211,8 @@ func escapePathPreservingSlashes(path string) string {
 func newUpRouterTransport(routeCount int) *http.Transport {
 	base, _ := http.DefaultTransport.(*http.Transport)
 	tr := base.Clone()
+	// Forward the caller's coding negotiation and upstream representation unchanged.
+	tr.DisableCompression = true
 	maxPerHost := max(16, routeCount*8)
 	tr.MaxIdleConns = maxPerHost
 	tr.MaxIdleConnsPerHost = maxPerHost

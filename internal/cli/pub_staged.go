@@ -87,7 +87,7 @@ func (s *pubStagedWatch) command(ctx context.Context, args ...string) *exec.Cmd 
 func (s *pubStagedWatch) gitOutput(ctx context.Context, args ...string) ([]byte, error) {
 	var output, stderr bytes.Buffer
 	cmd := s.command(ctx, args...)
-	cmd.Stdout = &archiveLimitWriter{w: &output, remaining: publish.MaxManifestBytes, ctx: ctx}
+	cmd.Stdout = &contextWriter{w: &output, ctx: ctx}
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
@@ -139,9 +139,6 @@ func (s *pubStagedWatch) observe(ctx context.Context) error {
 
 // Build a fresh source from immutable blobs, never from working-tree contents.
 func (s *pubStagedWatch) replace(ctx context.Context, files map[string]pubGitFile) error {
-	if len(files) > publish.MaxFiles {
-		return fmt.Errorf("site exceeds publish limits")
-	}
 	if _, exists := files["index.html"]; !exists {
 		return fmt.Errorf("staged watch requires a root index.html in the Git index")
 	}
@@ -173,7 +170,6 @@ func (s *pubStagedWatch) replace(ctx context.Context, files map[string]pubGitFil
 }
 
 func (s *pubStagedWatch) materialize(ctx context.Context, folder string, files map[string]pubGitFile, names []string) error {
-	var total int64
 	changed := make([]string, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(folder, filepath.FromSlash(name))
@@ -185,10 +181,6 @@ func (s *pubStagedWatch) materialize(ctx context.Context, folder string, files m
 			old := filepath.Join(s.folder, filepath.FromSlash(name))
 			info, err := os.Stat(old)
 			if err == nil && info.Mode().IsRegular() && os.Link(old, path) == nil {
-				total += info.Size()
-				if total > publish.MaxExpandedBytes {
-					return fmt.Errorf("site exceeds publish limits")
-				}
 				continue
 			}
 		}
@@ -231,10 +223,9 @@ func (s *pubStagedWatch) materialize(ctx context.Context, folder string, files m
 			return fmt.Errorf("invalid staged blob: %s", name)
 		}
 		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil || size < 0 || size > publish.MaxExpandedBytes-total {
-			return fmt.Errorf("site exceeds publish limits")
+		if err != nil || size < 0 {
+			return fmt.Errorf("invalid staged blob size: %s", name)
 		}
-		total += size
 		path := filepath.Join(folder, filepath.FromSlash(name))
 		mode := os.FileMode(0600)
 		if files[name].mode == "100755" {

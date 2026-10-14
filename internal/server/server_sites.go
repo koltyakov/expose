@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -203,7 +204,11 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		return
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	r.Body = http.MaxBytesReader(w, r.Body, publish.MaxArchiveBytes)
+	// Site size is bounded by PublishMaxBytes, not transfer duration. Only
+	// authenticated, validated uploads bypass ordinary request deadlines.
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Time{})
+	_ = controller.SetWriteDeadline(time.Time{})
 	maxBytes := s.cfg.PublishMaxBytes
 	if maxBytes <= 0 {
 		maxBytes = config.DefaultPublishMaxBytes
@@ -215,9 +220,13 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		err = publish.ExtractWithLimit(r.Body, dir, maxBytes)
 	}
 	if err != nil {
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			http.Error(w, "site upload timed out; retry publishing", http.StatusRequestTimeout)
+			return
+		}
 		status := http.StatusBadRequest
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) || errors.Is(err, publish.ErrSiteTooLarge) {
+		if errors.Is(err, publish.ErrSiteTooLarge) {
 			status = http.StatusRequestEntityTooLarge
 		}
 		http.Error(w, "invalid site archive: "+err.Error(), status)

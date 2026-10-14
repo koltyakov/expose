@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -66,7 +67,7 @@ func TestArchiveDeltaWithIgnoredEmptyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
-	got, err := ExtractDeltaWithLimit(&archive, dest, MaxExpandedBytes)
+	got, err := ExtractDeltaWithLimit(&archive, dest, math.MaxInt64)
 	if err != nil || !reflect.DeepEqual(got, files) {
 		t.Fatalf("ignored placeholder appears in manifest: %+v, %v", got, err)
 	}
@@ -133,13 +134,14 @@ func TestFileTotalsUseMetadataAndPublicFilePolicy(t *testing.T) {
 	if err != nil || count != 3 || size != 10 {
 		t.Fatalf("wrong public file totals: %d, %d, %v", count, size, err)
 	}
-	// Counting an already-published site does not impose the CLI archive ceiling
-	// or read its contents. A sparse file keeps this test's disk usage small.
-	if err := os.Truncate(filepath.Join(root, "index.html"), MaxExpandedBytes+1); err != nil {
+	// Counting does not read file contents or impose a fixed size ceiling.
+	// A sparse file keeps this test's disk usage small.
+	const largeSize = 1 << 30
+	if err := os.Truncate(filepath.Join(root, "index.html"), largeSize+1); err != nil {
 		t.Fatal(err)
 	}
 	count, size, err = FileTotals(root)
-	if err != nil || count != 3 || size != MaxExpandedBytes+7 {
+	if err != nil || count != 3 || size != largeSize+7 {
 		t.Fatalf("wrong large-file metadata totals: %d, %d, %v", count, size, err)
 	}
 }
@@ -175,7 +177,7 @@ func TestIncrementalArchiveRoundTrip(t *testing.T) {
 	if progress.Files != 4 || progress.TotalFiles != 4 || progress.Bytes != progress.TotalBytes {
 		t.Fatalf("progress included unchanged files: %+v", progress)
 	}
-	manifest, err := ExtractDeltaWithLimit(bytes.NewReader(buf.Bytes()), dest, MaxExpandedBytes)
+	manifest, err := ExtractDeltaWithLimit(bytes.NewReader(buf.Bytes()), dest, math.MaxInt64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +186,7 @@ func TestIncrementalArchiveRoundTrip(t *testing.T) {
 			t.Fatalf("delta included %s: %v", name, err)
 		}
 	}
-	if err := CompleteDelta(base, dest, manifest, MaxExpandedBytes); err != nil {
+	if err := CompleteDelta(base, dest, manifest, math.MaxInt64); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Manifest(dest)
@@ -314,7 +316,7 @@ func TestIncrementalArchiveRejectsHostileManifests(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			data := hostileDelta(t, manifest, nil, nil)
-			if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), MaxExpandedBytes); err == nil {
+			if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), math.MaxInt64); err == nil {
 				t.Fatal("accepted hostile manifest")
 			}
 		})
@@ -343,18 +345,18 @@ func TestIncrementalArchiveRejectsHostileEntries(t *testing.T) {
 				contents = []string{"home", "home"}
 			}
 			data := hostileDelta(t, []domain.PublishedFile{index}, entries, contents)
-			if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), MaxExpandedBytes); err == nil {
+			if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), math.MaxInt64); err == nil {
 				t.Fatal("accepted hostile entry")
 			}
 		})
 	}
 	data := hostileDelta(t, []domain.PublishedFile{index}, []tar.Header{{Name: "index.html", Typeflag: tar.TypeReg, Size: 4}}, []string{"evil"})
-	if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), MaxExpandedBytes); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), math.MaxInt64); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("changed content checksum was not verified: %v", err)
 	}
 	data = hostileDelta(t, []domain.PublishedFile{index}, nil, nil)
 	data[len(data)-8] ^= 0xff
-	if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), MaxExpandedBytes); err == nil {
+	if _, err := ExtractDeltaWithLimit(bytes.NewReader(data), t.TempDir(), math.MaxInt64); err == nil {
 		t.Fatal("accepted corrupt gzip trailer")
 	}
 }
@@ -363,14 +365,14 @@ func TestCompleteDeltaRejectsMissingOrChangedBaseFiles(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "index.html", "home")
 	files := []domain.PublishedFile{manifestFile("index.html", "home")}
-	if err := CompleteDelta("", t.TempDir(), files, MaxExpandedBytes); err == nil {
+	if err := CompleteDelta("", t.TempDir(), files, math.MaxInt64); err == nil {
 		t.Fatal("initial upload accepted missing content")
 	}
 	writeFile(t, root, "index.html", "evil")
-	if err := CompleteDelta(root, t.TempDir(), files, MaxExpandedBytes); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if err := CompleteDelta(root, t.TempDir(), files, math.MaxInt64); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("reused content checksum was not verified: %v", err)
 	}
-	if err := CompleteDelta("", root, files, MaxExpandedBytes); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if err := CompleteDelta("", root, files, math.MaxInt64); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("changed content checksum was not verified: %v", err)
 	}
 }

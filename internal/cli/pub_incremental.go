@@ -67,12 +67,9 @@ func fetchPublishedFiles(ctx context.Context, client *http.Client, endpoint, key
 	if len(revision) < 2 || !strings.HasPrefix(revision, `"`) || !strings.HasSuffix(revision, `"`) {
 		return nil, "", fmt.Errorf("server did not provide an incremental publication revision; upgrade the server or use --full")
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, publish.MaxManifestBytes+1))
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", err
-	}
-	if len(data) > publish.MaxManifestBytes {
-		return nil, "", fmt.Errorf("published file manifest exceeds %d MiB", publish.MaxManifestBytes>>20)
 	}
 	var files []domain.PublishedFile
 	if err := json.Unmarshal(data, &files); err != nil {

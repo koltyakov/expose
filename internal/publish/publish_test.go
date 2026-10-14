@@ -154,7 +154,7 @@ func TestExtractRejectsHostileArchives(t *testing.T) {
 		{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"},
 		{Name: "link", Typeflag: tar.TypeLink, Linkname: "index.html"},
 		{Name: "pipe", Typeflag: tar.TypeFifo},
-		{Name: "huge", Typeflag: tar.TypeReg, Size: MaxExpandedBytes + 1},
+		{Name: "truncated", Typeflag: tar.TypeReg, Size: 1 << 40},
 	} {
 		t.Run(header.Name, func(t *testing.T) {
 			var buf bytes.Buffer

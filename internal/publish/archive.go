@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,11 +19,6 @@ import (
 
 	"github.com/koltyakov/expose/internal/domain"
 )
-
-// Allow 200 MiB sites even when compression adds archive overhead.
-const MaxArchiveBytes int64 = 256 << 20
-const MaxExpandedBytes int64 = 500 << 20
-const MaxFiles = 20000
 
 var ErrSiteTooLarge = errors.New("site exceeds maximum extracted size")
 
@@ -106,7 +102,7 @@ func openArchiveRoot(dir string) (*os.Root, error) {
 }
 
 func scanArchiveFiles(root *os.Root, warn func(string, error)) ([]string, int64, error) {
-	return scanPublicFiles(root, warn, MaxExpandedBytes)
+	return scanPublicFiles(root, warn, math.MaxInt64)
 }
 
 func scanPublicFiles(root *os.Root, warn func(string, error), maxBytes int64) ([]string, int64, error) {
@@ -138,11 +134,15 @@ func scanPublicFiles(root *os.Root, warn func(string, error), maxBytes int64) ([
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("publish only accepts regular files: %s", name)
 		}
+		limit := int64(math.MaxInt64)
+		if maxBytes > 0 {
+			limit = maxBytes
+		}
+		if info.Size() > limit-total {
+			return fmt.Errorf("%w (%d bytes)", ErrSiteTooLarge, limit)
+		}
 		total += info.Size()
 		names = append(names, name)
-		if (maxBytes > 0 && total > maxBytes) || len(names) > MaxFiles {
-			return fmt.Errorf("site exceeds publish limits")
-		}
 		return nil
 	})
 	if err != nil {
@@ -215,9 +215,6 @@ func archive(dir string, dst io.Writer, warn func(string, error), report func(Ar
 		if err != nil {
 			return err
 		}
-		if len(metadata) > MaxManifestBytes {
-			return fmt.Errorf("file manifest exceeds %d MiB", MaxManifestBytes>>20)
-		}
 		if err := tw.WriteHeader(&tar.Header{Name: deltaManifestName, Mode: 0600, Size: int64(len(metadata)), Typeflag: tar.TypeReg}); err != nil {
 			return err
 		}
@@ -229,7 +226,6 @@ func archive(dir string, dst io.Writer, warn func(string, error), report func(Ar
 	if report != nil {
 		contents = &archiveProgressWriter{w: tw, progress: &progress, report: report}
 	}
-	total = 0
 	for _, name := range names {
 		f, info, err := openRegularFile(root, name)
 		if err != nil {
@@ -238,11 +234,6 @@ func archive(dir string, dst io.Writer, warn func(string, error), report func(Ar
 		if manifest != nil && info.Size() != expected[name].Size {
 			_ = f.Close()
 			return fmt.Errorf("file changed during publish: %s", name)
-		}
-		total += info.Size()
-		if total > MaxExpandedBytes {
-			_ = f.Close()
-			return fmt.Errorf("site exceeds publish limits")
 		}
 		err = tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: info.Size(), ModTime: info.ModTime(), Typeflag: tar.TypeReg})
 		h := sha256.New()
@@ -284,9 +275,9 @@ func (w *archiveProgressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Extract accepts only bounded, regular-file archives. dir must be a new private directory.
+// Extract accepts only regular-file archives. dir must be a new private directory.
 func Extract(src io.Reader, dir string) error {
-	return ExtractWithLimit(src, dir, MaxExpandedBytes)
+	return ExtractWithLimit(src, dir, math.MaxInt64)
 }
 
 // ExtractWithLimit enforces a total extracted byte limit across all entries.
@@ -318,7 +309,7 @@ func extractArchive(src io.Reader, dir string, maxBytes int64, delta bool) ([]do
 		if err != nil {
 			return nil, fmt.Errorf("missing incremental manifest: %w", err)
 		}
-		if header.Name != deltaManifestName || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > MaxManifestBytes {
+		if header.Name != deltaManifestName || header.Typeflag != tar.TypeReg || header.Size < 0 {
 			return nil, fmt.Errorf("invalid incremental manifest header")
 		}
 		data, err := io.ReadAll(tr)
@@ -358,7 +349,6 @@ func extractArchive(src io.Reader, dir string, maxBytes int64, delta bool) ([]do
 
 func extractTar(tr *tar.Reader, dir string, maxBytes int64, expected map[string]domain.PublishedFile) error {
 	var total int64
-	count := 0
 	seen := make(map[string]bool)
 	for {
 		h, err := tr.Next()
@@ -379,9 +369,8 @@ func extractTar(tr *tar.Reader, dir string, maxBytes int64, expected map[string]
 			return fmt.Errorf("duplicate archive path: %s", name)
 		}
 		seen[name] = true
-		count++
-		if h.Size < 0 || count > MaxFiles {
-			return fmt.Errorf("site exceeds publish limits")
+		if h.Size < 0 {
+			return fmt.Errorf("invalid archive entry size: %s", name)
 		}
 		if h.Size > maxBytes-total {
 			return fmt.Errorf("%w (%d bytes)", ErrSiteTooLarge, maxBytes)

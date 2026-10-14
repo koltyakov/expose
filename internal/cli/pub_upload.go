@@ -131,11 +131,11 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 			progress.update(fmt.Sprintf("Archiving: %d / %d files, %s / %s", p.Files, p.TotalFiles, pubFormatBytes(float64(p.Bytes)), pubFormatBytes(float64(p.TotalBytes))))
 		}
 	}
-	limited := &archiveLimitWriter{w: archive, remaining: publish.MaxArchiveBytes, ctx: ctx}
+	output := &contextWriter{w: archive, ctx: ctx}
 	if opts.Full {
-		err = publish.ArchiveWithProgress(folder, limited, report)
+		err = publish.ArchiveWithProgress(folder, output, report)
 	} else {
-		err = publish.ArchiveDeltaWithIgnoredEmptyFiles(folder, limited, result.Files, remote, ignoredEmpty, report)
+		err = publish.ArchiveDeltaWithIgnoredEmptyFiles(folder, output, result.Files, remote, ignoredEmpty, report)
 	}
 	if err != nil {
 		return result, err
@@ -170,7 +170,11 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 		progress.start(fmt.Sprintf("Uploading %s to %s...", pubFormatBytes(float64(archiveSize)), opts.Server))
 		req.Body = io.NopCloser(&pubUploadReader{r: archive, progress: progress, total: archiveSize})
 	}
-	resp, err := client.Do(req)
+	// Keep management request timeouts, but let upload duration depend on the
+	// caller's context rather than archive size or connection speed.
+	uploadClient := *client
+	uploadClient.Timeout = 0
+	resp, err := uploadClient.Do(req)
 	if err != nil {
 		return result, err
 	}

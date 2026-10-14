@@ -18,7 +18,6 @@ import (
 	"github.com/koltyakov/expose/internal/client"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
-	"github.com/koltyakov/expose/internal/publish"
 	"github.com/koltyakov/expose/internal/serviceapi"
 	"golang.org/x/term"
 )
@@ -303,20 +302,14 @@ func publishedFolderSite(ctx context.Context, client *http.Client, endpoint, key
 	return match, nil
 }
 
-type archiveLimitWriter struct {
-	w         io.Writer
-	remaining int64
-	ctx       context.Context
+type contextWriter struct {
+	w   io.Writer
+	ctx context.Context
 }
 
-func (w *archiveLimitWriter) Write(p []byte) (int, error) {
+func (w *contextWriter) Write(p []byte) (int, error) {
 	if w.ctx != nil && w.ctx.Err() != nil {
 		return 0, w.ctx.Err()
 	}
-	if int64(len(p)) > w.remaining {
-		return 0, fmt.Errorf("compressed archive exceeds %d MiB", publish.MaxArchiveBytes>>20)
-	}
-	n, err := w.w.Write(p)
-	w.remaining -= int64(n)
-	return n, err
+	return w.w.Write(p)
 }

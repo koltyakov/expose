@@ -195,7 +195,9 @@ The server limits each site's total extracted file size to **10 MiB** by default
 expose server --publish-max-bytes=26214400
 ```
 
-This limit applies to the sum of all files, including on replacement uploads. Oversized sites receive HTTP `413`, their staging files are removed, and an existing publication stays intact. Compressed uploads are limited to 256 MiB and archives to 20,000 entries. Both the client and server must support this archive limit; older versions cap compressed uploads at 100 MiB. The 256 MiB cap leaves room for archive overhead when publishing 200 MiB of incompressible files. The CLI also has a 500 MiB extracted-size ceiling. Invalid archives never become routable. There is no upload-policy override for blocked files.
+This configured limit applies to the sum of all files, including reused files on incremental updates. Oversized sites receive HTTP `413`, their staging files are removed, and an existing publication stays intact. There are no separate compressed-size, file-count, or manifest-size caps. Invalid archives never become routable. There is no upload-policy override for blocked files.
+
+Authenticated publishing uploads have no total transfer deadline in the client or server. The CLI spools the compressed archive to a temporary file, then streams it over HTTP; the server streams decompression and extraction to a staging directory. File contents are not buffered in memory. Transfer duration and archive size do not impose additional limits beyond the configured total extracted size. Ctrl+C cancels an upload. Reverse proxies may impose their own limits.
 
 ## Server storage
 
@@ -221,6 +223,6 @@ Metadata contains the internal storage `id`, `hostname`, `created_at`, the `ws` 
 
 File listings return a JSON array of `{ "path": "index.html", "checksum": "<64 lowercase SHA-256 hex characters>", "size": 123 }` entries. If no publication matches under the authenticated key, the response is an empty array with `ETag: "new"`. File listings are not cached. A `domain` selector takes precedence over `source_id` when both are provided.
 
-An incremental tar archive starts with a regular `.expose-manifest.json` entry containing the complete target file array, bounded to 8 MiB and 20,000 files. Remaining entries contain only new or changed regular files. Paths omitted from the target manifest are deletions. The control entry is validated as metadata and never written into the published site. Missing `If-Match` returns `428`; a changed revision returns `412`. Other archive guards and site-size limits still apply.
+An incremental tar archive starts with a regular `.expose-manifest.json` entry containing the complete target file array. Remaining entries contain only new or changed regular files. Paths omitted from the target manifest are deletions. The control entry is validated as metadata and never written into the published site. Missing `If-Match` returns `428`; a changed revision returns `412`. Path guards and the configured site-size limit still apply.
 
 Watch updates also send `site_id` to pin the original publication. If the selected publication no longer has that identity, the upload is rejected with `404` before committing any changes.

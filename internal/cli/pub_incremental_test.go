@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -120,7 +121,7 @@ func TestPubIncrementalCLI(t *testing.T) {
 					t.Error("missing delta archive metadata")
 				}
 				dest := t.TempDir()
-				files, err := publish.ExtractDeltaWithLimit(r.Body, dest, publish.MaxExpandedBytes)
+				files, err := publish.ExtractDeltaWithLimit(r.Body, dest, math.MaxInt64)
 				if err != nil {
 					t.Error(err)
 					http.Error(w, "invalid delta", 400)
@@ -144,7 +145,7 @@ func TestPubIncrementalCLI(t *testing.T) {
 				if tc.initial {
 					baseDir = ""
 				}
-				if err := publish.CompleteDelta(baseDir, dest, files, publish.MaxExpandedBytes); err != nil {
+				if err := publish.CompleteDelta(baseDir, dest, files, math.MaxInt64); err != nil {
 					t.Error(err)
 					http.Error(w, "invalid merged site", 400)
 					return
@@ -224,7 +225,6 @@ func TestPubIncrementalRejectsInvalidRemoteManifest(t *testing.T) {
 		{"bad JSON", `"snapshot"`, "broken", "invalid published file manifest", 200},
 		{"unsafe path", `"snapshot"`, mustIncrementalJSON(t, []domain.PublishedFile{badFile}), "unsafe publish path", 200},
 		{"duplicate", `"snapshot"`, mustIncrementalJSON(t, append(files, files...)), "duplicate manifest path", 200},
-		{"oversized", `"snapshot"`, strings.Repeat(" ", publish.MaxManifestBytes+1), "manifest exceeds", 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			posts := 0

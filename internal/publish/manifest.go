@@ -5,13 +5,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 
 	"github.com/koltyakov/expose/internal/domain"
 )
 
-const MaxManifestBytes = 8 << 20
 const deltaManifestName = ".expose-manifest.json"
 
 // FileTotals counts public regular files and their uncompressed bytes without
@@ -73,7 +73,7 @@ func Manifest(dir string) ([]domain.PublishedFile, error) {
 			return nil, err
 		}
 		h := sha256.New()
-		n, err := io.Copy(h, io.LimitReader(f, MaxExpandedBytes+1))
+		n, err := io.Copy(h, f)
 		_ = f.Close()
 		if err != nil {
 			return nil, err
@@ -83,7 +83,7 @@ func Manifest(dir string) ([]domain.PublishedFile, error) {
 		}
 		files = append(files, domain.PublishedFile{Path: name, Checksum: hex.EncodeToString(h.Sum(nil)), Size: n})
 	}
-	if err := validateManifest(files, MaxExpandedBytes, true); err != nil {
+	if err := validateManifest(files, math.MaxInt64, true); err != nil {
 		return nil, err
 	}
 	return files, nil
@@ -114,8 +114,8 @@ func openRegularFile(root *os.Root, name string) (*os.File, os.FileInfo, error) 
 }
 
 func validateManifest(files []domain.PublishedFile, maxBytes int64, requireIndex bool) error {
-	if maxBytes <= 0 || len(files) > MaxFiles {
-		return fmt.Errorf("site exceeds publish limits")
+	if maxBytes <= 0 {
+		return fmt.Errorf("extracted size limit must be positive")
 	}
 	seen := make(map[string]bool, len(files))
 	var total int64
@@ -163,10 +163,10 @@ type FileDiff struct {
 // DiffFiles compares content, not timestamps. Missing local paths are deletions.
 func DiffFiles(local, remote []domain.PublishedFile) (FileDiff, error) {
 	var diff FileDiff
-	if err := validateManifest(local, MaxExpandedBytes, true); err != nil {
+	if err := validateManifest(local, math.MaxInt64, true); err != nil {
 		return diff, err
 	}
-	if err := validateManifest(remote, MaxExpandedBytes, false); err != nil {
+	if err := validateManifest(remote, math.MaxInt64, false); err != nil {
 		return diff, err
 	}
 	previous := make(map[string]domain.PublishedFile, len(remote))

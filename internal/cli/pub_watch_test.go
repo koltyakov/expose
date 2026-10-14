@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,7 +138,7 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 			return
 		}
 		dest := t.TempDir()
-		files, err := publish.ExtractDeltaWithLimit(r.Body, dest, publish.MaxExpandedBytes)
+		files, err := publish.ExtractDeltaWithLimit(r.Body, dest, math.MaxInt64)
 		if err != nil {
 			t.Error(err)
 			http.Error(w, "bad delta", 400)
@@ -159,7 +160,7 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 			http.Error(w, "stale revision", http.StatusPreconditionFailed)
 			return
 		}
-		if err := publish.CompleteDelta(h.dir, dest, files, publish.MaxExpandedBytes); err != nil {
+		if err := publish.CompleteDelta(h.dir, dest, files, math.MaxInt64); err != nil {
 			t.Error(err)
 			http.Error(w, "invalid merged site", 400)
 			return
@@ -845,13 +846,13 @@ func testPubWatchCLIInitialUploadAndJSON(t *testing.T, staged bool) {
 		case r.Method == http.MethodPost && r.URL.Path == "/_expose/v1/sites":
 			posts++
 			dest := t.TempDir()
-			files, err := publish.ExtractDeltaWithLimit(r.Body, dest, publish.MaxExpandedBytes)
+			files, err := publish.ExtractDeltaWithLimit(r.Body, dest, math.MaxInt64)
 			if err != nil {
 				t.Error(err)
 				http.Error(w, "bad initial delta", 400)
 				return
 			}
-			if err := publish.CompleteDelta("", dest, files, publish.MaxExpandedBytes); err != nil {
+			if err := publish.CompleteDelta("", dest, files, math.MaxInt64); err != nil {
 				t.Error(err)
 			}
 			if data, err := os.ReadFile(filepath.Join(dest, "index.html")); err != nil || string(data) != "home" {

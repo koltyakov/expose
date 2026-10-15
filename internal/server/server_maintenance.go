@@ -79,6 +79,9 @@ func (s *Server) runJanitor(ctx context.Context) {
 			return
 		case <-heartbeatTicker.C:
 			s.disconnectRevokedSessions(ctx)
+			// Revocation happens in another process; dropping cached site
+			// lookups rechecks it on each site's next request.
+			s.siteLookups.clear()
 			s.expireStaleSessions(ctx)
 		case <-cleanupTicker.C:
 			if err := s.cleanupPublishedSites(ctx); err != nil {

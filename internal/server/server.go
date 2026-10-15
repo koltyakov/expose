@@ -110,6 +110,7 @@ type Server struct {
 	sitesMu          sync.RWMutex
 	siteRoots        *publish.RootCache // closed under sitesMu before deleting a publication
 	siteHosts        sync.Map
+	siteLookups      siteLookupCache
 	siteStats        sync.Map // publication ID -> *siteStats
 	disconnects      chan string
 	disconnectMu     sync.Mutex

@@ -303,6 +303,7 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		return
 	}
 	s.siteHosts.Store(site.Hostname, site)
+	s.siteLookups.invalidate(site.Hostname)
 	if !site.WS {
 		s.closeSitePresence(site.ID)
 	}
@@ -415,7 +416,7 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		return false
 	}
 	s.sitesMu.RLock()
-	site, err := st.FindPublishedSite(r.Context(), host)
+	site, err := s.lookupPublishedSite(r.Context(), st, host)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.sitesMu.RUnlock()
 		return false
@@ -479,6 +480,7 @@ func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.Publi
 		return err
 	}
 	s.siteHosts.Delete(site.Hostname)
+	s.siteLookups.invalidate(site.Hostname)
 	s.closeSitePresence(site.ID)
 	s.siteStats.Delete(site.ID)
 	return nil

@@ -55,3 +55,30 @@ func TestPubProgressFailureEndsTerminalLine(t *testing.T) {
 		t.Fatalf("unexpected failure output: %q", out.String())
 	}
 }
+
+func TestPubProgressUploadNotifications(t *testing.T) {
+	var percentages []int
+	p := &pubProgress{out: io.Discard, notifyUpload: func(percent int) {
+		percentages = append(percentages, percent)
+	}}
+	p.start("Uploading...")
+	p.upload(0, 200)
+	r := &pubUploadReader{r: strings.NewReader(strings.Repeat("x", 200)), progress: p, total: 200}
+	for {
+		if _, err := r.Read(make([]byte, 1)); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.finish("Uploaded")
+	p.upload(50, 200)
+	if len(percentages) != 101 {
+		t.Fatalf("expected one notification per percentage, got %v", percentages)
+	}
+	for want, got := range percentages {
+		if got != want {
+			t.Fatalf("percentage %d = %d", want, got)
+		}
+	}
+}

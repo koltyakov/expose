@@ -168,6 +168,7 @@ func uploadPublishedSite(ctx context.Context, client *http.Client, opts pubUploa
 	uploadStarted := time.Now()
 	if progress != nil {
 		progress.start(fmt.Sprintf("Uploading %s to %s...", pubFormatBytes(float64(archiveSize)), opts.Server))
+		progress.upload(0, archiveSize)
 		req.Body = io.NopCloser(&pubUploadReader{r: archive, progress: progress, total: archiveSize})
 	}
 	// Keep management request timeouts, but let upload duration depend on the

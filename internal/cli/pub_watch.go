@@ -45,6 +45,7 @@ type pubWatchStatus struct {
 	Diff                      publish.FileDiff
 	Syncing                   bool
 	SyncFrame                 int
+	SyncPercent               int
 }
 
 var pubWatchSyncFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
@@ -77,6 +78,7 @@ type pubWatchUpdate struct {
 	snapshot  map[string]os.FileInfo
 	stats     domain.PublishedSiteStats
 	roundTrip time.Duration
+	percent   int
 	err       error
 }
 
@@ -192,6 +194,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 	startUpload := func(snapshot map[string]os.FileInfo) {
 		uploadBusy = true
 		status.Syncing, status.SyncFrame = true, 0
+		status.SyncPercent = -1
 		if display.interactive {
 			syncTicker = time.NewTicker(100 * time.Millisecond)
 			syncTicks = syncTicker.C
@@ -199,7 +202,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 		status.State = "Publishing local changes"
 		uploadOpts := opts
 		if !jsonOutput {
-			uploadOpts.Progress = &pubProgress{out: io.Discard, interactive: true, notify: func(text string) {
+			uploadOpts.Progress = &pubProgress{out: io.Discard, interactive: true, notifyUpload: func(percent int) {
+				send(pubWatchUpdate{kind: "sync", percent: percent})
+			}, notify: func(text string) {
 				// Progress can be dropped; completion events must be delivered.
 				select {
 				case events <- pubWatchUpdate{kind: "progress", message: text}:
@@ -304,6 +309,11 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				return nil
 			}
 			switch event.kind {
+			case "sync":
+				status.SyncPercent = event.percent
+				if err := redraw(); err != nil {
+					return err
+				}
 			case "progress":
 				text, _, _ := strings.Cut(event.message, "\n")
 				if text != pubChangeHeading {
@@ -320,6 +330,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			case "publish":
 				uploadBusy = false
 				status.Syncing = false
+				status.SyncPercent = -1
 				if syncTicker != nil {
 					syncTicker.Stop()
 					syncTicker, syncTicks = nil, nil

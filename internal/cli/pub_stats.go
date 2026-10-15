@@ -226,6 +226,9 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 		label := "Watch"
 		if watch.Syncing {
 			label = "Sync " + string(pubWatchSyncFrames[watch.SyncFrame%len(pubWatchSyncFrames)])
+			if watch.SyncPercent >= 0 {
+				label += fmt.Sprintf(" %d%%", watch.SyncPercent)
+			}
 		}
 		part("", fmt.Sprintf("%-19s", label))
 		for i, change := range []struct {

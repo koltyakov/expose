@@ -699,16 +699,21 @@ func TestPubWatchDashboardSyncIndicator(t *testing.T) {
 	var output bytes.Buffer
 	watch := pubWatchStatus{Diff: publish.FileDiff{Updated: 2}}
 	display := pubStatsDisplay{out: &output, interactive: true, watch: &watch}
-	for frame := 0; frame < len(pubWatchSyncFrames); frame++ {
-		watch.Syncing, watch.SyncFrame = true, frame
-		output.Reset()
-		if err := display.render(domain.PublishedSiteStats{}, time.Millisecond); err != nil {
-			t.Fatal(err)
-		}
-		label := "Sync " + string(pubWatchSyncFrames[frame])
-		want := fmt.Sprintf("\n%-19sNew 0 (0.0 B) | Updated 2 (0.0 B)", label)
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("sync indicator shifted values: want %q in %q", want, output.String())
+	for _, percent := range []int{-1, 0, 1, 42, 99, 100} {
+		for frame := 0; frame < len(pubWatchSyncFrames); frame++ {
+			watch.Syncing, watch.SyncFrame, watch.SyncPercent = true, frame, percent
+			output.Reset()
+			if err := display.render(domain.PublishedSiteStats{}, time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+			label := "Sync " + string(pubWatchSyncFrames[frame])
+			if percent >= 0 {
+				label += fmt.Sprintf(" %d%%", percent)
+			}
+			want := fmt.Sprintf("\n%-19sNew 0 (0.0 B) | Updated 2 (0.0 B)", label)
+			if !strings.Contains(output.String(), want) {
+				t.Fatalf("sync indicator shifted values: want %q in %q", want, output.String())
+			}
 		}
 	}
 	watch.Syncing = false
@@ -725,6 +730,7 @@ func TestPubWatchAnimatesWhileUploadWaits(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	root := t.TempDir()
 	writeIncrementalCLIFile(t, root, "index.html", "v1")
+	writeIncrementalCLIFile(t, root, "deleted.txt", "old")
 	h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
 	release := make(chan struct{})
 	h.block = release
@@ -732,12 +738,17 @@ func TestPubWatchAnimatesWhileUploadWaits(t *testing.T) {
 	defer cancel()
 	frames := map[rune]bool{}
 	changed, released, restored := false, false, false
+	sawStart, sawComplete := false, false
 	var output pubWatchTestOutput
 	output.onText = func(text string) {
 		if strings.Contains(text, "\nWatch") {
 			if !changed {
 				changed = true
 				writeIncrementalCLIFile(t, root, "index.html", "v2")
+				writeIncrementalCLIFile(t, root, "new.txt", "new")
+				if err := os.Remove(filepath.Join(root, "deleted.txt")); err != nil {
+					t.Fatal(err)
+				}
 			} else if released {
 				restored = true
 				cancel()
@@ -748,10 +759,19 @@ func TestPubWatchAnimatesWhileUploadWaits(t *testing.T) {
 				continue
 			}
 			frames[[]rune(line)[5]] = true
+			fields := strings.Fields(line)
+			if fields[2] != "New" {
+				percent, err := strconv.Atoi(strings.TrimSuffix(fields[2], "%"))
+				if err != nil || !strings.HasSuffix(fields[2], "%") || percent < 0 || percent > 100 {
+					t.Errorf("incorrect upload percentage: %s", line)
+				}
+				sawStart = sawStart || fields[2] == "0%"
+				sawComplete = sawComplete || fields[2] == "100%"
+			}
 			h.mu.Lock()
 			active := h.active
 			h.mu.Unlock()
-			if len(frames) >= 3 && active > 0 && !released {
+			if len(frames) >= 3 && sawComplete && active > 0 && !released {
 				close(release)
 				released = true
 			}
@@ -762,8 +782,8 @@ func TestPubWatchAnimatesWhileUploadWaits(t *testing.T) {
 	if err := watchPublishedSite(ctx, client, opts, initial, snapshot, &output, true, false, timing); err != nil {
 		t.Fatal(err)
 	}
-	if len(frames) < 3 || !restored {
-		t.Fatalf("sync did not animate and return to Watch: frames=%d restored=%v", len(frames), restored)
+	if len(frames) < 3 || !sawStart || !sawComplete || !restored {
+		t.Fatalf("sync did not show upload percentage and return to Watch: frames=%d start=%v complete=%v restored=%v", len(frames), sawStart, sawComplete, restored)
 	}
 }
 

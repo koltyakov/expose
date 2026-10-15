@@ -11,18 +11,21 @@ import (
 // when output is redirected. Finish also suppresses late HTTP transport reads.
 // Progress output is best-effort and must not interrupt an upload.
 type pubProgress struct {
-	mu          sync.Mutex
-	out         io.Writer
-	interactive bool
-	lastUpdate  time.Time
-	active      bool
-	notify      func(string)
+	mu            sync.Mutex
+	out           io.Writer
+	interactive   bool
+	lastUpdate    time.Time
+	active        bool
+	notify        func(string)
+	notifyUpload  func(int)
+	uploadPercent int
 }
 
 func (p *pubProgress) start(text string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.active = true
+	p.uploadPercent = -1
 	p.lastUpdate = time.Now()
 	if p.notify != nil {
 		p.notify(text)
@@ -75,10 +78,25 @@ type pubUploadReader struct {
 	total, sent int64
 }
 
+func (p *pubProgress) upload(sent, total int64) {
+	if total <= 0 {
+		return
+	}
+	percent := min(100, max(0, int(float64(sent)*100/float64(total))))
+	p.mu.Lock()
+	if p.active && p.notifyUpload != nil && percent != p.uploadPercent {
+		p.uploadPercent = percent
+		p.notifyUpload(percent)
+	}
+	p.mu.Unlock()
+	p.update(fmt.Sprintf("Uploading: %s / %s (%d%%)", pubFormatBytes(float64(sent)), pubFormatBytes(float64(total)), percent))
+}
+
 func (r *pubUploadReader) Read(buf []byte) (int, error) {
 	n, err := r.r.Read(buf)
 	r.sent += int64(n)
-	percent := float64(r.sent) / float64(r.total) * 100
-	r.progress.update(fmt.Sprintf("Uploading: %s / %s (%.0f%%)", pubFormatBytes(float64(r.sent)), pubFormatBytes(float64(r.total)), percent))
+	if n > 0 {
+		r.progress.upload(r.sent, r.total)
+	}
 	return n, err
 }

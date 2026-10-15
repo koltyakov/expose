@@ -62,16 +62,13 @@ func TestWebRTCSignalingBehindBypass(t *testing.T) {
 	front := httptest.NewTLSServer(srv.httpHandler())
 	t.Cleanup(front.Close)
 
-	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	allocationPort := socket.LocalAddr().(*net.UDPAddr).Port
-	_ = socket.Close()
+	// Pion closes allocations asynchronously, so successive transport checks
+	// can overlap. Let the allocator choose free loopback ports instead of
+	// requiring every transport to reuse a single probed port immediately.
 	relay, err := turnrelay.Start(config.TURNConfig{
 		Enabled: true, ListenUDP: "127.0.0.1:0", ListenTCP: "127.0.0.1:0", ListenTLS: "127.0.0.1:0",
 		Host: "127.0.0.1", PublicIP: "127.0.0.1", RelayAddress: "127.0.0.1", Realm: "example.com",
-		Secret: secret, MinPort: allocationPort, MaxPort: allocationPort,
+		Secret: secret, MinPort: 1024, MaxPort: 65535,
 		MaxAllocations: 8, MaxConnections: 8, CredentialTTL: time.Hour,
 	}, front.TLS, srv.log)
 	if err != nil {

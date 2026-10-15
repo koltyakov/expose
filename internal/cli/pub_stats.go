@@ -223,7 +223,11 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	newline()
 	watchRows := 0
 	if watch := d.watch; watch != nil {
-		part("", fmt.Sprintf("%-19s", "Watch"))
+		label := "Watch"
+		if watch.Syncing {
+			label = "Sync " + string(pubWatchSyncFrames[watch.SyncFrame%len(pubWatchSyncFrames)])
+		}
+		part("", fmt.Sprintf("%-19s", label))
 		for i, change := range []struct {
 			label string
 			count int

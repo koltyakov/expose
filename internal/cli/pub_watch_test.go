@@ -694,6 +694,79 @@ func TestPubWatchDashboardStyles(t *testing.T) {
 	}
 }
 
+func TestPubWatchDashboardSyncIndicator(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var output bytes.Buffer
+	watch := pubWatchStatus{Diff: publish.FileDiff{Updated: 2}}
+	display := pubStatsDisplay{out: &output, interactive: true, watch: &watch}
+	for frame := 0; frame < len(pubWatchSyncFrames); frame++ {
+		watch.Syncing, watch.SyncFrame = true, frame
+		output.Reset()
+		if err := display.render(domain.PublishedSiteStats{}, time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		label := "Sync " + string(pubWatchSyncFrames[frame])
+		want := fmt.Sprintf("\n%-19sNew 0 (0.0 B) | Updated 2 (0.0 B)", label)
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("sync indicator shifted values: want %q in %q", want, output.String())
+		}
+	}
+	watch.Syncing = false
+	output.Reset()
+	if err := display.render(domain.PublishedSiteStats{}, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), fmt.Sprintf("\n%-19sNew 0", "Watch")) || strings.Contains(output.String(), "\nSync") {
+		t.Fatalf("idle watch label not restored: %q", output.String())
+	}
+}
+
+func TestPubWatchAnimatesWhileUploadWaits(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	root := t.TempDir()
+	writeIncrementalCLIFile(t, root, "index.html", "v1")
+	h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
+	release := make(chan struct{})
+	h.block = release
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	frames := map[rune]bool{}
+	changed, released, restored := false, false, false
+	var output pubWatchTestOutput
+	output.onText = func(text string) {
+		if strings.Contains(text, "\nWatch") {
+			if !changed {
+				changed = true
+				writeIncrementalCLIFile(t, root, "index.html", "v2")
+			} else if released {
+				restored = true
+				cancel()
+			}
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.HasPrefix(line, "Sync ") {
+				continue
+			}
+			frames[[]rune(line)[5]] = true
+			h.mu.Lock()
+			active := h.active
+			h.mu.Unlock()
+			if len(frames) >= 3 && active > 0 && !released {
+				close(release)
+				released = true
+			}
+		}
+	}
+	timing := fastPubWatchTiming()
+	timing.Stats = time.Hour
+	if err := watchPublishedSite(ctx, client, opts, initial, snapshot, &output, true, false, timing); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) < 3 || !restored {
+		t.Fatalf("sync did not animate and return to Watch: frames=%d restored=%v", len(frames), restored)
+	}
+}
+
 func TestPubWatchDashboardOmitsStatus(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var output bytes.Buffer

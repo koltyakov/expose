@@ -43,7 +43,11 @@ type pubWatchStatus struct {
 	Folder, State, StatsError string
 	LastPublished             time.Time
 	Diff                      publish.FileDiff
+	Syncing                   bool
+	SyncFrame                 int
 }
+
+var pubWatchSyncFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 type pubWatchFileStats struct {
 	Files int   `json:"files"`
@@ -165,6 +169,13 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 	statsClient := *client
 	statsClient.Timeout = 10 * time.Second
 	statsBusy, uploadBusy := false, false
+	var syncTicker *time.Ticker
+	var syncTicks <-chan time.Time
+	defer func() {
+		if syncTicker != nil {
+			syncTicker.Stop()
+		}
+	}()
 	startStats := func() {
 		statsBusy = true
 		workers.Add(1)
@@ -180,6 +191,11 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 	}
 	startUpload := func(snapshot map[string]os.FileInfo) {
 		uploadBusy = true
+		status.Syncing, status.SyncFrame = true, 0
+		if display.interactive {
+			syncTicker = time.NewTicker(100 * time.Millisecond)
+			syncTicks = syncTicker.C
+		}
 		status.State = "Publishing local changes"
 		uploadOpts := opts
 		if !jsonOutput {
@@ -230,6 +246,11 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-syncTicks:
+			status.SyncFrame = (status.SyncFrame + 1) % len(pubWatchSyncFrames)
+			if err := redraw(); err != nil {
+				return err
+			}
 		case <-statsPoll.C:
 			if !statsBusy {
 				startStats()
@@ -298,6 +319,11 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				}
 			case "publish":
 				uploadBusy = false
+				status.Syncing = false
+				if syncTicker != nil {
+					syncTicker.Stop()
+					syncTicker, syncTicks = nil, nil
+				}
 				if event.err != nil {
 					var httpErr pubHTTPError
 					terminal := errors.As(event.err, &httpErr) && (httpErr.status == 401 || httpErr.status == 403 || httpErr.status == 404 || httpErr.status == 410)
@@ -316,6 +342,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 					}
 					nextRetry = time.Now().Add(retryDelay)
 					retryDelay = min(retryDelay*2, 10*time.Second)
+					if err := redraw(); err != nil {
+						return err
+					}
 					continue
 				}
 				// Use the pre-upload snapshot. A save during the upload must trigger

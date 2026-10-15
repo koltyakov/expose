@@ -134,6 +134,9 @@ type Display struct {
 	requests []requestEntry
 	// bounded latency samples for percentile metrics (recent requests)
 	latencySamples []time.Duration
+	// latencySorted holds the same samples in ascending order, so redraws
+	// read percentiles directly instead of sorting the window each time.
+	latencySorted []time.Duration
 
 	// active WebSocket streams
 	wsConns map[string]wsEntry
@@ -165,6 +168,7 @@ func NewDisplay(color bool) *Display {
 		visitors:            make(map[string]time.Time),
 		requests:            make([]requestEntry, 0, maxDisplayRequests),
 		latencySamples:      make([]time.Duration, 0, displayLatencySampleMax),
+		latencySorted:       make([]time.Duration, 0, displayLatencySampleMax+1),
 		nowFunc:             time.Now,
 		localHealth:         make(map[string]localHealthEntry),
 		localHealthChecking: make(map[string]struct{}),

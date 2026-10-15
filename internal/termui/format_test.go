@@ -1,6 +1,8 @@
 package termui
 
 import (
+	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 )
@@ -129,5 +131,46 @@ func TestDurationPercentile(t *testing.T) {
 
 	if got := DurationPercentile(nil, 50); got != 0 {
 		t.Fatalf("DurationPercentile(nil, 50) = %v, want 0", got)
+	}
+}
+
+func TestSortedDurationWindowMatchesSortedSamples(t *testing.T) {
+	t.Parallel()
+
+	const window = 64
+	rng := rand.New(rand.NewPCG(3, 4))
+	var samples, sorted []time.Duration
+	for i := range 5000 {
+		// A narrow value range forces many duplicates.
+		v := time.Duration(rng.IntN(40)) * time.Millisecond
+		samples = append(samples, v)
+		sorted = InsertSortedDuration(sorted, v)
+		if len(samples) > window {
+			sorted = RemoveSortedDuration(sorted, samples[0])
+			samples = samples[1:]
+		}
+
+		want := slices.Clone(samples)
+		slices.Sort(want)
+		if !slices.Equal(sorted, want) {
+			t.Fatalf("step %d: sorted window = %v, want %v", i, sorted, want)
+		}
+		got, gotOK := FormatSortedLatencyPercentiles(sorted, FormatDurationRounded)
+		ref, refOK := FormatLatencyPercentiles(samples, FormatDurationRounded)
+		if got != ref || gotOK != refOK {
+			t.Fatalf("step %d: percentiles = %#v, want %#v", i, got, ref)
+		}
+	}
+}
+
+func TestRemoveSortedDurationMissingValue(t *testing.T) {
+	t.Parallel()
+
+	sorted := []time.Duration{1, 3, 5}
+	if got := RemoveSortedDuration(sorted, 4); !slices.Equal(got, []time.Duration{1, 3, 5}) {
+		t.Fatalf("RemoveSortedDuration() = %v, want unchanged", got)
+	}
+	if _, ok := FormatSortedLatencyPercentiles(nil, FormatDurationRounded); ok {
+		t.Fatal("FormatSortedLatencyPercentiles(nil) ok = true, want false")
 	}
 }

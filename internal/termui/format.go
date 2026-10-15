@@ -74,6 +74,16 @@ func FormatLatencyPercentiles(samples []time.Duration, formatter func(time.Durat
 	}
 	sorted := append([]time.Duration(nil), samples...)
 	slices.Sort(sorted)
+	return FormatSortedLatencyPercentiles(sorted, formatter)
+}
+
+// FormatSortedLatencyPercentiles is FormatLatencyPercentiles for samples that
+// are already in ascending order, so callers that keep a sorted window avoid
+// copying and sorting it on every render.
+func FormatSortedLatencyPercentiles(sorted []time.Duration, formatter func(time.Duration) string) (LatencyPercentiles, bool) {
+	if len(sorted) == 0 {
+		return LatencyPercentiles{}, false
+	}
 	return LatencyPercentiles{
 		P50: formatter(DurationPercentile(sorted, 50)),
 		P90: formatter(DurationPercentile(sorted, 90)),
@@ -101,4 +111,19 @@ func DurationPercentile(sorted []time.Duration, p int) time.Duration {
 		idx = n
 	}
 	return sorted[idx-1]
+}
+
+// InsertSortedDuration inserts v into the ascending slice sorted.
+func InsertSortedDuration(sorted []time.Duration, v time.Duration) []time.Duration {
+	i, _ := slices.BinarySearch(sorted, v)
+	return slices.Insert(sorted, i, v)
+}
+
+// RemoveSortedDuration removes one occurrence of v from the ascending slice
+// sorted, if present.
+func RemoveSortedDuration(sorted []time.Duration, v time.Duration) []time.Duration {
+	if i, found := slices.BinarySearch(sorted, v); found {
+		return slices.Delete(sorted, i, i+1)
+	}
+	return sorted
 }

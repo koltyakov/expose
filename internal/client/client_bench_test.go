@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -186,4 +187,29 @@ func newBenchmarkForwardClient(b *testing.B, responseSize int) (*Client, *url.UR
 		MaxConcurrentForwards: 512,
 	}, nil)
 	return c, base
+}
+
+// BenchmarkDisplayLogRequest measures the per-request dashboard cost once the
+// latency window and request log are full, which is the steady state of a
+// busy tunnel.
+func BenchmarkDisplayLogRequest(b *testing.B) {
+	d := NewDisplay(true)
+	d.out = io.Discard
+	d.refreshInterval = 0
+	d.terminalColumnsFn = func() int { return 120 }
+	d.ShowTunnelInfo("https://bench.example.com", "http://127.0.0.1:3000", "wildcard", "t-bench", false, "ws")
+	headers := map[string][]string{
+		"X-Forwarded-For": {"203.0.113.10"},
+		"User-Agent":      {"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+	}
+	for i := range displayLatencySampleMax {
+		d.LogRequest("GET", "/assets/app.js", 200, time.Duration(i%97)*time.Millisecond, headers)
+	}
+
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		i++
+		d.LogRequest("GET", "/assets/app.js", 200, time.Duration(i%97)*time.Millisecond, headers)
+	}
 }

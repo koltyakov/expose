@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,11 @@ func TestUpDashboardRequestAndLatencyHelpers(t *testing.T) {
 	}
 	if d.latencySamples[0] < 0 {
 		t.Fatalf("latencySamples[0] = %v, want non-negative", d.latencySamples[0])
+	}
+	want := slices.Clone(d.latencySamples)
+	slices.Sort(want)
+	if !slices.Equal(d.latencySorted, want) {
+		t.Fatal("latencySorted does not match the sorted latency window")
 	}
 }
 

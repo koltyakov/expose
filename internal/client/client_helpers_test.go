@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -215,6 +216,11 @@ func TestAppendLatencySampleLocked(t *testing.T) {
 		if sample < 0 {
 			t.Fatalf("found negative sample %v", sample)
 		}
+	}
+	want := slices.Clone(d.latencySamples)
+	slices.Sort(want)
+	if !slices.Equal(d.latencySorted, want) {
+		t.Fatal("latencySorted does not match the sorted latency window")
 	}
 }
 

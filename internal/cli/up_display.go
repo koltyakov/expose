@@ -61,6 +61,9 @@ type upDashboard struct {
 	events         []upDashboardEvent
 	reqs           []upDashboardRequest
 	latencySamples []time.Duration
+	// latencySorted holds the same samples in ascending order, so renders
+	// read percentiles directly instead of sorting the window each time.
+	latencySorted []time.Duration
 
 	serverVersions      map[string]string
 	tlsModes            map[string]string
@@ -443,8 +446,13 @@ func (d *upDashboard) appendLatencySampleLocked(v time.Duration) {
 		v = 0
 	}
 	d.latencySamples = append(d.latencySamples, v)
+	d.latencySorted = termui.InsertSortedDuration(d.latencySorted, v)
 	if len(d.latencySamples) > upLatencySampleMax {
-		copy(d.latencySamples, d.latencySamples[len(d.latencySamples)-upLatencySampleMax:])
+		drop := len(d.latencySamples) - upLatencySampleMax
+		for _, old := range d.latencySamples[:drop] {
+			d.latencySorted = termui.RemoveSortedDuration(d.latencySorted, old)
+		}
+		copy(d.latencySamples, d.latencySamples[drop:])
 		d.latencySamples = d.latencySamples[:upLatencySampleMax]
 	}
 }
@@ -657,7 +665,7 @@ func (d *upDashboard) redrawLocked() {
 			}
 		}
 	}
-	if p, ok := upLatencyPercentiles(d.latencySamples); ok {
+	if p, ok := upLatencyPercentiles(d.latencySorted); ok {
 		b.WriteString("\n")
 		b.WriteString("Latency")
 		pad := max(upDisplayFieldWidth-len("Latency"), 1)
@@ -1368,8 +1376,9 @@ type upLatencyPercentilesValues struct {
 	p99 string
 }
 
-func upLatencyPercentiles(samples []time.Duration) (upLatencyPercentilesValues, bool) {
-	values, ok := termui.FormatLatencyPercentiles(samples, dashboardFormatDurationRounded)
+// upLatencyPercentiles formats percentiles from samples in ascending order.
+func upLatencyPercentiles(sorted []time.Duration) (upLatencyPercentilesValues, bool) {
+	values, ok := termui.FormatSortedLatencyPercentiles(sorted, dashboardFormatDurationRounded)
 	if !ok {
 		return upLatencyPercentilesValues{}, false
 	}

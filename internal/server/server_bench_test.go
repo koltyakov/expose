@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -444,4 +446,53 @@ func runBenchmarkSessionReadLoop(sess *session) {
 			}
 		}
 	}
+}
+
+// BenchmarkBypassProxyParallel drives concurrent requests through a reserved
+// bypass route and reports how many upstream connections each request opened.
+func BenchmarkBypassProxyParallel(b *testing.B) {
+	payload := make([]byte, 8*1024)
+	var newConns atomic.Int64
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(payload)
+	}))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+
+	_, rawPort, err := net.SplitHostPort(upstream.Listener.Addr().String())
+	if err != nil {
+		b.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		b.Fatal(err)
+	}
+	srv := New(config.ServerConfig{
+		BaseDomain: "example.com",
+		Bypasses:   []config.ServerBypass{{Subdomain: "app", Port: port, DisableRateLimit: true}},
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "bench")
+
+	newConns.Store(0)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			r := httptest.NewRequest(http.MethodGet, "https://app.example.com/asset", nil)
+			r.RemoteAddr = "203.0.113.7:1234"
+			w := httptest.NewRecorder()
+			if !srv.serveBypass(w, r, "app.example.com") || w.Code != http.StatusOK || w.Body.Len() != len(payload) {
+				b.Errorf("bypass response: status=%d bytes=%d", w.Code, w.Body.Len())
+				return
+			}
+		}
+	})
+	b.StopTimer()
+	b.ReportMetric(float64(newConns.Load())/float64(b.N), "upstream-conns/op")
 }

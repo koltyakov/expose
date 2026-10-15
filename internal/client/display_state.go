@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/termui"
 	"github.com/koltyakov/expose/internal/traffic"
 )
 
@@ -335,8 +336,13 @@ func (d *Display) appendLatencySampleLocked(v time.Duration) {
 		v = 0
 	}
 	d.latencySamples = append(d.latencySamples, v)
+	d.latencySorted = termui.InsertSortedDuration(d.latencySorted, v)
 	if len(d.latencySamples) > displayLatencySampleMax {
-		copy(d.latencySamples, d.latencySamples[len(d.latencySamples)-displayLatencySampleMax:])
+		drop := len(d.latencySamples) - displayLatencySampleMax
+		for _, old := range d.latencySamples[:drop] {
+			d.latencySorted = termui.RemoveSortedDuration(d.latencySorted, old)
+		}
+		copy(d.latencySamples, d.latencySamples[drop:])
 		d.latencySamples = d.latencySamples[:displayLatencySampleMax]
 	}
 }

@@ -24,9 +24,13 @@ type Snapshot struct {
 }
 
 type Meter struct {
-	mu            sync.Mutex
-	window        time.Duration
+	mu     sync.Mutex
+	window time.Duration
+	// samples[head:] are the samples still inside the window. Expired samples
+	// are skipped by advancing head and compacted away in batches, so pruning
+	// stays amortized O(1) per recorded sample.
 	samples       []sample
+	head          int
 	inboundTotal  int64
 	outboundTotal int64
 	inboundRate   int64
@@ -97,21 +101,29 @@ func (m *Meter) SnapshotAt(now time.Time) Snapshot {
 }
 
 func (m *Meter) pruneLocked(now time.Time) {
-	if len(m.samples) == 0 {
+	if m.head == len(m.samples) {
 		return
 	}
 	cutoff := now.Add(-m.window)
-	drop := 0
-	for drop < len(m.samples) && m.samples[drop].at.Before(cutoff) {
-		m.inboundRate -= m.samples[drop].inbound
-		m.outboundRate -= m.samples[drop].outbound
-		drop++
+	head := m.head
+	for head < len(m.samples) && m.samples[head].at.Before(cutoff) {
+		m.inboundRate -= m.samples[head].inbound
+		m.outboundRate -= m.samples[head].outbound
+		head++
 	}
-	if drop == 0 {
+	if head == m.head {
 		return
 	}
-	copy(m.samples, m.samples[drop:])
-	m.samples = m.samples[:len(m.samples)-drop]
+	m.head = head
+	// Every body read records a sample, so shifting the whole window on each
+	// prune made a busy transfer cost O(window) per read under the lock.
+	// Compacting once a quarter of the live samples have expired copies each
+	// sample at most four times and keeps the slack below a quarter.
+	if expired, live := head, len(m.samples)-head; expired*4 >= live {
+		copy(m.samples, m.samples[head:])
+		m.samples = m.samples[:live]
+		m.head = 0
+	}
 }
 
 func CombineSnapshots(items ...Snapshot) Snapshot {

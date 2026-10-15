@@ -171,7 +171,7 @@ func (d *Display) redraw() {
 			)
 		}
 	}
-	if p, ok := displayLatencyPercentiles(d.latencySamples); ok {
+	if p, ok := displayLatencyPercentiles(d.latencySorted); ok {
 		b.WriteString("\n")
 		b.WriteString("Latency")
 		pad := max(displayFieldWidth-len("Latency"), 1)
@@ -464,8 +464,9 @@ type displayLatencyPercentilesValues struct {
 	p99 string
 }
 
-func displayLatencyPercentiles(samples []time.Duration) (displayLatencyPercentilesValues, bool) {
-	values, ok := termui.FormatLatencyPercentiles(samples, displayFormatDuration)
+// displayLatencyPercentiles formats percentiles from samples in ascending order.
+func displayLatencyPercentiles(sorted []time.Duration) (displayLatencyPercentilesValues, bool) {
+	values, ok := termui.FormatSortedLatencyPercentiles(sorted, displayFormatDuration)
 	if !ok {
 		return displayLatencyPercentilesValues{}, false
 	}

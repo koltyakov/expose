@@ -39,9 +39,14 @@ func TestBypassCompressionNegotiationTransport(t *testing.T) {
 			t.Fatal("bypass header/body timeout settings changed")
 		}
 		base := http.DefaultTransport.(*http.Transport)
-		if tr.MaxIdleConns != base.MaxIdleConns || tr.MaxIdleConnsPerHost != base.MaxIdleConnsPerHost ||
-			tr.MaxConnsPerHost != base.MaxConnsPerHost || tr.IdleConnTimeout != base.IdleConnTimeout {
+		if tr.MaxIdleConns != base.MaxIdleConns || tr.MaxConnsPerHost != base.MaxConnsPerHost ||
+			tr.IdleConnTimeout != base.IdleConnTimeout {
 			t.Fatal("bypass cloned connection reuse settings changed")
+		}
+		// The single local upstream may keep the whole idle pool; the default
+		// per-host cap of 2 forces a new connection per concurrent request.
+		if tr.MaxIdleConnsPerHost != tr.MaxIdleConns {
+			t.Fatalf("bypass MaxIdleConnsPerHost = %d, want %d", tr.MaxIdleConnsPerHost, tr.MaxIdleConns)
 		}
 	}
 }

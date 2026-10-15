@@ -30,6 +30,10 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 		// Forward the caller's coding negotiation and upstream representation unchanged.
 		transport.DisableCompression = true
 		transport.Proxy = nil // Local services must never go through HTTP_PROXY.
+		// Each transport dials a single local host. The default per-host idle
+		// cap of 2 closes every connection beyond it after use, so concurrent
+		// traffic redials per request and piles up TIME_WAIT sockets.
+		transport.MaxIdleConnsPerHost = transport.MaxIdleConns
 		transport.ResponseHeaderTimeout = durationOr(s.cfg.RequestTimeout, 30*time.Second)
 		proxy := &httputil.ReverseProxy{
 			Transport: bypassTransport{transport, transport.ResponseHeaderTimeout},

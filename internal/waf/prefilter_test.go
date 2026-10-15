@@ -9,8 +9,6 @@ import (
 	"regexp/syntax"
 	"strings"
 	"testing"
-	"unicode"
-	"unicode/utf8"
 )
 
 var sqlAlternativeWitnesses = []string{
@@ -23,7 +21,7 @@ var sqlAlternativeWitnesses = []string{
 }
 
 // One witness per branch of the XSS and shell-injection patterns, so both the
-// trigger groups and the anchored start-byte path see every alternative.
+// trigger groups and the shell-injection matcher see every alternative.
 var xssAlternativeWitnesses = []string{
 	"<script>", "< SCRIPT", "javascript:", "JavaScript :x", "<img src=x onerror=1>", "<a onfoo =x",
 	" onload=", `"onclick =`, "'onmouseover=", "/onerror=", "`onfocusin=",
@@ -147,89 +145,6 @@ func TestSQLTriggersCoverEveryAlternative(t *testing.T) {
 	}
 }
 
-// matchStartRunes returns every rune a match of expr can begin with. It fails
-// when that cannot be proven, such as for a leading assertion, an optional
-// prefix or a large character class.
-func matchStartRunes(expr *syntax.Regexp) ([]rune, bool) {
-	switch expr.Op {
-	case syntax.OpLiteral:
-		first := expr.Rune[0]
-		runes := []rune{first}
-		if expr.Flags&syntax.FoldCase != 0 {
-			for r := unicode.SimpleFold(first); r != first; r = unicode.SimpleFold(r) {
-				runes = append(runes, r)
-			}
-		}
-		return runes, true
-	case syntax.OpCharClass:
-		var runes []rune
-		for i := 0; i+1 < len(expr.Rune); i += 2 {
-			if expr.Rune[i+1]-expr.Rune[i] > 255 || len(runes) > 1024 {
-				return nil, false
-			}
-			for r := expr.Rune[i]; r <= expr.Rune[i+1]; r++ {
-				runes = append(runes, r)
-			}
-		}
-		return runes, len(runes) > 0
-	case syntax.OpCapture, syntax.OpPlus:
-		return matchStartRunes(expr.Sub[0])
-	case syntax.OpRepeat:
-		if expr.Min > 0 {
-			return matchStartRunes(expr.Sub[0])
-		}
-	case syntax.OpConcat:
-		if len(expr.Sub) > 0 {
-			return matchStartRunes(expr.Sub[0])
-		}
-	case syntax.OpAlternate:
-		var runes []rune
-		for _, sub := range expr.Sub {
-			part, ok := matchStartRunes(sub)
-			if !ok {
-				return nil, false
-			}
-			runes = append(runes, part...)
-		}
-		return runes, true
-	}
-	return nil, false
-}
-
-// TestRuleStartBytesAreSound proves that anchoring at start bytes cannot miss
-// a match: every rune a match can begin with, including case folds, must be
-// an ASCII byte in startBytes. A leading assertion would also make anchoring
-// unsound, because the anchored copy sees no preceding context.
-func TestRuleStartBytesAreSound(t *testing.T) {
-	t.Parallel()
-	proved := 0
-	for _, rl := range defaultRules() {
-		if rl.startBytes == "" {
-			if rl.anchored != nil || rl.startSet != nil {
-				t.Fatalf("rule %q has anchored matching without startBytes", rl.name)
-			}
-			continue
-		}
-		expr, err := syntax.Parse(rl.pattern.String(), syntax.Perl)
-		if err != nil {
-			t.Fatal(err)
-		}
-		runes, ok := matchStartRunes(expr)
-		if !ok {
-			t.Fatalf("cannot prove the start bytes of rule %q", rl.name)
-		}
-		for _, r := range runes {
-			if r >= utf8.RuneSelf || !strings.ContainsRune(rl.startBytes, r) {
-				t.Fatalf("rule %q can begin a match with %q, which startBytes %q omits", rl.name, r, rl.startBytes)
-			}
-		}
-		proved++
-	}
-	if proved == 0 {
-		t.Fatal("no rule uses startBytes")
-	}
-}
-
 // TestRuleTriggerGroupsCoverEveryAlternative proves, for every rule with
 // trigger groups, that each ASCII match contains all substrings of some group.
 func TestRuleTriggerGroupsCoverEveryAlternative(t *testing.T) {
@@ -259,7 +174,7 @@ func TestRuleTriggerGroupsCoverEveryAlternative(t *testing.T) {
 	}
 }
 
-func ruleByName(t *testing.T, rules []rule, name string) *rule {
+func ruleByName(t testing.TB, rules []rule, name string) *rule {
 	t.Helper()
 	for i := range rules {
 		if rules[i].name == name {
@@ -286,31 +201,97 @@ func TestXSSTriggerGroups(t *testing.T) {
 	}
 }
 
-func TestShellInjectionStartBytes(t *testing.T) {
+func TestShellInjectionMatcherWitnesses(t *testing.T) {
 	t.Parallel()
 	rl := ruleByName(t, defaultRules(), "shell-injection")
-	sparse := strings.Repeat("a", 32) + " "
-	dense := strings.Repeat(";", 16)
+	if rl.asciiMatcher == nil {
+		t.Fatal("shell-injection has no ASCII matcher")
+	}
+	check := func(raw string, want bool) {
+		t.Helper()
+		if got := rl.pattern.MatchString(raw); got != want {
+			t.Fatalf("regex on %q = %v, want %v", raw, got, want)
+		}
+		if got := rl.matches(newScanInput(raw)); got != want {
+			t.Errorf("matches(%q) = %v, want %v", raw, got, want)
+		}
+	}
 	for _, witness := range shellAlternativeWitnesses {
-		for _, variant := range []string{witness, sparse + witness, dense + witness, witness + dense} {
-			if !rl.pattern.MatchString(variant) || !rl.matches(newScanInput(variant)) {
-				t.Errorf("shell alternative witness not detected: %q", variant)
+		for _, variant := range []string{witness, strings.Repeat(";", 16) + witness, witness + strings.Repeat(" x;", 16), "sid=1; " + witness} {
+			check(variant, true)
+		}
+	}
+	// Each branch's edges: whitespace is \s without vertical tab, the command
+	// must end at a word boundary, pipe branches exclude substitution-only
+	// commands, and backticks need a closing backtick after the command.
+	for raw, want := range map[string]bool{
+		";\t\n\f\r cat": true, "; \vcat": false, ";cat-x": true, ";cat_x": false, ";cat9": false, ";catx": false,
+		"|sh": true, "|shx": false, "| ECHO hi": false, "; whoami": false, "|id": false,
+		"$(echo": true, "$ (echo": false, "$(\vid)": false, "$(": false, "$": false,
+		"`ls": false, "`ls`": true, "`ls\n\n`": true, "`lsx`": false, "``ls": false, "``ls`": true, "`ls ` `": true,
+		"x`id": false, "`id` and `": true,
+		benchChromeUA: false, strings.Repeat("sid=abc123; theme=dark; ", 16): false,
+	} {
+		check(raw, want)
+	}
+}
+
+// TestShellInjectionMatcherParity compares the hand-written matcher with the
+// rule's regexp on every sequence of up to three tokens drawn from the
+// pattern's own syntax, then on random longer sequences.
+func TestShellInjectionMatcherParity(t *testing.T) {
+	t.Parallel()
+	rl := ruleByName(t, defaultRules(), "shell-injection")
+	tokens := []string{";", "|", "$(", "$", "(", ")", "`", " ", "\t", "\n", "\f", "\r", "\v", "-", "/", ".", "_", "a", "1", "x"}
+	for _, command := range shellSubstitutionCommands {
+		tokens = append(tokens, command, strings.ToUpper(command), command[:len(command)-1], command+"x")
+	}
+	check := func(raw string) {
+		t.Helper()
+		folded := newScanInput(raw).folded
+		if got, want := matchShellInjection(folded), rl.pattern.MatchString(raw); got != want {
+			t.Fatalf("matcher on %q = %v, regex = %v", raw, got, want)
+		}
+	}
+	for _, a := range tokens {
+		check(a)
+		for _, b := range tokens {
+			check(a + b)
+			for _, c := range tokens {
+				check(a + b + c)
 			}
 		}
-		if _, ok := rl.matchAtStartBytes(sparse + witness); !ok {
-			t.Errorf("sparse witness %q did not take the anchored path", witness)
-		}
-		if _, ok := rl.matchAtStartBytes(dense + witness); ok {
-			t.Errorf("dense witness %q did not fall back to the unanchored pattern", witness)
-		}
 	}
-	// Browser values with a few semicolons are the case this optimizes.
-	for _, benign := range []string{benchChromeUA, strings.Repeat("sid=abc123; theme=dark; ", 16)} {
-		matched, ok := rl.matchAtStartBytes(benign)
-		if matched || !ok {
-			t.Errorf("benign value %q: matched=%v anchored=%v, want false, true", benign, matched, ok)
+	rng := rand.New(rand.NewPCG(11, 12))
+	for range 50_000 {
+		var b strings.Builder
+		for range 4 + rng.IntN(12) {
+			b.WriteString(tokens[rng.IntN(len(tokens))])
 		}
+		check(b.String())
 	}
+}
+
+// FuzzShellInjectionMatcherParity explores ASCII inputs for disagreements
+// between the hand-written matcher and the rule's regexp. Inputs are masked
+// to ASCII because only ASCII input reaches the matcher.
+func FuzzShellInjectionMatcherParity(f *testing.F) {
+	for _, witness := range shellAlternativeWitnesses {
+		f.Add(witness)
+	}
+	f.Add("sid=abc123; theme=dark; ` echo")
+	f.Add(benchChromeUA)
+	shell := ruleByName(f, defaultRules(), "shell-injection")
+	f.Fuzz(func(t *testing.T, raw string) {
+		ascii := []byte(raw)
+		for i := range ascii {
+			ascii[i] &= 0x7f
+		}
+		raw = string(ascii)
+		if got, want := matchShellInjection(newScanInput(raw).folded), shell.pattern.MatchString(raw); got != want {
+			t.Fatalf("matcher on %q = %v, regex = %v", raw, got, want)
+		}
+	})
 }
 
 // TestShellAndXSSFragmentParity compares the filtered matchers with their

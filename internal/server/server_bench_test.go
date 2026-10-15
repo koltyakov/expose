@@ -1,12 +1,16 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,8 +19,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/koltyakov/expose/internal/auth"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/publish"
+	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
 	"github.com/koltyakov/expose/internal/waf"
@@ -495,4 +502,69 @@ func BenchmarkBypassProxyParallel(b *testing.B) {
 	})
 	b.StopTimer()
 	b.ReportMetric(float64(newConns.Load())/float64(b.N), "upstream-conns/op")
+}
+
+// BenchmarkPublishedSiteGET serves server-hosted publication files through the
+// public handler: a small asset, the index, and an SPA route that falls back
+// to index.html after its candidate files miss.
+func BenchmarkPublishedSiteGET(b *testing.B) {
+	ctx := context.Background()
+	dir := b.TempDir()
+	dbPath := filepath.Join(dir, "sites.db")
+	st, err := sqlite.Open(dbPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if _, err := st.CreateAPIKey(ctx, "owner", auth.HashAPIKey("owner", "")); err != nil {
+		b.Fatal(err)
+	}
+	srv := New(config.ServerConfig{BaseDomain: "example.com", DBPath: dbPath}, st, slog.New(slog.NewTextHandler(io.Discard, nil)), "bench")
+	srv.authLimiter, srv.regLimiter = nil, nil
+	root := filepath.Join(dir, "src")
+	files := map[string]string{
+		"index.html":    "<html><body>" + strings.Repeat("x", 4096) + "</body></html>",
+		"assets/app.js": strings.Repeat("console.log(1);\n", 512),
+	}
+	for name, content := range files {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o700); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+			b.Fatal(err)
+		}
+	}
+	var archive bytes.Buffer
+	if err := publish.Archive(root, &archive); err != nil {
+		b.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/_expose/v1/sites?domain=bench", bytes.NewReader(archive.Bytes()))
+	r.Header.Set("Authorization", "Bearer owner")
+	w := httptest.NewRecorder()
+	srv.handleSites(w, r)
+	if w.Code != http.StatusCreated {
+		b.Fatalf("publish: %d %s", w.Code, w.Body.String())
+	}
+
+	for _, tc := range []struct{ name, path string }{
+		{"asset", "/assets/app.js"},
+		{"index", "/"},
+		{"spa-route", "/dashboard/settings"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					r := httptest.NewRequest(http.MethodGet, "https://bench.example.com"+tc.path, nil)
+					r.RemoteAddr = "192.0.2.1:5678"
+					w := httptest.NewRecorder()
+					srv.handlePublic(w, r)
+					if w.Code != http.StatusOK {
+						b.Errorf("GET %s: %d", tc.path, w.Code)
+						return
+					}
+				}
+			})
+		})
+	}
 }

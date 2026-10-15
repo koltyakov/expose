@@ -30,6 +30,10 @@ type siteStore interface {
 	DeletePublishedSite(context.Context, string, string) error
 }
 
+// siteRootCacheSize bounds the publication directories kept open for serving.
+// Requests for further sites open their directory per request.
+const siteRootCacheSize = 256
+
 func (s *Server) publishDir() string {
 	if s.cfg.PublishDir != "" {
 		return s.cfg.PublishDir
@@ -306,7 +310,9 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 	status := http.StatusCreated
 	if previous != nil {
 		status = http.StatusOK
-		if err := os.RemoveAll(filepath.Join(s.publishDir(), previous.StorageID())); err != nil && s.log != nil {
+		previousDir := filepath.Join(s.publishDir(), previous.StorageID())
+		s.siteRoots.Close(previousDir)
+		if err := os.RemoveAll(previousDir); err != nil && s.log != nil {
 			s.log.Warn("remove replaced site files", "site", site.ID, "err", err)
 		}
 	}
@@ -459,12 +465,14 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		return true
 	}
 	s.queueDomainTouch(site.ID)
-	publish.ServeWithOptions(w, r, filepath.Join(s.publishDir(), site.StorageID()), publish.ServeOptions{WS: site.WS})
+	publish.ServeWithOptions(w, r, filepath.Join(s.publishDir(), site.StorageID()), publish.ServeOptions{WS: site.WS, Roots: s.siteRoots})
 	return true
 }
 
 func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.PublishedSite) error {
-	if err := os.RemoveAll(filepath.Join(s.publishDir(), site.StorageID())); err != nil {
+	dir := filepath.Join(s.publishDir(), site.StorageID())
+	s.siteRoots.Close(dir)
+	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
 	if err := st.DeletePublishedSite(ctx, site.APIKeyID, site.ID); err != nil {
@@ -519,7 +527,9 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 		if time.Since(info.ModTime()) < 24*time.Hour {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(s.publishDir(), entry.Name())); err != nil {
+		dir := filepath.Join(s.publishDir(), entry.Name())
+		s.siteRoots.Close(dir)
+		if err := os.RemoveAll(dir); err != nil {
 			return err
 		}
 	}

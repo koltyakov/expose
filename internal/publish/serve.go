@@ -19,6 +19,8 @@ func Serve(w http.ResponseWriter, r *http.Request, dir string) {
 
 type ServeOptions struct {
 	WS bool
+	// Roots, when set, keeps publication directories open across requests.
+	Roots *RootCache
 }
 
 func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts ServeOptions) {
@@ -36,12 +38,14 @@ func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts S
 			return
 		}
 	}
-	root, err := os.OpenRoot(dir)
+	root, cached, err := opts.Roots.open(dir)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	defer func() { _ = root.Close() }()
+	if !cached {
+		defer func() { _ = root.Close() }()
+	}
 	candidates := []string{"index.html"}
 	if name != "" {
 		candidates = []string{name, name + ".html", name + "/index.html", "index.html"}

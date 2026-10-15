@@ -19,6 +19,7 @@ import (
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
+	"github.com/koltyakov/expose/internal/publish"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
@@ -107,6 +108,7 @@ type Server struct {
 	domainTouched    map[string]struct{}
 	routeLifecycleMu sync.Mutex
 	sitesMu          sync.RWMutex
+	siteRoots        *publish.RootCache // closed under sitesMu before deleting a publication
 	siteHosts        sync.Map
 	siteStats        sync.Map // publication ID -> *siteStats
 	disconnects      chan string
@@ -294,6 +296,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		disconnects:      make(chan string, disconnectQueueSize),
 		disconnectQ:      make(map[string]struct{}),
 		wafAuditQueue:    make(chan wafAuditEvent, wafAuditQueueSize),
+		siteRoots:        publish.NewRootCache(siteRootCacheSize),
 	}
 	s.initBypasses(store)
 	return s

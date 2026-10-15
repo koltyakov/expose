@@ -84,7 +84,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			if err := s.cleanupPublishedSites(ctx); err != nil {
 				s.log.Error("clean up published sites", "err", err)
 			}
-			s.cleanupStaleTemporaryResources(ctx)
+			s.cleanupStaleTunnelResources(ctx)
 			s.cleanupStaleWAFCounters()
 			s.cleanupStaleH3Sessions()
 			s.logDroppedQueueEvents()
@@ -180,10 +180,10 @@ func (s *Server) expireStaleSessions(ctx context.Context) {
 	}
 }
 
-func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
-	purgedDomains, err := s.store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-s.cfg.TempRetention), 100)
+func (s *Server) cleanupStaleTunnelResources(ctx context.Context) {
+	purgedDomains, err := s.store.PurgeInactiveTunnelDomains(ctx, time.Now().Add(-s.tunnelRetention()), 100)
 	if err != nil {
-		s.log.Error("temporary domain cleanup failed", "err", err)
+		s.log.Error("tunnel domain cleanup failed", "err", err)
 	} else if len(purgedDomains) > 0 {
 		// Unpublish each route, then prune every certificate in a single
 		// directory scan. The per-host helper does its own ReadDir, which made
@@ -204,7 +204,7 @@ func (s *Server) cleanupStaleTemporaryResources(ctx context.Context) {
 		if err != nil {
 			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
 		}
-		s.log.Info("stale temporary domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
+		s.log.Info("stale tunnel domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
 	}
 
 	now := time.Now().UTC()

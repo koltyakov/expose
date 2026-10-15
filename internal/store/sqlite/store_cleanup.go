@@ -8,11 +8,10 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
-const purgeInactiveTemporaryDomainsQuery = `
+const purgeInactiveTunnelDomainsQuery = `
 SELECT d.id, d.hostname
-FROM domains d
-WHERE d.type = 'temporary_subdomain'
-	AND d.status = 'inactive'
+FROM domains d INDEXED BY idx_domains_tunnel_last_seen
+WHERE d.type IN ('temporary_subdomain', 'permanent_subdomain')
 	AND d.last_seen_at < ?
 	AND NOT EXISTS (
 		SELECT 1
@@ -22,7 +21,10 @@ WHERE d.type = 'temporary_subdomain'
 ORDER BY d.last_seen_at ASC
 LIMIT ?`
 
-func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error) {
+// PurgeInactiveTunnelDomains releases unused temporary and named hostnames.
+// Domain activity includes registration, traffic, connection, and disconnection.
+// Connected tunnels are protected even if their last activity is old.
+func (s *Store) PurgeInactiveTunnelDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -35,7 +37,7 @@ func (s *Store) PurgeInactiveTemporaryDomains(ctx context.Context, olderThan tim
 		}
 		defer func() { _ = tx.Rollback() }()
 
-		rows, err := tx.QueryContext(ctx, purgeInactiveTemporaryDomainsQuery, olderThan.UTC(), limit)
+		rows, err := tx.QueryContext(ctx, purgeInactiveTunnelDomainsQuery, olderThan.UTC(), limit)
 		if err != nil {
 			return err
 		}

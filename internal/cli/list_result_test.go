@@ -41,6 +41,7 @@ func TestExposureListExpiry(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	entries := []domain.Exposure{
 		{Hostname: "app.example.com", Type: domain.ExposureTypeTunnel, Status: "connected"},
+		{Hostname: "offline.example.com", Type: domain.ExposureTypeTunnel, Status: "disconnected", ExpiresAt: &future},
 		{Hostname: "docs.example.com", Type: domain.ExposureTypeSite, Status: "active", ExpiresAt: &future},
 		{Hostname: "old.example.com", Type: domain.ExposureTypeSite, Status: "expired", ExpiresAt: &past},
 		{Hostname: "permanent.example.com", Type: domain.ExposureTypeSite, Status: "active"},
@@ -54,6 +55,7 @@ func TestExposureListExpiry(t *testing.T) {
 		want string
 	}{
 		{"app", "-"},
+		{"offline", "2d 1h"},
 		{"docs", "2d 1h"},
 		{"old", "Expired"},
 		{"permanent", "Never"},

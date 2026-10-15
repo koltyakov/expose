@@ -45,6 +45,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | random, persisted | Explicit pepper for API key hashing                         |
 | `--access-cookie-secret`  | `EXPOSE_ACCESS_COOKIE_SECRET`    | random, persisted | Secret used to sign protected-route access cookies          |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`               | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`                |
+| `--tunnel-retention`      | `EXPOSE_TUNNEL_RETENTION`        | `24h`         | Inactivity period before releasing offline tunnel hostnames |
 | `--public-http3`          | `EXPOSE_PUBLIC_HTTP3`            | `false`       | Advertise HTTP/3 to browsers with `Alt-Svc` (public UDP must use the same port as TCP) |
 | -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |
 | -                         | `EXPOSE_WAF_AUDIT_ONLY`          | `false`       | Evaluate WAF rules without blocking requests                   |
@@ -262,7 +263,7 @@ When a key with an active limit reaches its maximum concurrent tunnels, the serv
 The server runs a background janitor that automatically:
 
 - Expires stale WebSocket sessions
-- Cleans up temporary tunnel domains after a retention period
+- Releases temporary and named tunnel hostnames after 24 hours of inactivity by default. Set `--tunnel-retention` or `EXPOSE_TUNNEL_RETENTION` to a positive duration such as `168h` for seven days. Connected tunnels never expire from inactivity. Registration, public requests, connection, and disconnection renew activity. Cleanup runs every 10 minutes and removes the reservation, tunnel records, connect tokens, and cached certificates. Published sites keep their separate TTLs.
 - Purges old entries from the ACME certificate cache
 
 ## See Also

@@ -63,7 +63,7 @@ type serverStore interface {
 	routeResolver
 	tunnelLimiter
 	ResolveAPIKeyID(ctx context.Context, keyHash string) (string, error)
-	PurgeInactiveTemporaryDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error)
+	PurgeInactiveTunnelDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error)
 	PurgeStaleConnectTokens(ctx context.Context, now, usedOlderThan time.Time, limit int) (int64, error)
 	OperationalStats() sqlite.OperationalStats
 }

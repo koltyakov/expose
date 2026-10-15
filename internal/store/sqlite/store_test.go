@@ -762,7 +762,7 @@ func TestSetTunnelsDisconnectedBatch(t *testing.T) {
 	}
 }
 
-func TestPurgeInactiveTemporaryDomains(t *testing.T) {
+func TestPurgeInactiveTunnelDomains(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {
 		t.Fatal(err)
@@ -793,7 +793,7 @@ func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	purged, err := store.PurgeInactiveTemporaryDomains(ctx, time.Now().Add(-24*time.Hour), 10)
+	purged, err := store.PurgeInactiveTunnelDomains(ctx, time.Now().Add(-24*time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -806,7 +806,7 @@ func TestPurgeInactiveTemporaryDomains(t *testing.T) {
 	}
 }
 
-func TestPurgeInactiveTemporaryDomainsPreservesConnectedAndRecentlyActiveDomains(t *testing.T) {
+func TestPurgeInactiveTunnelDomainsPreservesConnectedAndRecentlyActiveDomains(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {
 		t.Fatal(err)
@@ -853,7 +853,7 @@ func TestPurgeInactiveTemporaryDomainsPreservesConnectedAndRecentlyActiveDomains
 		t.Fatal(err)
 	}
 
-	purged, err := store.PurgeInactiveTemporaryDomains(ctx, cutoff, 10)
+	purged, err := store.PurgeInactiveTunnelDomains(ctx, cutoff, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1306,6 +1306,14 @@ VALUES('legacy-domain', 'legacy-key', 'temporary_subdomain', 'legacy.example.com
 VALUES('legacy-tunnel', 'legacy-key', 'legacy-domain', 'disconnected', 1, ?, ?)`, connectedAt, disconnectedAt); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO domains(id, api_key_id, type, hostname, status, created_at, last_seen_at)
+VALUES('legacy-named', 'legacy-key', 'permanent_subdomain', 'named.example.com', 'active', ?, NULL)`, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tunnels(id, api_key_id, domain_id, state, is_temporary, connected_at, disconnected_at)
+VALUES('legacy-named-tunnel', 'legacy-key', 'legacy-named', 'disconnected', 0, ?, ?)`, connectedAt, disconnectedAt); err != nil {
+		t.Fatal(err)
+	}
 
 	store := &Store{db: db}
 	ctx := context.Background()
@@ -1342,7 +1350,7 @@ VALUES('legacy-tunnel', 'legacy-key', 'legacy-domain', 'disconnected', 1, ?, ?)`
 	if applied != len(schemaMigrations) {
 		t.Fatalf("expected %d recorded migrations, got %d", len(schemaMigrations), applied)
 	}
-	for _, name := range []string{"idx_domains_temp_inactive_last_seen", "trg_tunnels_update_domain_activity"} {
+	for _, name := range []string{"idx_domains_temp_inactive_last_seen", "idx_domains_tunnel_last_seen", "trg_tunnels_update_domain_activity"} {
 		var count int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE name = ?`, name).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -1357,6 +1365,12 @@ VALUES('legacy-tunnel', 'legacy-key', 'legacy-domain', 'disconnected', 1, ?, ?)`
 	}
 	if !backfilled.Equal(disconnectedAt) {
 		t.Fatalf("backfilled activity = %s, want %s", backfilled, disconnectedAt)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT last_seen_at FROM domains WHERE id = 'legacy-named'`).Scan(&backfilled); err != nil {
+		t.Fatal(err)
+	}
+	if !backfilled.Equal(disconnectedAt) {
+		t.Fatalf("named tunnel backfilled activity = %s, want %s", backfilled, disconnectedAt)
 	}
 }
 
@@ -1392,14 +1406,14 @@ func TestTunnelActivityTriggerNeverMovesBackward(t *testing.T) {
 	}
 }
 
-func TestPurgeInactiveTemporaryDomainsQueryUsesActivityIndex(t *testing.T) {
+func TestPurgeInactiveTunnelDomainsQueryUsesActivityIndex(t *testing.T) {
 	store, err := openTestStore(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
 
-	rows, err := store.db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+purgeInactiveTemporaryDomainsQuery, time.Now().UTC(), 100)
+	rows, err := store.db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+purgeInactiveTunnelDomainsQuery, time.Now().UTC(), 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1414,7 +1428,7 @@ func TestPurgeInactiveTemporaryDomainsQueryUsesActivityIndex(t *testing.T) {
 		details = append(details, detail)
 	}
 	plan := strings.Join(details, "\n")
-	if !strings.Contains(plan, "idx_domains_temp_inactive_last_seen") {
+	if !strings.Contains(plan, "idx_domains_tunnel_last_seen") {
 		t.Fatalf("cleanup query does not use activity index:\n%s", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE") {

@@ -65,7 +65,7 @@ type ServerConfig struct {
 	ClientPingTimeout      time.Duration
 	HeartbeatCheckInterval time.Duration
 	CleanupInterval        time.Duration
-	TempRetention          time.Duration
+	TunnelRetention        time.Duration
 	WAFEnabled             bool
 	WAFAuditOnly           bool
 	WAFBodyInspectLimit    int64
@@ -95,7 +95,9 @@ const defaultClientPingInterval = 30 * time.Second
 const defaultServerClientPingTimeout = 3 * time.Minute
 const defaultServerHeartbeatCheckInterval = 30 * time.Second
 const defaultServerCleanupInterval = 10 * time.Minute
-const defaultServerTempRetention = 24 * time.Hour
+
+// DefaultTunnelRetention is the reservation window for disconnected tunnels.
+const DefaultTunnelRetention = 24 * time.Hour
 const defaultServerHTTPSListen = ":10443"
 const defaultServerHTTPChallengeListen = ":10080"
 const defaultServerDBPath = "./expose.db"
@@ -238,7 +240,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		ClientPingTimeout:      defaultServerClientPingTimeout,
 		HeartbeatCheckInterval: defaultServerHeartbeatCheckInterval,
 		CleanupInterval:        defaultServerCleanupInterval,
-		TempRetention:          defaultServerTempRetention,
+		TunnelRetention:        envDuration("EXPOSE_TUNNEL_RETENTION", DefaultTunnelRetention, &envErrs),
 		WAFEnabled:             envBool("EXPOSE_WAF_ENABLE", true, &envErrs),
 		WAFAuditOnly:           envBool("EXPOSE_WAF_AUDIT_ONLY", false, &envErrs),
 		WAFBodyInspectLimit:    envInt64("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024, &envErrs),
@@ -277,6 +279,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.TLSCertFile, "tls-cert-file", cfg.TLSCertFile, "Static TLS cert PEM file (optional, DNS-01 wildcard)")
 	fs.StringVar(&cfg.TLSKeyFile, "tls-key-file", cfg.TLSKeyFile, "Static TLS key PEM file (optional, DNS-01 wildcard)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
+	fs.DurationVar(&cfg.TunnelRetention, "tunnel-retention", cfg.TunnelRetention, "Release offline tunnel hostnames after this inactivity period")
 	fs.BoolVar(&cfg.PublicHTTP3, "public-http3", cfg.PublicHTTP3, "Advertise HTTP/3 (Alt-Svc) to browsers; public UDP must use the same port as TCP")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
@@ -314,8 +317,8 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	if cfg.CleanupInterval <= 0 {
 		return cfg, errors.New("cleanup interval must be > 0")
 	}
-	if cfg.TempRetention <= 0 {
-		return cfg, errors.New("temp retention must be > 0")
+	if cfg.TunnelRetention <= 0 {
+		return cfg, errors.New("tunnel retention must be > 0")
 	}
 	if cfg.PublishMaxBytes <= 0 {
 		return cfg, errors.New("publish max bytes must be > 0")

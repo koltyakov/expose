@@ -215,7 +215,7 @@ func TestServerRunStartsAndShutsDown(t *testing.T) {
 		ClientPingTimeout:      time.Second,
 		HeartbeatCheckInterval: 100 * time.Millisecond,
 		CleanupInterval:        time.Minute,
-		TempRetention:          time.Hour,
+		TunnelRetention:        time.Hour,
 		RouteCacheTTL:          time.Minute,
 		WAFCounterRetention:    time.Hour,
 	}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")

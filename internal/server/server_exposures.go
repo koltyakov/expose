@@ -6,11 +6,16 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 )
 
 type exposureStore interface {
 	ListExposures(context.Context, string) ([]domain.Exposure, error)
+}
+
+func (s *Server) tunnelRetention() time.Duration {
+	return durationOr(s.cfg.TunnelRetention, config.DefaultTunnelRetention)
 }
 
 func (s *Server) handleExposures(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +61,10 @@ func (s *Server) handleExposures(w http.ResponseWriter, r *http.Request) {
 			(exposure.Type == domain.ExposureTypeSite && exposure.Status == "active")
 		if retention > 0 && !active && exposure.LastActiveAt.Before(cutoff) {
 			continue
+		}
+		if exposure.Type == domain.ExposureTypeTunnel && !active {
+			expires := exposure.LastActiveAt.Add(s.tunnelRetention())
+			exposure.ExpiresAt = &expires
 		}
 		host := exposure.Hostname
 		if port != "" && port != "443" {

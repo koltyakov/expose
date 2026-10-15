@@ -24,6 +24,35 @@ func TestNormalizeDomainHost(t *testing.T) {
 	}
 }
 
+func TestTunnelRetentionConfig(t *testing.T) {
+	t.Setenv("EXPOSE_TUNNEL_RETENTION", "")
+	cfg, err := ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.TunnelRetention != 24*time.Hour {
+		t.Fatalf("default retention: %s, %v", cfg.TunnelRetention, err)
+	}
+	t.Setenv("EXPOSE_TUNNEL_RETENTION", "168h")
+	cfg, err = ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.TunnelRetention != 168*time.Hour {
+		t.Fatalf("env retention: %s, %v", cfg.TunnelRetention, err)
+	}
+	cfg, err = ParseServerFlags([]string{"--domain=example.com", "--tunnel-retention=48h"})
+	if err != nil || cfg.TunnelRetention != 48*time.Hour {
+		t.Fatalf("flag retention: %s, %v", cfg.TunnelRetention, err)
+	}
+	for _, value := range []string{"0", "-1h", "invalid"} {
+		t.Setenv("EXPOSE_TUNNEL_RETENTION", value)
+		if _, err := ParseServerFlags([]string{"--domain=example.com"}); err == nil {
+			t.Fatalf("accepted invalid retention %q", value)
+		}
+	}
+	t.Setenv("EXPOSE_TUNNEL_RETENTION", "")
+	for _, value := range []string{"0", "-1h"} {
+		if _, err := ParseServerFlags([]string{"--domain=example.com", "--tunnel-retention=" + value}); err == nil {
+			t.Fatalf("accepted invalid retention flag %q", value)
+		}
+	}
+}
+
 func TestPublishSizeLimitConfig(t *testing.T) {
 	t.Setenv("EXPOSE_PUBLISH_MAX_BYTES", "")
 	cfg, err := ParseServerFlags([]string{"--domain=example.com"})

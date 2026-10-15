@@ -310,6 +310,35 @@ var schemaMigrations = []schemaMigration{
 	{version: 12, name: "published_site_ws", apply: func(ctx context.Context, tx *sql.Tx) error {
 		return ensureColumn(ctx, tx, "published_sites", "ws", `ALTER TABLE published_sites ADD COLUMN ws INTEGER NOT NULL DEFAULT 0`)
 	}},
+	{version: 13, name: "tunnel_domain_activity", apply: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+UPDATE domains AS d
+SET last_seen_at = MAX(
+	d.created_at,
+	COALESCE(d.last_seen_at, d.created_at),
+	COALESCE((SELECT MAX(t.connected_at) FROM tunnels t WHERE t.domain_id = d.id), d.created_at),
+	COALESCE((SELECT MAX(t.disconnected_at) FROM tunnels t WHERE t.domain_id = d.id), d.created_at)
+)
+WHERE d.type = 'permanent_subdomain';
+
+CREATE INDEX idx_domains_tunnel_last_seen ON domains(last_seen_at)
+WHERE type IN ('temporary_subdomain', 'permanent_subdomain');
+
+DROP TRIGGER trg_tunnels_update_domain_activity;
+CREATE TRIGGER trg_tunnels_update_domain_activity
+AFTER UPDATE OF state, connected_at, disconnected_at ON tunnels
+BEGIN
+	UPDATE domains
+	SET last_seen_at = MAX(
+		created_at,
+		COALESCE(last_seen_at, created_at),
+		COALESCE(NEW.connected_at, created_at),
+		COALESCE(NEW.disconnected_at, created_at)
+	)
+	WHERE id = NEW.domain_id;
+END;`)
+		return err
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {

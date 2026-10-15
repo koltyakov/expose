@@ -112,7 +112,7 @@ func (s *stubServerStore) TouchDomain(context.Context, string) error {
 	return nil
 }
 
-func (s *stubServerStore) PurgeInactiveTemporaryDomains(context.Context, time.Time, int) ([]domain.Domain, error) {
+func (s *stubServerStore) PurgeInactiveTunnelDomains(context.Context, time.Time, int) ([]domain.Domain, error) {
 	return nil, nil
 }
 

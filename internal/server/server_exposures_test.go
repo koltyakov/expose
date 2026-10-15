@@ -113,11 +113,17 @@ func TestExposureListing(t *testing.T) {
 	if got[0].ID != latest.ID || got[0].Status != "disconnected" || got[0].Temporary || got[0].URL != "https://app.example.com:10443" {
 		t.Fatalf("latest named registration: %+v", got[0])
 	}
+	if got[0].ExpiresAt == nil || !got[0].ExpiresAt.Equal(got[0].LastActiveAt.Add(config.DefaultTunnelRetention)) {
+		t.Fatalf("offline named tunnel must have an inactivity deadline: %+v", got[0])
+	}
 	if got[1].Type != domain.ExposureTypeSite || got[1].Status != "active" || got[1].ExpiresAt == nil || got[2].Status != "expired" {
 		t.Fatalf("published sites: %+v", got[1:3])
 	}
 	if got[3].ID != temporary.ID || got[3].Status != "connected" || !got[3].Temporary {
 		t.Fatalf("temporary tunnel: %+v", got[3])
+	}
+	if got[3].ExpiresAt != nil {
+		t.Fatalf("connected tunnel must not expire: %+v", got[3])
 	}
 	// A resumed older session takes precedence over a newer unconnected registration.
 	if err := st.SetTunnelConnected(ctx, old.ID); err != nil {
@@ -127,10 +133,14 @@ func TestExposureListing(t *testing.T) {
 	if got[0].ID != old.ID || got[0].Status != "connected" || got[0].URL != "https://app.example.com" {
 		t.Fatalf("resumed tunnel: %+v", got[0])
 	}
+	if got[0].ExpiresAt != nil {
+		t.Fatalf("reconnected tunnel must not expire: %+v", got[0])
+	}
 	if _, _, err := st.CloseTemporaryTunnel(ctx, temporary.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := list("example.com"); got[3].Status != "closed" {
+	srv.cfg.TunnelRetention = 7 * 24 * time.Hour
+	if got := list("example.com"); got[3].Status != "closed" || got[3].ExpiresAt == nil || !got[3].ExpiresAt.Equal(got[3].LastActiveAt.Add(srv.cfg.TunnelRetention)) {
 		t.Fatalf("closed tunnel reservation: %+v", got[3])
 	}
 	for _, key := range []string{"", "invalid"} {

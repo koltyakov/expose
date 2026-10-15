@@ -86,6 +86,7 @@ Environment Variables:
   EXPOSE_TRUSTED_PROXY_CIDRS      Comma-separated trusted proxy CIDRs; client IP is then resolved from X-Forwarded-For (default: empty)
   EXPOSE_ACME_ISSUE_RATE_PER_HOUR Max new ACME certificate issuances per hour (default: 10, 0 disables)
   EXPOSE_ROUTE_CACHE_TTL          Positive route cache TTL on the server (default: 1m)
+  EXPOSE_TUNNEL_RETENTION         Release offline tunnel hostnames after inactivity (default: 24h)
   EXPOSE_WAF_COUNTER_RETENTION    Retention window for in-memory WAF counters (default: 1h)
   EXPOSE_AUTOUPDATE       Enable automatic self-update (true|1|yes)
   EXPOSE_REQUIRE_SIGNATURE  Require cosign verification for self-updates (true|1|yes)

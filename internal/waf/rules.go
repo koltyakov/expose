@@ -110,8 +110,17 @@ type rule struct {
 	// triggerGroups is an optional stronger ASCII prefilter. At least one
 	// group must have all of its lowercase ASCII substrings present, in any
 	// order. This keeps standalone quotes in malformed JSON from forcing a
-	// whole-suffix regex scan when the accompanying SQL syntax cannot occur.
+	// whole-suffix regex scan when the accompanying SQL syntax cannot occur,
+	// and browser UA words such as "Version" from forcing the XSS regex.
+	// TestRuleTriggerGroupsCoverEveryAlternative proves each group list
+	// against the compiled pattern.
 	triggerGroups [][]string
+	// startBytes lists every byte a match of pattern can begin with. The
+	// engine otherwise retries the whole alternation at every offset, so for
+	// ASCII inputs where these bytes are sparse, an anchored copy of pattern
+	// runs at just those offsets. The outcome is identical either way;
+	// TestRuleStartBytesAreSound proves the list against the pattern.
+	startBytes string
 	// shortTriggerIndex buckets triggers by their first ASCII byte. For short
 	// JSON fragments this avoids probing every keyword separately. Long inputs
 	// retain the optimized strings.Contains path.
@@ -120,6 +129,9 @@ type rule struct {
 	// matching never allocates. Derived by defaultRules; never set by hand.
 	literalsFolded []string
 	triggersFolded []string
+	// startSet and anchored are derived from startBytes by defaultRules.
+	startSet *[256]bool
+	anchored *regexp.Regexp
 }
 
 // matches reports whether the rule matches in.
@@ -147,7 +159,39 @@ func (r *rule) matches(in scanInput) bool {
 	if len(r.triggerGroups) > 0 && in.asciiOnly && !containsTriggerGroup(in.folded, r.triggerGroups) {
 		return false
 	}
+	if r.anchored != nil && in.asciiOnly {
+		if matched, ok := r.matchAtStartBytes(in.raw); ok {
+			return matched
+		}
+	}
 	return r.pattern.MatchString(in.raw)
+}
+
+// anchoredStartMinGap is the average distance between start bytes below which
+// anchored matching stops paying off. Each anchored attempt has a fixed engine
+// cost, so densely packed start bytes are cheaper to scan in one unanchored
+// pass; measured break-even is a gap of 4 to 6 bytes.
+const anchoredStartMinGap = 8
+
+// matchAtStartBytes runs the anchored pattern at each offset holding a start
+// byte. It reports ok=false, leaving the caller to run the unanchored pattern,
+// when start bytes are too dense for that to be cheaper.
+func (r *rule) matchAtStartBytes(raw string) (matched, ok bool) {
+	starts := 0
+	for i := 0; i < len(raw); i++ {
+		if r.startSet[raw[i]] {
+			starts++
+			if starts*anchoredStartMinGap > len(raw) {
+				return false, false
+			}
+		}
+	}
+	for i := 0; i < len(raw); i++ {
+		if r.startSet[raw[i]] && r.anchored.MatchString(raw[i:]) {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // containsIndexedTrigger requires ASCII input. It is only called after the
@@ -195,6 +239,13 @@ func defaultRules() []rule {
 				index[trigger[0]] = append(index[trigger[0]], trigger)
 			}
 			rl.shortTriggerIndex = index
+		}
+		if rl.startBytes != "" {
+			rl.startSet = new([256]bool)
+			for i := 0; i < len(rl.startBytes); i++ {
+				rl.startSet[rl.startBytes[i]] = true
+			}
+			rl.anchored = regexp.MustCompile(`^(?:` + rl.pattern.String() + `)`)
 		}
 		if len(rl.literals) > 0 {
 			alternatives := make([]string, len(rl.literals))
@@ -261,7 +312,14 @@ func builtinRules() []rule {
 		{
 			name:     "xss",
 			triggers: []string{"<", "javascript", "on", "document", "alert", "confirm", "prompt", "eval"},
-			targets:  targetPath | targetQuery | targetHeaders | targetBody,
+			// Bare "on" occurs in ordinary words ("Version" in Safari's UA);
+			// the handler branch also needs '=', and the call and property
+			// branches need their punctuation.
+			triggerGroups: [][]string{
+				{"<"}, {"javascript", ":"}, {"on", "="}, {"document", "."},
+				{"alert", "("}, {"confirm", "("}, {"prompt", "("}, {"eval", "("},
+			},
+			targets: targetPath | targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`<\s*script` +
@@ -294,7 +352,10 @@ func builtinRules() []rule {
 		{
 			name:     "shell-injection",
 			triggers: []string{"$(", "`", "|", ";"},
-			targets:  targetQuery | targetHeaders | targetBody,
+			// ';' is in every cookie header and most browser UAs, and each
+			// branch starts with one of these bytes.
+			startBytes: "$`|;",
+			targets:    targetQuery | targetHeaders | targetBody,
 			// Substitution syntax ($(...), backticks) only counts when it
 			// wraps a known command: bare $( matches jQuery snippets and bare
 			// backtick pairs match Markdown code spans in ordinary content.

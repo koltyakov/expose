@@ -416,13 +416,20 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		return false
 	}
 	s.sitesMu.RLock()
+	locked := true
+	unlock := func() {
+		if locked {
+			locked = false
+			s.sitesMu.RUnlock()
+		}
+	}
+	defer unlock()
 	site, err := s.lookupPublishedSite(r.Context(), st, host)
 	if errors.Is(err, sql.ErrNoRows) {
-		s.sitesMu.RUnlock()
 		return false
 	}
 	if err != nil {
-		s.sitesMu.RUnlock()
+		unlock()
 		s.siteError(w, err)
 		return true
 	}
@@ -431,20 +438,20 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 	if site.WS && (r.URL.Path == publish.PresencePath || r.URL.Path == publish.PresenceScriptPath) {
 		route := domain.TunnelRoute{Domain: domain.Domain{Hostname: host}}
 		if !s.allowPublicRequest(route, r) {
-			s.sitesMu.RUnlock()
+			unlock()
 			w.Header().Set("Retry-After", "1")
 			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return true
 		}
 		run := s.prepareSitePresence(w, r, site)
-		s.sitesMu.RUnlock()
+		unlock()
 		if run != nil {
 			run()
 		}
 		return true
 	}
-	defer s.sitesMu.RUnlock()
+	stats := s.statsForSite(site.ID)
 	started := time.Now()
 	recorder := &siteStatsWriter{ResponseWriter: w}
 	w = recorder
@@ -453,20 +460,24 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		if status == 0 {
 			status = http.StatusOK
 		}
-		s.statsForSite(site.ID).record(domain.PublishedSiteRequest{
+		stats.record(domain.PublishedSiteRequest{
 			Time: started.UTC(), Method: r.Method, Path: r.URL.Path, Status: status,
 			DurationMS: float64(time.Since(started)) / float64(time.Millisecond), ResponseBytes: recorder.bytes,
 		}, s.clientIP(r), r.UserAgent())
 	}()
 	route := domain.TunnelRoute{Domain: domain.Domain{Hostname: host}}
 	if !s.allowPublicRequest(route, r) {
+		unlock()
 		w.Header().Set("Retry-After", "1")
 		w.Header().Set("Cache-Control", "no-store")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return true
 	}
 	s.queueDomainTouch(site.ID)
-	publish.ServeWithOptions(w, r, filepath.Join(s.publishDir(), site.StorageID()), publish.ServeOptions{WS: site.WS, Roots: s.siteRoots})
+	// Keep the directory stable only until its file is open. Holding sitesMu
+	// during network writes lets one stalled download block cleanup, which then
+	// prevents every new publication read from acquiring the shared lock.
+	publish.ServeWithOptions(w, r, filepath.Join(s.publishDir(), site.StorageID()), publish.ServeOptions{WS: site.WS, Roots: s.siteRoots, BeforeServe: unlock})
 	return true
 }
 

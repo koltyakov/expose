@@ -21,25 +21,37 @@ type ServeOptions struct {
 	WS bool
 	// Roots, when set, keeps publication directories open across requests.
 	Roots *RootCache
+	// BeforeServe runs once after file resolution, before writing any response.
+	// The selected file stays open, so the caller can release directory-lifetime
+	// locks without holding them while a slow client receives the response.
+	BeforeServe func()
 }
 
 func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts ServeOptions) {
+	ready := func() {
+		if opts.BeforeServe != nil {
+			opts.BeforeServe()
+		}
+	}
 	// Avoid heuristic caching of errors, including missing or blocked paths.
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
+		ready()
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	if name != "" {
 		if err := ValidatePath(name); err != nil {
+			ready()
 			http.NotFound(w, r)
 			return
 		}
 	}
 	root, cached, err := opts.Roots.open(dir)
 	if err != nil {
+		ready()
 		http.NotFound(w, r)
 		return
 	}
@@ -60,6 +72,7 @@ func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts S
 			_ = f.Close()
 			continue
 		}
+		defer func() { _ = f.Close() }()
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// Published URLs can be replaced or expire, so caches must revalidate.
 		// A publication-scoped validator avoids reading the entire file and
@@ -74,10 +87,11 @@ func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts S
 		etag := sha256.Sum256([]byte(validator))
 		w.Header().Set("ETag", fmt.Sprintf(`"%x"`, etag))
 		w.Header().Set("Cache-Control", "no-cache")
+		ready()
 		http.ServeContent(&publicationContentWriter{ResponseWriter: w}, r, candidate, info.ModTime(), content)
-		_ = f.Close()
 		return
 	}
+	ready()
 	http.NotFound(w, r)
 }
 

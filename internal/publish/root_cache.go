@@ -12,7 +12,8 @@ import (
 // per-request cost of serving a small published file.
 //
 // Callers must Close a directory before deleting it, once no request is
-// serving it. A nil *RootCache opens the directory for every request.
+// resolving files through it. Responses can keep streaming their already-open
+// files afterwards. A nil *RootCache opens the directory for every request.
 type RootCache struct {
 	roots sync.Map // directory -> *os.Root
 	count atomic.Int64

@@ -9,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/koltyakov/expose/internal/netutil"
 )
 
-// Serve resolves exact files, path.html, path/index.html, then the SPA root.
+// Serve resolves exact files, then HTML alternatives and the SPA root for page
+// requests only. Missing assets return 404 instead of the root HTML document.
 // dir must identify an immutable publication, with a new directory for each upload.
 func Serve(w http.ResponseWriter, r *http.Request, dir string) {
 	ServeWithOptions(w, r, dir, ServeOptions{})
@@ -62,17 +65,32 @@ func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts S
 	if name != "" {
 		candidates = []string{name, name + ".html", name + "/index.html", "index.html"}
 	}
-	for _, candidate := range candidates {
+	var pageFallback, directory bool
+	for i, candidate := range candidates {
+		if i == 1 {
+			// Inspect routing hints only after the exact file misses. A real
+			// directory may still serve its own index for any request headers.
+			pageFallback = netutil.AllowSPAFallback(r)
+		}
+		if i > 0 && !pageFallback && (i != 2 || !directory) {
+			continue
+		}
 		f, err := root.Open(candidate)
 		if err != nil {
 			continue
 		}
 		info, err := f.Stat()
 		if err != nil || !info.Mode().IsRegular() {
+			if i == 0 && err == nil {
+				directory = info.IsDir()
+			}
 			_ = f.Close()
 			continue
 		}
 		defer func() { _ = f.Close() }()
+		if name != "" && candidate != name {
+			w.Header().Add("Vary", "Accept, Sec-Fetch-Dest")
+		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// Published URLs can be replaced or expire, so caches must revalidate.
 		// A publication-scoped validator avoids reading the entire file and

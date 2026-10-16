@@ -150,6 +150,7 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 				w.Header().Set("X-Content-Type-Options", "nosniff")
 				w.Header().Set("X-Frame-Options", "DENY")
 				w.Header().Set("Cache-Control", "no-store")
+				w.Header().Set(serviceapi.ErrorHeader, "waf")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(forbiddenJSONBody)
 				return

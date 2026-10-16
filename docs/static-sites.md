@@ -114,6 +114,13 @@ With `--spa`, unresolved `GET` and `HEAD` requests fall back to the root `index.
 - a real file
 - a directory with its own directory index
 
+Fallback applies to extensionless paths and paths ending in `.html` or `.htm`.
+Missing assets such as `.png`, `.js`, `.css`, fonts, and audio return `404` with
+`Cache-Control: no-store`, not the HTML document. Requests that reject HTML in
+`Accept`, or identify a resource fetch through `Sec-Fetch-Dest`, do not use SPA
+fallback. Existing files and directory indexes continue to serve normally.
+Paths blocked by the static-file policy remain blocked, including with `--spa`.
+
 ## Markdown Rendering
 
 Requests for `.md` and `.markdown` files are rendered as HTML pages.

@@ -190,3 +190,20 @@ func TestPubStatsFileTotalsFormatting(t *testing.T) {
 		})
 	}
 }
+
+func TestPubStatsDisplayRejectionReason(t *testing.T) {
+	var out bytes.Buffer
+	display := pubStatsDisplay{out: &out}
+	stats := domain.PublishedSiteStats{
+		Site: domain.PublishedSite{Hostname: "docs.example.com"},
+		Requests: []domain.PublishedSiteRequest{
+			{Time: time.Now(), Method: "GET", Path: "/hero.png", Status: 429, RejectionReason: "rate-limit\x1b[2J"},
+		},
+	}
+	if err := display.render(stats, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "/hero.png [rate-limit") || strings.Contains(out.String(), "\x1b[2J") {
+		t.Fatalf("missing or unsafe rejection reason: %s", out.String())
+	}
+}

@@ -5,9 +5,74 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestServeMissingAssetsDoNotUseSPAFallback(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "index.html", "root app")
+	// Even HTML alternatives must not mask a missing asset.
+	writeFile(t, dir, "assets/missing.png.html", "not an image")
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, url := range []string{
+			"/assets/missing.png", "/assets/missing%2ePNG?v=1", "/app.js", "/style.css",
+			"/font.woff2", "/sound.mp3", "/manifest.webmanifest", "/app.js.map",
+			"/data.json", "/module.wasm", "/missing.custom", "/missing.png/",
+			"/.env", "/.git/config", "/assets/.git/config",
+		} {
+			t.Run(method+url, func(t *testing.T) {
+				r := httptest.NewRequest(method, url, nil)
+				r.Header.Set("Accept", "text/html,*/*")
+				r.Header.Set("If-None-Match", "*")
+				w := httptest.NewRecorder()
+				Serve(w, r, dir)
+				if w.Code != http.StatusNotFound || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("ETag") != "" {
+					t.Fatalf("missing asset: status=%d headers=%v body=%q", w.Code, w.Header(), w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestServeSPAFallbackUsesRequestHeaders(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "index.html", "root app")
+	writeFile(t, dir, "app.js", "script")
+	writeFile(t, dir, "docs.v1/index.html", "root app")
+	for _, tc := range []struct {
+		path, accept, dest string
+		status             int
+	}{
+		{"/dashboard", "", "", 200},
+		{"/dashboard", "text/html", "document", 200},
+		{"/dashboard.html", "text/html", "iframe", 200},
+		{"/dashboard", "text/html;q=0,*/*", "", 404},
+		{"/api", "application/json", "", 404},
+		{"/image", "*/*", "image", 404},
+		{"/script", "*/*", "script", 404},
+		{"/app.js", "application/json", "script", 200},
+		{"/docs.v1/", "*/*", "empty", 200},
+	} {
+		t.Run(tc.path+tc.accept+tc.dest, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			r.Header.Set("Accept", tc.accept)
+			r.Header.Set("Sec-Fetch-Dest", tc.dest)
+			w := httptest.NewRecorder()
+			readyCalls := 0
+			ServeWithOptions(w, r, dir, ServeOptions{BeforeServe: func() { readyCalls++ }})
+			if w.Code != tc.status || readyCalls != 1 {
+				t.Fatalf("response: status=%d ready calls=%d", w.Code, readyCalls)
+			}
+			if tc.status == 200 && tc.path != "/app.js" {
+				if w.Body.String() != "root app" || !strings.Contains(w.Header().Get("Vary"), "Accept, Sec-Fetch-Dest") {
+					t.Fatalf("fallback: body=%q headers=%v", w.Body.String(), w.Header())
+				}
+			}
+		})
+	}
+}
 
 func TestServeCacheRevalidation(t *testing.T) {
 	dir := t.TempDir()

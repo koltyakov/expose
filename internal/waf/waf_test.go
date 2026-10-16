@@ -10,7 +10,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/koltyakov/expose/internal/serviceapi"
 )
 
 var dummyHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -41,6 +44,9 @@ func assertBlocked(t *testing.T, handler http.Handler, r *http.Request) {
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("expected 403 Forbidden, got %d for %s %s", rr.Code, r.Method, r.URL.String())
 	}
+	if rr.Header().Get(serviceapi.ErrorHeader) != "waf" {
+		t.Errorf("expected WAF diagnostic header, got %v", rr.Header())
+	}
 }
 
 func assertAllowed(t *testing.T, handler http.Handler, r *http.Request) {
@@ -63,6 +69,25 @@ func TestHealthzExempt(t *testing.T) {
 	handler := newTestMiddleware(t)
 	r := httptest.NewRequest(http.MethodGet, "/_expose/healthz?x=<script>alert(1)</script>", nil)
 	assertAllowed(t, handler, r)
+}
+
+func TestAssetBurstDoesNotBypassWAF(t *testing.T) {
+	handler := newTestMiddleware(t)
+	assertAllowed(t, handler, httptest.NewRequest(http.MethodGet, "/index.html", nil))
+	var wg sync.WaitGroup
+	for i := range 64 {
+		wg.Go(func() {
+			r := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/assets/sprite%d.png", i), nil)
+			r.Header.Set("Referer", "https://app.example.com/index.html")
+			assertAllowed(t, handler, r)
+		})
+	}
+	wg.Wait()
+	for _, path := range []string{"/.env", "/.git/config", "/assets/.env", "/assets/.git/config", "/assets/sprite.png?q=<script>alert(1)</script>"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("Referer", "https://app.example.com/index.html")
+		assertBlocked(t, handler, r)
+	}
 }
 
 func TestSQLInjection(t *testing.T) {

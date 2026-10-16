@@ -17,6 +17,7 @@ import (
 	"time"
 
 	embedassets "github.com/koltyakov/expose/internal/assets"
+	"github.com/koltyakov/expose/internal/netutil"
 )
 
 const staticServerShutdownTimeout = 5 * time.Second
@@ -157,9 +158,10 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if serveStaticFallbackFavicon(w, r, cleanPath) {
 		return
 	}
-	if h.spa && staticSPAMethodAllowed(r.Method) && cleanPath != "/index.html" && h.serveSPAIndex(w, r) {
+	if h.spa && !h.fsys.policy.Blocked(cleanPath, true) && netutil.AllowSPAFallback(r) && cleanPath != "/index.html" && h.serveSPAIndex(w, r) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.NotFound(w, r)
 }
 
@@ -207,6 +209,7 @@ func (h *staticHandler) serveSPAIndex(w http.ResponseWriter, r *http.Request) bo
 		return false
 	}
 	defer func() { _ = file.Close() }()
+	w.Header().Add("Vary", "Accept, Sec-Fetch-Dest")
 	h.serveStaticOpenedFile(w, r, file, info)
 	return true
 }
@@ -236,10 +239,6 @@ func (h *staticHandler) open(name string) (http.File, os.FileInfo, bool) {
 		return nil, nil, false
 	}
 	return file, info, true
-}
-
-func staticSPAMethodAllowed(method string) bool {
-	return method == http.MethodGet || method == http.MethodHead
 }
 
 func staticNeedsDirRedirect(requestPath string) bool {

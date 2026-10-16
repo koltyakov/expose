@@ -62,6 +62,35 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_AUTOUPDATE`              | `false`       | Enable automatic self-update (`true`/`1`/`yes`)                |
 | -                         | `EXPOSE_REQUIRE_SIGNATURE`       | `false`       | Require cosign verification for self-updates                   |
 
+### Public request rejection diagnostics
+
+WAF inspection and public request rate limiting are independent. The WAF does
+not count asset requests or grant an exemption after a successful HTML request.
+Public rate limiting is disabled when `EXPOSE_PUBLIC_RATE_LIMIT_RPS=0`.
+When enabled, size `EXPOSE_PUBLIC_RATE_LIMIT_BURST` for the initial asset burst
+and for visitors sharing an IP. This does not change the sustained RPS limit.
+
+Expose-generated public admission failures include an `X-Expose-Error` header:
+
+| Value | Status | Meaning |
+| --- | --- | --- |
+| `waf` | `403` | A WAF rule matched the request |
+| `rate-limit` | `429` | The hostname/client-IP request bucket is exhausted |
+| `route-lookup-rate-limit` | `429` | Uncached route lookups from this client IP are throttled |
+| `concurrency-limit` | `503` | A tunnel or server-local route has reached its in-flight cap |
+| `backpressure` | `503` | The tunnel transport cannot accept the request |
+
+Rate, concurrency, and backpressure rejections send `Cache-Control: no-store`
+and `Retry-After: 1`. They produce structured `public request rejected` logs
+with the reason, status, hostname, method, path, and resolved client IP. Query
+strings, cookies, and authorization headers are omitted. Logs allow five initial
+entries per reason and then one per second, server-wide, to bound overload log
+volume. Every rejected request still receives its diagnostic response. Published
+site request history records rate-limit reasons without sampling.
+
+The diagnostic header is not an authentication signal. An upstream application
+can also return a header with that name.
+
 ## Server-local services
 
 Use bypass routes to expose services running on the same server without a tunnel client. Each route reserves a subdomain and proxies requests directly to an HTTP service on `127.0.0.1` at the configured port.

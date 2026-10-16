@@ -27,12 +27,13 @@ type PublishedSiteStats struct {
 }
 
 type PublishedSiteRequest struct {
-	Time          time.Time `json:"time"`
-	Method        string    `json:"method"`
-	Path          string    `json:"path"`
-	Status        int       `json:"status"`
-	DurationMS    float64   `json:"duration_ms"`
-	ResponseBytes int64     `json:"response_bytes"`
-	WAFRule       string    `json:"waf_rule,omitempty"`
-	AuditOnly     bool      `json:"audit_only,omitempty"`
+	Time            time.Time `json:"time"`
+	Method          string    `json:"method"`
+	Path            string    `json:"path"`
+	Status          int       `json:"status"`
+	DurationMS      float64   `json:"duration_ms"`
+	ResponseBytes   int64     `json:"response_bytes"`
+	WAFRule         string    `json:"waf_rule,omitempty"`
+	AuditOnly       bool      `json:"audit_only,omitempty"`
+	RejectionReason string    `json:"rejection_reason,omitempty"`
 }

@@ -15,6 +15,10 @@ HTTP/3 tunnel. When a request matches a rule it is immediately rejected with
 { "error": "Forbidden" }
 ```
 
+These responses include `X-Expose-Error: waf`. Rate-limit and concurrency
+rejections use different status codes and diagnostic values, described in
+[server configuration](server-configuration.md#public-request-rejection-diagnostics).
+
 The blocked request never reaches your local service.
 
 Blocked requests are logged server-side with the matched rule name, method,

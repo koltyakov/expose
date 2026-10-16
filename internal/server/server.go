@@ -127,6 +127,8 @@ type Server struct {
 	routeStoreLoads  atomic.Int64
 	connectionsTotal atomic.Int64
 	shutdownNanos    atomic.Int64
+
+	rejectionLogLimiter *rateLimiter
 }
 
 type wafAuditEvent struct {
@@ -298,6 +300,8 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		disconnectQ:      make(map[string]struct{}),
 		wafAuditQueue:    make(chan wafAuditEvent, wafAuditQueueSize),
 		siteRoots:        publish.NewRootCache(siteRootCacheSize),
+
+		rejectionLogLimiter: newConfiguredRateLimiter(1, 5, 0),
 	}
 	s.initBypasses(store)
 	return s

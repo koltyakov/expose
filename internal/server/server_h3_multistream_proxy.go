@@ -20,7 +20,7 @@ import (
 func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
 	reqID := s.nextRequestID()
 	if !sess.tryAcquirePending(maxPendingPerSessionFor(s.cfg)) {
-		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionConcurrency)
 		return
 	}
 	defer sess.releasePending()
@@ -63,7 +63,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else if errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
-			http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+			s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionBackpressure)
 		} else {
 			http.Error(w, "tunnel write failed", http.StatusBadGateway)
 		}
@@ -123,7 +123,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 		return
 	}
 	if !sess.tryAcquireWebSocket(maxPendingPerSessionFor(s.cfg)) {
-		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionConcurrency)
 		return
 	}
 	defer sess.releaseWebSocket()

@@ -17,7 +17,7 @@ import (
 // A client that stops reading must not pin the global publication lock. Once
 // cleanup queues for that lock, RWMutex also blocks every subsequent reader.
 func TestStalledSiteResponseDoesNotBlockPublications(t *testing.T) {
-	for _, path := range []string{"/", "/missing.js", "/.env"} {
+	for _, path := range []string{"/", "/client/route", "/missing.js", "/.env"} {
 		t.Run(path, func(t *testing.T) {
 			srv, _ := newIncrementalTestServer(t)
 			root := t.TempDir()
@@ -78,7 +78,11 @@ func TestStalledSiteResponseDoesNotBlockPublications(t *testing.T) {
 			}
 			release()
 			<-finished
-			if path != "/.env" && slow.Body.String() != original {
+			if path == "/missing.js" || path == "/.env" {
+				if slow.Code != http.StatusNotFound {
+					t.Fatalf("missing or blocked file returned %d", slow.Code)
+				}
+			} else if slow.Body.String() != original {
 				t.Fatal("republish interrupted the original file response")
 			}
 		})

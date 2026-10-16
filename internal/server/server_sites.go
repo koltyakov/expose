@@ -439,9 +439,7 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		route := domain.TunnelRoute{Domain: domain.Domain{Hostname: host}}
 		if !s.allowPublicRequest(route, r) {
 			unlock()
-			w.Header().Set("Retry-After", "1")
-			w.Header().Set("Cache-Control", "no-store")
-			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 			return true
 		}
 		run := s.prepareSitePresence(w, r, site)
@@ -463,14 +461,13 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 		stats.record(domain.PublishedSiteRequest{
 			Time: started.UTC(), Method: r.Method, Path: r.URL.Path, Status: status,
 			DurationMS: float64(time.Since(started)) / float64(time.Millisecond), ResponseBytes: recorder.bytes,
+			RejectionReason: recorder.rejectionReason,
 		}, s.clientIP(r), r.UserAgent())
 	}()
 	route := domain.TunnelRoute{Domain: domain.Domain{Hostname: host}}
 	if !s.allowPublicRequest(route, r) {
 		unlock()
-		w.Header().Set("Retry-After", "1")
-		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 		return true
 	}
 	s.queueDomainTouch(site.ID)

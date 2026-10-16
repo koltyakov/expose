@@ -167,7 +167,21 @@ The root path serves `index.html`. For a path such as `/docs/getting-started`, t
 
 Trailing slashes use the same fallback order. Exact assets keep their content type. `GET` and `HEAD` support conditional requests and byte ranges. Directory listings are disabled. Expose reserves `/_expose/v1` and its descendants and `/_expose/healthz` for service APIs. Sites can serve their own `/v1/*` and `/healthz` paths.
 
+HTML alternatives and SPA fallback apply only to extensionless paths and paths
+ending in `.html` or `.htm`, when the request permits HTML and does not identify
+a resource fetch through `Sec-Fetch-Dest`. Clients without these headers keep
+extensionless SPA routing. Missing assets such as `.png`, `.js`, `.css`, fonts,
+and audio return `404`, rather than `200` with an HTML body. Fallback responses
+include `Vary: Accept, Sec-Fetch-Dest` for cache correctness.
+Exact files and real directory indexes still serve regardless of these routing
+hints.
+
 Published sites use the server's existing WAF, HTTPS certificate handling, trusted-proxy settings, and optional per-host/client-IP public rate limits.
+
+Public rate-limit rejections return `429` with `X-Expose-Error: rate-limit` and
+`Retry-After: 1`. The owner-only request history includes `rejection_reason`,
+which the CLI displays beside the path. WAF rejections remain `403` and include
+`X-Expose-Error: waf`, with the matched rule in the owner-only history.
 
 ### HTTP caching
 

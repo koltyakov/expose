@@ -132,14 +132,12 @@ func (s *Server) serveBypass(w http.ResponseWriter, r *http.Request, host string
 		return false
 	}
 	if !route.DisableRateLimit && !s.publicLimiter.allow(publicRateLimitKey(host, s.clientIP(r))) {
-		w.Header().Set("Retry-After", "1")
-		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 		return true
 	}
 	if route.pending.Add(1) > maxPendingPerSessionFor(s.cfg) {
 		route.pending.Add(-1)
-		http.Error(w, "local service overloaded", http.StatusServiceUnavailable)
+		s.writePublicRejection(w, r, http.StatusServiceUnavailable, "local service overloaded", rejectionConcurrency)
 		return true
 	}
 	defer route.pending.Add(-1)

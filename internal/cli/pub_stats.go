@@ -325,6 +325,8 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 		path := config.SanitizeTerminalString(request.Path)
 		if request.WAFRule != "" {
 			path += fmt.Sprintf(" [WAF: %s]", config.SanitizeTerminalString(request.WAFRule))
+		} else if request.RejectionReason != "" {
+			path += fmt.Sprintf(" [%s]", config.SanitizeTerminalString(request.RejectionReason))
 		}
 		pathWidth := min(40, max(width-29-statusWidth, 8))
 		part(termui.Dim, request.Time.Local().Format("15:04:05")+"  ")

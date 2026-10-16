@@ -166,9 +166,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.allowPublicRouteLookup(host, r) {
-		w.Header().Set("Retry-After", "1")
-		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionLookupRateLimit)
 		return
 	}
 	if s.servePublishedSite(w, r, host) {
@@ -189,9 +187,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.allowPublicRequest(route, r) {
-		w.Header().Set("Retry-After", "1")
-		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 		return
 	}
 
@@ -221,7 +217,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	if !sess.tryAcquireWebSocket(maxPendingPerSessionFor(s.cfg)) {
-		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionConcurrency)
 		return
 	}
 	defer sess.releaseWebSocket()

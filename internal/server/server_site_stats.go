@@ -91,6 +91,7 @@ func (stats *siteStats) record(entry domain.PublishedSiteRequest, ip, userAgent 
 	entry.Path = boundedStatsText(entry.Path, 2048)
 	entry.Method = boundedStatsText(entry.Method, 32)
 	entry.WAFRule = boundedStatsText(entry.WAFRule, 128)
+	entry.RejectionReason = boundedStatsText(entry.RejectionReason, 64)
 	fingerprint := sha256.Sum256([]byte(ip + "\x00" + userAgent))
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
@@ -232,8 +233,9 @@ func (s *Server) recordSiteWAF(event waf.BlockEvent) {
 
 type siteStatsWriter struct {
 	http.ResponseWriter
-	status int
-	bytes  int64
+	status          int
+	bytes           int64
+	rejectionReason string
 }
 
 func (w *siteStatsWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

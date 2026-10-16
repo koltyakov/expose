@@ -202,7 +202,7 @@ func clientIPFromXFF(xff string, trusted []netip.Prefix) string {
 func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
 	reqID := s.nextRequestID()
 	if !sess.tryAcquirePending(maxPendingPerSessionFor(s.cfg)) {
-		http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+		s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionConcurrency)
 		return
 	}
 
@@ -221,7 +221,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		if isBodyTooLargeError(err) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else if errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
-			http.Error(w, "tunnel overloaded", http.StatusServiceUnavailable)
+			s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionBackpressure)
 		} else {
 			http.Error(w, "tunnel write failed", http.StatusBadGateway)
 		}

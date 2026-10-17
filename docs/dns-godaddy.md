@@ -53,8 +53,14 @@ dig +short test.example.com
 # → 203.0.113.10
 ```
 
+## Wildcard TLS certificates
+
+The `*` A record routes traffic; it does not issue a TLS certificate. For free
+Let's Encrypt issuance using GoDaddy's DNS API, automatic renewal, and an expose
+restart hook, see [Wildcard certificates with GoDaddy](wildcard-godaddy.md).
+
 ## Notes
 
-- GoDaddy wildcard records cover one level of subdomains only (`foo.example.com` ✓, `bar.foo.example.com` ✗) - this is expected.
+- A TLS certificate for `*.example.com` covers `foo.example.com`, not `bar.foo.example.com`. Include `example.com` separately to cover the base domain.
 - TTL of 600 seconds speeds up initial testing; increase to 3600 once stable.
 - If you use GoDaddy's "Forwarding" feature, disable it - it conflicts with A records.

@@ -37,7 +37,9 @@ Identical to `auto` but **ignores** static certificate files. Every host gets it
 
 ## wildcard
 
-Uses a pre-obtained wildcard certificate for `*.example.com` and `example.com`. No ACME at all.
+Uses a pre-obtained wildcard certificate for `*.example.com` and `example.com`.
+expose does not run its own ACME issuer in this mode. A separate ACME client can
+obtain and renew the certificate using DNS-01.
 
 ```mermaid
 flowchart LR
@@ -47,7 +49,13 @@ flowchart LR
 
 - **No** ACME challenge server needed (port 80 not required)
 - No per-host certificate delays
-- You must obtain and renew the wildcard cert yourself (e.g. via `certbot` DNS-01)
+- Obtain and renew the certificate with a separate client, such as certbot or acme.sh
+- Static certificates load at startup; restart expose after installing a renewed certificate
+
+For automated DNS-01 issuance and renewal with GoDaddy, see
+[Wildcard certificates with GoDaddy](wildcard-godaddy.md). It covers restricted
+credential storage, certificate permissions, a restart hook, verification
+checks, and rollback.
 
 ### Obtaining a wildcard cert with certbot
 
@@ -66,6 +74,11 @@ export EXPOSE_TLS_MODE=wildcard
 export EXPOSE_TLS_CERT_FILE=/etc/letsencrypt/live/example.com/fullchain.pem
 export EXPOSE_TLS_KEY_FILE=/etc/letsencrypt/live/example.com/privkey.pem
 ```
+
+The manual DNS command above does not provide unattended renewal unless you
+configure authentication hooks. At renewal, repeat the DNS verification or use
+an automated DNS provider integration. Ensure the expose service account can
+read the certificate and key, then restart expose to load them.
 
 ## Security Notice
 

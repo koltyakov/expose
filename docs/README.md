@@ -13,6 +13,7 @@ Focused guides covering one topic each. Start with [Quick Start](quick-start.md)
 - [Client Configuration](client-configuration.md) - All client flags, credentials, and tunnel types
 - [expose up](expose-up.md) - Multi-route project config (`expose.yml`)
 - [TLS Modes](tls-modes.md) - Auto vs dynamic vs wildcard TLS
+- [Wildcard certificates with GoDaddy](wildcard-godaddy.md) - Automated DNS-01 issuance, renewal, and service configuration
 - [API Keys](api-keys.md) - Create, list, revoke keys and pepper management
 
 ## Features

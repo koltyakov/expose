@@ -28,7 +28,7 @@ func TestForwardCompressionNegotiationTransport(t *testing.T) {
 		t.Fatal("cloned proxy, dial and TLS defaults must remain configured")
 	}
 	if tr.MaxIdleConns != 100 || tr.MaxIdleConnsPerHost != 100 || tr.MaxConnsPerHost != 7 ||
-		tr.IdleConnTimeout != 90*time.Second || tr.ResponseHeaderTimeout != 2*time.Minute {
+		tr.IdleConnTimeout != 90*time.Second || tr.ResponseHeaderTimeout != 0 {
 		t.Fatal("connection reuse, concurrency or timeout settings changed")
 	}
 	if c.apiClient.Timeout != 3*time.Second || c.fwdClient.Timeout != 0 {

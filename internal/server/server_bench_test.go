@@ -50,6 +50,27 @@ func BenchmarkRouteCacheGetHit(b *testing.B) {
 	}
 }
 
+func BenchmarkRouteCacheFullFreshChurn(b *testing.B) {
+	for _, capacity := range []int{100, 10_000, 100_000} {
+		b.Run(strconv.Itoa(capacity), func(b *testing.B) {
+			cache := routeCache{
+				entries:       make(map[string]routeCacheEntry, capacity),
+				hostsByTunnel: make(map[string]map[string]struct{}),
+				maxEntries:    capacity,
+			}
+			route := domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "churn"}}
+			for i := range capacity {
+				cache.set(strconv.Itoa(i), route)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; b.Loop(); i++ {
+				cache.set(strconv.Itoa(capacity+i), route)
+			}
+		})
+	}
+}
+
 func BenchmarkRouteCacheDeleteByTunnelID(b *testing.B) {
 	const hostsPerTunnel = 2048
 
@@ -431,12 +452,12 @@ func runBenchmarkSessionReadLoop(sess *session) {
 				continue
 			}
 			if pending, ok := sess.pendingLoad(msg.BodyChunk.ID); ok {
-				bodyCh := pending.ensureBodyCh()
 				payload, err := msg.BodyChunk.Payload()
 				if err != nil {
 					continue
 				}
-				if !sess.streamSend(bodyCh, payload, streamBodySendTimeout) {
+				if !pending.sendBody(sess, payload, streamBodySendTimeout) {
+					tunnelproto.ReleaseBodyChunk(payload)
 					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {
 						sess.releasePending()
 						pending.abort()

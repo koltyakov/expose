@@ -740,7 +740,8 @@ func TestClientRunH3ReplacesWorkerTakenByWebSocket(t *testing.T) {
 	requireNoAsyncTestError(t, asyncErrCh)
 	cancel()
 	select {
-	case <-runErrCh:
+	case err := <-runErrCh:
+		t.Logf("client stopped: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("client did not stop")
 	}

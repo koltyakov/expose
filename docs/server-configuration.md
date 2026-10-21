@@ -53,6 +53,10 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_WAF_MAX_URI_LENGTH`      | `8192`        | Maximum request URI length before the WAF blocks it             |
 | -                         | `EXPOSE_WAF_MAX_HEADER_COUNT`    | `64`          | Maximum non-exempt header-value count before the WAF blocks it  |
 | -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`  | `128`         | Max in-flight public HTTP requests per active tunnel           |
+| `--max-queued-response-bytes` | `EXPOSE_MAX_QUEUED_RESPONSE_BYTES` | `134217728` | Global retained HTTP body queue capacity for multiplexed tunnels, 128 MiB |
+| `--max-queued-response-bytes-per-tunnel` | `EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL` | `16777216` | Per-tunnel retained HTTP body queue capacity, 16 MiB |
+| `--request-timeout` | `EXPOSE_REQUEST_TIMEOUT` | `30s` | Request read, tunnel queue/header wait, and upstream inactivity timeout |
+| `--https-write-timeout` | `EXPOSE_HTTPS_WRITE_TIMEOUT` | `60s` | Maximum duration of one public response write or flush |
 | -                         | `EXPOSE_PUBLIC_RATE_LIMIT_RPS`   | `0`           | Optional public request rate limit per hostname+client IP      |
 | -                         | `EXPOSE_PUBLIC_RATE_LIMIT_BURST` | `0`           | Burst for the public request limit (`0` auto-derives from RPS) |
 | -                         | `EXPOSE_ACME_ISSUE_RATE_PER_HOUR` | `10`         | Max new ACME issuances per hour (`0` disables this limiter)    |
@@ -127,6 +131,10 @@ WebRTC signaling services can use a bypass for their HTTP and WebSocket endpoint
 For the separate optional WebRTC TURN service, see [TURN relay](turn-relay.md). TURN listeners and relay allocation ports must be reachable independently of the HTTP tunnel.
 
 Tunneled HTTP uploads and downloads have no total-body size limit. Large bodies stream through bounded buffers on both WebSocket and HTTP/3 transports, including chunked requests without `Content-Length`. The upstream application can enforce its own upload limit. WAF inspection remains bounded by `EXPOSE_WAF_BODY_INSPECT_LIMIT`; registration and static-site publishing keep their separate request and extracted-size limits. `EXPOSE_PUBLISH_MAX_BYTES` applies only to server-hosted static sites, not tunneled uploads.
+
+Active transfers may outlive `EXPOSE_REQUEST_TIMEOUT`. It bounds request-body inactivity, tunnel worker/response-header waits, and each stalled local response-body read. Queue waits use the same timeout. Public writes and flushes use `EXPOSE_HTTPS_WRITE_TIMEOUT` per operation, so active SSE streams and downloads do not expire at an absolute write deadline. Upgraded WebSockets keep their existing transport deadlines. Service API endpoints retain ordinary request deadlines, with separate handling for authenticated publication uploads.
+
+On WebSocket and HTTP/3 compatibility tunnels, the two queued-response byte settings bound retained streamed HTTP body buffers waiting for public consumers. They account for each slice's full capacity, including pooled spare capacity, and release reservations on consumption, cancellation, and disconnect. Exhausting either limit aborts the affected transfer; it does not enlarge queues or block unrelated response dispatch. Dedicated multi-stream HTTP/3 workers use QUIC flow control instead. These budgets are not process-memory limits and do not cover inline responses, application WebSocket queues, or transport buffers. Both settings must be positive. A per-tunnel limit above the global limit is still constrained by the global limit.
 
 - The server always starts HTTP/3 on the same listen address as HTTPS (`EXPOSE_LISTEN_HTTPS`).
 - There is no separate QUIC listen setting in current versions.
@@ -250,6 +258,12 @@ go tool pprof http://127.0.0.1:6060/debug/pprof/heap
 The server also publishes Prometheus text metrics at `/debug/metrics` on the
 same listener. Neither endpoint has application authentication, so keep this
 listener on loopback or restrict it at the network boundary.
+
+Response queue metrics include `expose_response_queue_bytes`,
+`expose_response_queue_limit_bytes`, and `expose_response_queue_rejects_total`.
+The rejection counter includes both full per-request body queues and exhausted
+byte budgets. See [performance testing](performance-testing.md) for complete
+client/server benchmarks and profiling commands.
 
 ## Rate Limiting
 

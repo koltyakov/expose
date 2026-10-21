@@ -216,7 +216,8 @@ func (s *Store) flushTouchBatch(pending map[string][]*storeWriteCompletion) erro
 func acquireStoreWriteCompletion() *storeWriteCompletion {
 	comp := storeWriteCompletionPool.Get().(*storeWriteCompletion)
 	select {
-	case <-comp.ch:
+	case staleErr := <-comp.ch:
+		_ = staleErr // Discard a previous completion before reusing the channel.
 	default:
 	}
 	return comp
@@ -227,7 +228,8 @@ func releaseStoreWriteCompletion(comp *storeWriteCompletion) {
 		return
 	}
 	select {
-	case <-comp.ch:
+	case staleErr := <-comp.ch:
+		_ = staleErr // The caller has already handled the write result.
 	default:
 	}
 	storeWriteCompletionPool.Put(comp)

@@ -331,109 +331,11 @@ func (s *Server) sendRequestBodyToH3Stream(
 	headers map[string][]string,
 	useV2 bool,
 ) (bool, error) {
-	requestTimeoutMs := s.requestTimeoutMillis()
-	if r.Body == nil || r.Body == http.NoBody {
-		return false, writeH3StreamJSON(stream, tunnelproto.Message{
-			Kind: tunnelproto.KindRequest,
-			Request: &tunnelproto.HTTPRequest{
-				ID:        reqID,
-				Method:    r.Method,
-				Path:      r.URL.Path,
-				RawPath:   r.URL.RawPath,
-				Query:     r.URL.RawQuery,
-				Headers:   headers,
-				TimeoutMs: requestTimeoutMs,
-			},
-		}, useV2)
-	}
-	defer func() { _ = r.Body.Close() }()
-
-	// Mirrors sendRequestBody: probe with a small buffer so that ordinary
-	// request bodies never check out a streamingThreshold-sized one.
-	var (
-		firstBuf []byte
-		n        int
-		readErr  error
-	)
-	knownLarge := r.ContentLength > int64(streamingThreshold)
-
-	if !knownLarge {
-		smallRef, smallBuf := getPooledBuf(&requestSmallChunkPool, smallBodyBufferSize)
-		defer requestSmallChunkPool.Put(smallRef)
-
-		n, readErr = io.ReadFull(r.Body, smallBuf)
-		firstBuf = smallBuf
-	}
-
-	if knownLarge || readErr == nil {
-		bigRef, bigBuf := getPooledBuf(&requestFirstChunkPool, streamingThreshold+1)
-		defer requestFirstChunkPool.Put(bigRef)
-
-		copied := copy(bigBuf, firstBuf[:n])
-		var more int
-		more, readErr = io.ReadFull(r.Body, bigBuf[copied:])
-		n = copied + more
-		firstBuf = bigBuf
-	}
-
-	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		return false, writeH3StreamJSON(stream, tunnelproto.Message{
-			Kind: tunnelproto.KindRequest,
-			Request: &tunnelproto.HTTPRequest{
-				ID:        reqID,
-				Method:    r.Method,
-				Path:      r.URL.Path,
-				RawPath:   r.URL.RawPath,
-				Query:     r.URL.RawQuery,
-				Headers:   headers,
-				Body:      firstBuf[:n],
-				TimeoutMs: requestTimeoutMs,
-			},
-		}, useV2)
-	}
-	if readErr != nil {
-		return false, readErr
-	}
-
-	if err := writeH3StreamJSON(stream, tunnelproto.Message{
-		Kind: tunnelproto.KindRequest,
-		Request: &tunnelproto.HTTPRequest{
-			ID:        reqID,
-			Method:    r.Method,
-			Path:      r.URL.Path,
-			RawPath:   r.URL.RawPath,
-			Query:     r.URL.RawQuery,
-			Headers:   headers,
-			Streamed:  true,
-			TimeoutMs: requestTimeoutMs,
-		},
-	}, useV2); err != nil {
-		return true, err
-	}
-	if err := writeH3StreamReqBody(stream, reqID, firstBuf[:n], useV2); err != nil {
-		return true, err
-	}
-
-	chunkBufRef, chunkBuf := getPooledBuf(&requestStreamChunkPool, streamingChunkSize)
-	defer requestStreamChunkPool.Put(chunkBufRef)
-	for {
-		cn, err := r.Body.Read(chunkBuf)
-		if cn > 0 {
-			if wErr := writeH3StreamReqBody(stream, reqID, chunkBuf[:cn], useV2); wErr != nil {
-				return true, wErr
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				break
-			}
-			return true, err
-		}
-	}
-	return true, writeH3StreamJSON(stream, tunnelproto.Message{
-		Kind:      tunnelproto.KindReqBodyEnd,
-		BodyChunk: &tunnelproto.BodyChunk{ID: reqID},
-	}, useV2)
+	return s.sendRequestBodyWith(reqID, r, headers, func(msg tunnelproto.Message) error {
+		return writeH3StreamJSON(stream, msg, useV2)
+	}, func(payload []byte) error {
+		return writeH3StreamReqBody(stream, reqID, payload, useV2)
+	})
 }
 
 func writeH3StreamedResponseBody(

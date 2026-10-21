@@ -38,9 +38,9 @@ func (g *lookupGroup[T]) do(ctx context.Context, key string, lookup func() (T, e
 
 	go func() {
 		call.value, call.err = lookup()
-		close(call.done)
 		g.mu.Lock()
 		delete(g.calls, key)
+		close(call.done)
 		g.mu.Unlock()
 	}()
 	select {

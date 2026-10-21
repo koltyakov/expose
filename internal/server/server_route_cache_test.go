@@ -232,6 +232,49 @@ func TestRouteCacheAdmitsAfterMissFlood(t *testing.T) {
 	}
 }
 
+func TestRouteCacheMissIndexSurvivesReplacementAndExpiry(t *testing.T) {
+	t.Parallel()
+	c := routeCache{entries: make(map[string]routeCacheEntry), maxEntries: 1000}
+	route := domain.TunnelRoute{Tunnel: domain.Tunnel{ID: "live"}}
+	for i := range 999 {
+		c.set(fmt.Sprint(i), route)
+	}
+	c.setMiss("only-miss")
+	c.set("new-live", route)
+	if _, _, cached := c.lookup("only-miss"); cached {
+		t.Fatal("full cache evicted a hit while a miss survived")
+	}
+	if len(c.misses) != 0 || c.size() != 1000 {
+		t.Fatal("eviction left a stale miss index")
+	}
+	c.setMiss("new-live")
+	c.set("new-live", route)
+	if len(c.misses) != 0 {
+		t.Fatal("replacing a miss with a hit left its index entry")
+	}
+	c.setMiss("expired-miss")
+	c.mu.Lock()
+	e := c.entries["expired-miss"]
+	e.expiresAtUnixNano = time.Now().Add(-time.Second).UnixNano()
+	c.entries["expired-miss"] = e
+	c.mu.Unlock()
+	c.lookup("expired-miss")
+	if len(c.misses) != 0 {
+		t.Fatal("expired lookup left a stale miss index")
+	}
+	c.setMiss("deleted-miss")
+	c.deleteHost("deleted-miss")
+	if len(c.misses) != 0 {
+		t.Fatal("explicit deletion left a stale miss index")
+	}
+	c.setMiss("cleanup-miss")
+	c.cachedNow.Store(time.Now().Add(time.Hour).UnixNano())
+	c.cleanup()
+	if len(c.misses) != 0 || c.size() != 0 {
+		t.Fatal("cleanup left stale entries")
+	}
+}
+
 func TestLiveRouteIndexDeleteHost(t *testing.T) {
 	t.Parallel()
 

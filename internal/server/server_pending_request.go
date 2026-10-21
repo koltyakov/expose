@@ -10,10 +10,12 @@ import (
 )
 
 type pendingRequest struct {
-	headerCh chan *tunnelproto.HTTPResponse
-	bodyCh   chan []byte
-	doneCh   chan struct{}
-	aborted  atomic.Bool
+	headerCh      chan *tunnelproto.HTTPResponse
+	bodyCh        chan []byte
+	doneCh        chan struct{}
+	aborted       atomic.Bool
+	sessionBudget *byteBudget
+	globalBudget  *byteBudget
 
 	bodyMu   sync.Mutex
 	doneOnce sync.Once
@@ -106,7 +108,27 @@ func (p *pendingRequest) sendBody(sess *session, payload []byte, wait time.Durat
 	if p.bodyCh == nil {
 		p.bodyCh = make(chan []byte, streamingChanSize)
 	}
-	return sess.streamSend(p.bodyCh, payload, wait)
+	n := int64(cap(payload))
+	if !p.sessionBudget.acquire(n) {
+		return false
+	}
+	if !p.globalBudget.acquire(n) {
+		p.sessionBudget.release(n)
+		return false
+	}
+	if !sess.streamSend(p.bodyCh, payload, wait) {
+		p.sessionBudget.release(n)
+		p.globalBudget.release(n)
+		return false
+	}
+	return true
+}
+
+func (p *pendingRequest) releaseBodyChunk(chunk []byte) {
+	n := int64(cap(chunk))
+	p.sessionBudget.release(n)
+	p.globalBudget.release(n)
+	tunnelproto.ReleaseBodyChunk(chunk)
 }
 
 func (p *pendingRequest) discardBody() {
@@ -118,7 +140,7 @@ func (p *pendingRequest) discardBody() {
 	for p.bodyCh != nil {
 		select {
 		case chunk := <-p.bodyCh:
-			tunnelproto.ReleaseBodyChunk(chunk)
+			p.releaseBodyChunk(chunk)
 		default:
 			return
 		}

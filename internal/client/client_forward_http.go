@@ -65,6 +65,10 @@ func escapePathPreservingSlashes(path string) string {
 }
 
 func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelproto.HTTPRequest) *tunnelproto.HTTPResponse {
+	// This buffered helper does not use forwardAndSend's activity timer. Keep
+	// its lifetime bounded now that the shared transport has no fixed header cap.
+	ctx, cancel := context.WithTimeout(ctx, c.upstreamIdleTimeout(req))
+	defer cancel()
 	target := joinForwardTarget(base, req.Path, req.RawPath, req.Query)
 
 	body, err := req.Payload()
@@ -159,6 +163,11 @@ func (c *Client) forwardAndSend(
 ) {
 	started := time.Now()
 	target := joinForwardTarget(base, req.Path, req.RawPath, req.Query)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	timeout := c.upstreamIdleTimeout(req)
+	activity := newRequestActivity(timeout, cancel)
+	defer activity.stop()
 
 	// Build request body reader.
 	var body io.Reader
@@ -185,6 +194,7 @@ func (c *Client) forwardAndSend(
 						written, err := pw.Write(data)
 						if written > 0 {
 							c.recordTraffic(traffic.DirectionInbound, int64(written))
+							activity.touch()
 							data = data[written:]
 						}
 						if err != nil {
@@ -214,6 +224,7 @@ func (c *Client) forwardAndSend(
 		}
 		body = newTrafficCountingReader(bytes.NewReader(data), func(n int) {
 			c.recordTraffic(traffic.DirectionInbound, int64(n))
+			activity.touch()
 		})
 		contentLength = int64(len(data))
 	}
@@ -246,6 +257,7 @@ func (c *Client) forwardAndSend(
 	}
 
 	resp, err := c.fwdClient.Do(localReq)
+	activity.stop()
 	if err != nil {
 		_ = writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindResponse,
@@ -260,6 +272,9 @@ func (c *Client) forwardAndSend(
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSwitchingProtocols && resp.Body != http.NoBody {
+		resp.Body = idleResponseBody{ReadCloser: resp.Body, timeout: timeout, cancel: cancel}
+	}
 
 	respHeaders := tunnelproto.ShallowCloneHeaders(resp.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(respHeaders)

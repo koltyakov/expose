@@ -36,7 +36,10 @@ type siteStats struct {
 	visitors       map[[32]byte]time.Time
 	visitorsCapped bool
 	visitorsLoaded bool
-	persistVisitor func([32]byte)
+	persistVisitor func([32]byte) error
+	// Missing entries are durable or need no persistence. False means retry
+	// on the next visit; true means a write is in progress outside mu.
+	visitorWrites  map[[32]byte]bool
 	requests       []domain.PublishedSiteRequest
 	latencies      [siteLatencySamples]float64
 	latencyCount   int
@@ -73,12 +76,14 @@ func (s *Server) statsForSite(id string) *siteStats {
 				stats.visitorsLoaded = true
 				stats.visitorsCapped = len(stats.visitors) >= siteVisitorLimit
 			}
-			stats.persistVisitor = func(fingerprint [32]byte) {
+			stats.persistVisitor = func(fingerprint [32]byte) error {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if err := st.RecordPublishedSiteVisitor(ctx, id, fingerprint, siteVisitorLimit); err != nil && s.log != nil {
+				err := st.RecordPublishedSiteVisitor(ctx, id, fingerprint, siteVisitorLimit)
+				if err != nil && s.log != nil {
 					s.log.Error("record published site visitor", "site", id, "err", err)
 				}
+				return err
 			}
 		}
 	}
@@ -94,7 +99,6 @@ func (stats *siteStats) record(entry domain.PublishedSiteRequest, ip, userAgent 
 	entry.RejectionReason = boundedStatsText(entry.RejectionReason, 64)
 	fingerprint := sha256.Sum256([]byte(ip + "\x00" + userAgent))
 	stats.mu.Lock()
-	defer stats.mu.Unlock()
 	if entry.WAFRule != "" {
 		if entry.AuditOnly {
 			stats.audited++
@@ -110,24 +114,48 @@ func (stats *siteStats) record(entry domain.PublishedSiteRequest, ip, userAgent 
 			stats.latencyCount++
 		}
 	}
-	stats.touchVisitorLocked(fingerprint, entry.Time)
+	persist := stats.touchVisitorLocked(fingerprint, entry.Time)
 	if len(stats.requests) == siteRecentRequests {
 		copy(stats.requests, stats.requests[1:])
 		stats.requests[len(stats.requests)-1] = entry
 	} else {
 		stats.requests = append(stats.requests, entry)
 	}
+	stats.mu.Unlock()
+	if persist != nil {
+		persist()
+	}
 }
 
-func (stats *siteStats) touchVisitorLocked(fingerprint [32]byte, now time.Time) {
+// The returned write must run after unlocking mu. Reserve it under the lock
+// so concurrent requests for one new visitor cannot issue duplicate writes.
+func (stats *siteStats) touchVisitorLocked(fingerprint [32]byte, now time.Time) func() {
 	if _, found := stats.visitors[fingerprint]; found || len(stats.visitors) < siteVisitorLimit {
 		if !found && stats.persistVisitor != nil {
-			stats.persistVisitor(fingerprint)
+			if stats.visitorWrites == nil {
+				stats.visitorWrites = make(map[[32]byte]bool)
+			}
+			stats.visitorWrites[fingerprint] = false
 		}
 		stats.visitors[fingerprint] = now
 	} else {
 		stats.visitorsCapped = true
 	}
+	if writing, pending := stats.visitorWrites[fingerprint]; pending && !writing {
+		stats.visitorWrites[fingerprint] = true
+		persist := stats.persistVisitor
+		return func() {
+			err := persist(fingerprint)
+			stats.mu.Lock()
+			defer stats.mu.Unlock()
+			if err == nil {
+				delete(stats.visitorWrites, fingerprint)
+			} else {
+				stats.visitorWrites[fingerprint] = false
+			}
+		}
+	}
+	return nil
 }
 
 func boundedStatsText(value string, max int) string {
@@ -211,21 +239,24 @@ func (s *Server) publishedFileTotals(site domain.PublishedSite) (int, int64, err
 // blocked probes never trigger an additional database lookup.
 func (s *Server) recordSiteWAF(event waf.BlockEvent) {
 	s.sitesMu.RLock()
-	defer s.sitesMu.RUnlock()
 	value, ok := s.siteHosts.Load(normalizeHost(event.Host))
 	if !ok {
+		s.sitesMu.RUnlock()
 		return
 	}
 	site, ok := value.(domain.PublishedSite)
 	now := time.Now().UTC()
 	if !ok || (site.ExpiresAt != nil && !now.Before(*site.ExpiresAt)) {
+		s.sitesMu.RUnlock()
 		return
 	}
 	status := http.StatusForbidden
 	if s.cfg.WAFAuditOnly {
 		status = 0
 	}
-	s.statsForSite(site.ID).record(domain.PublishedSiteRequest{
+	stats := s.statsForSite(site.ID)
+	s.sitesMu.RUnlock()
+	stats.record(domain.PublishedSiteRequest{
 		Time: now, Method: event.Method, Path: event.RequestURI, Status: status,
 		WAFRule: event.Rule, AuditOnly: s.cfg.WAFAuditOnly,
 	}, event.RemoteAddr, event.UserAgent)

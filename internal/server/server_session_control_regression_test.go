@@ -82,3 +82,41 @@ func TestSessionOverflowCloseDoesNotBlockResponseDispatch(t *testing.T) {
 		t.Fatal("overflow close was not queued asynchronously")
 	}
 }
+
+func TestResponseBudgetOverflowDoesNotBlockOtherRequests(t *testing.T) {
+	writer := &blockedRegressionSessionWriter{release: make(chan struct{}), async: make(chan tunnelproto.Message, 2)}
+	defer close(writer.release)
+	transport := &regressionMessageTransport{msgs: make(chan tunnelproto.Message, 2), closed: make(chan struct{})}
+	global := &byteBudget{limit: 8}
+	slow, fast := newPendingRequest(), newPendingRequest()
+	slow.globalBudget = global
+	slow.bodyCh = make(chan []byte, 2)
+	sess := &session{tunnelID: "budget-regression", writer: writer, transport: transport, pending: map[string]*pendingRequest{"slow": slow, "fast": fast}, wsPending: make(map[string]*wsStream)}
+	sess.pendingCount.Store(2)
+	if !slow.sendBody(sess, []byte("12345678"), 0) {
+		t.Fatal("initial chunk should fit the budget")
+	}
+	srv := New(config.ServerConfig{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+	srv.hub.sessions[sess.tunnelID] = sess
+	done := make(chan struct{})
+	go func() { defer close(done); srv.readLoop(sess) }()
+	defer func() { _ = transport.Close(); <-done }()
+	transport.msgs <- tunnelproto.Message{Kind: tunnelproto.KindRespBody, BodyChunk: &tunnelproto.BodyChunk{ID: "slow", Data: []byte("overflow")}}
+	transport.msgs <- tunnelproto.Message{Kind: tunnelproto.KindResponse, Response: &tunnelproto.HTTPResponse{ID: "fast", Status: 200}}
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if _, ok := fast.waitHeader(ctx); !ok {
+		t.Fatal("budget overflow blocked an unrelated response")
+	}
+	if !slow.wasAborted() || global.used.Load() != 0 || srv.responseQueueRejects.Load() != 1 {
+		t.Fatal("overflow did not abort and release the stalled response")
+	}
+	select {
+	case msg := <-writer.async:
+		if msg.Kind != tunnelproto.KindReqCancel {
+			t.Fatalf("unexpected control message: %s", msg.Kind)
+		}
+	default:
+		t.Fatal("overflow did not asynchronously cancel the upstream request")
+	}
+}

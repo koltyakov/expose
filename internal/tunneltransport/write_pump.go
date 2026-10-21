@@ -281,7 +281,8 @@ func (p *WritePump) write(req writeRequest) error {
 func acquireWriteCompletion() *writeCompletion {
 	comp := writeCompletionPool.Get().(*writeCompletion)
 	select {
-	case <-comp.ch:
+	case staleErr := <-comp.ch:
+		_ = staleErr // Discard a previous completion before reusing the channel.
 	default:
 	}
 	return comp
@@ -292,7 +293,8 @@ func releaseWriteCompletion(comp *writeCompletion) {
 		return
 	}
 	select {
-	case <-comp.ch:
+	case staleErr := <-comp.ch:
+		_ = staleErr // The caller has already handled the write result.
 	default:
 	}
 	writeCompletionPool.Put(comp)

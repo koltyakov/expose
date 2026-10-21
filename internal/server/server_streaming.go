@@ -43,8 +43,8 @@ var (
 	}
 )
 
-// smallBodyBufferSize is the first read size for request bodies. Bodies at or
-// below it never touch the larger pools.
+// smallBodyBufferSize sizes the pool for known-small request bodies. Bodies at
+// or below it never touch the larger upload pools.
 const smallBodyBufferSize = 16 * 1024
 
 // maxPooledBufferBytes caps the capacity of a bytes.Buffer returned to
@@ -63,15 +63,19 @@ func getPooledBuf(pool *sync.Pool, size int) (*[]byte, []byte) {
 	return ref, buf
 }
 
-// sendRequestBody reads the public HTTP request body and sends it to the
-// tunnel client. For small bodies (<= streamingThreshold) the body is inlined
-// in the KindRequest message. For large bodies it sends a KindRequest with
-// Streamed=true followed by KindReqBody chunks and a KindReqBodyEnd.
-// Returns whether the request was streamed and any write error.
 func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, headers map[string][]string) (bool, error) {
+	return s.sendRequestBodyWith(reqID, r, headers, sess.writeJSON, func(payload []byte) error {
+		return sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
+	})
+}
+
+// sendRequestBodyWith shares upload framing across transports. Only known-small
+// bodies are buffered. Other bodies send their envelope before the first read.
+// Writers must finish consuming borrowed buffers before returning.
+func (s *Server) sendRequestBodyWith(reqID string, r *http.Request, headers map[string][]string, writeMsg func(tunnelproto.Message) error, writeChunk func([]byte) error) (bool, error) {
 	requestTimeoutMs := s.requestTimeoutMillis()
 	if r.Body == nil || r.Body == http.NoBody {
-		return false, sess.writeJSON(tunnelproto.Message{
+		return false, writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{
 				ID:        reqID,
@@ -86,42 +90,18 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	// Probe with a small buffer first; only bodies that outgrow it need a
-	// streamingThreshold-sized one. When Content-Length already says the body
-	// exceeds the threshold, skip the probe and stream directly.
-	var (
-		firstBuf []byte
-		n        int
-		readErr  error
-	)
-	knownLarge := r.ContentLength > int64(streamingThreshold)
-
-	if !knownLarge {
-		smallRef, smallBuf := getPooledBuf(&requestSmallChunkPool, smallBodyBufferSize)
-		defer requestSmallChunkPool.Put(smallRef)
-
-		n, readErr = io.ReadFull(r.Body, smallBuf)
-		firstBuf = smallBuf
-	}
-
-	// The small buffer filled without hitting EOF, so the body may still be
-	// inlineable but needs the larger buffer to find out.
-	if knownLarge || readErr == nil {
-		bigRef, bigBuf := getPooledBuf(&requestFirstChunkPool, streamingThreshold+1)
-		defer requestFirstChunkPool.Put(bigRef)
-
-		copied := copy(bigBuf, firstBuf[:n])
-		var more int
-		more, readErr = io.ReadFull(r.Body, bigBuf[copied:])
-		n = copied + more
-		firstBuf = bigBuf
-	}
-
-	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		// The entire body fits within the threshold - send inline. Passing the
-		// pooled buffer without a copy is safe: writeJSON blocks until the
-		// write pump has fully written (or failed) the message.
-		return false, sess.writeJSON(tunnelproto.Message{
+	if r.ContentLength > 0 && r.ContentLength <= streamingThreshold {
+		pool, size := &requestSmallChunkPool, smallBodyBufferSize
+		if r.ContentLength > int64(size) {
+			pool, size = &requestFirstChunkPool, streamingThreshold+1
+		}
+		ref, buf := getPooledBuf(pool, size)
+		defer pool.Put(ref)
+		n, err := io.ReadFull(r.Body, buf[:int(r.ContentLength)])
+		if err != nil {
+			return false, err
+		}
+		return false, writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{
 				ID:        reqID,
@@ -130,17 +110,12 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 				RawPath:   r.URL.RawPath,
 				Query:     r.URL.RawQuery,
 				Headers:   headers,
-				Body:      firstBuf[:n],
+				Body:      buf[:n],
 				TimeoutMs: requestTimeoutMs,
 			},
 		})
 	}
-	if readErr != nil {
-		return false, readErr
-	}
-
-	// Body exceeds threshold - stream it.
-	if err := sess.writeJSON(tunnelproto.Message{
+	if err := writeMsg(tunnelproto.Message{
 		Kind: tunnelproto.KindRequest,
 		Request: &tunnelproto.HTTPRequest{
 			ID:        reqID,
@@ -156,23 +131,22 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 		return true, err
 	}
 
-	// Send the already-read data as the first body chunk.
-	if err := sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, firstBuf[:n]); err != nil {
-		return true, err
-	}
-
-	// Read remaining body in chunks.
 	chunkBufRef, chunkBuf := getPooledBuf(&requestStreamChunkPool, streamingChunkSize)
 	defer requestStreamChunkPool.Put(chunkBufRef)
+	var sent int64
 	for {
 		cn, err := r.Body.Read(chunkBuf)
 		if cn > 0 {
-			if wErr := sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, chunkBuf[:cn]); wErr != nil {
+			sent += int64(cn)
+			if wErr := writeChunk(chunkBuf[:cn]); wErr != nil {
 				return true, wErr
 			}
 		}
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if errors.Is(err, io.EOF) {
+				if r.ContentLength > 0 && sent != r.ContentLength {
+					return true, io.ErrUnexpectedEOF
+				}
 				break
 			}
 			return true, err
@@ -180,7 +154,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 	}
 
 	// Signal end of request body.
-	return true, sess.writeJSON(tunnelproto.Message{
+	return true, writeMsg(tunnelproto.Message{
 		Kind:      tunnelproto.KindReqBodyEnd,
 		BodyChunk: &tunnelproto.BodyChunk{ID: reqID},
 	})
@@ -221,23 +195,26 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 			timer.Reset(chunkTimeout)
 			if len(chunk) > 0 {
 				_, wErr := w.Write(chunk)
-				tunnelproto.ReleaseBodyChunk(chunk)
+				pending.releaseBodyChunk(chunk)
 				if wErr != nil {
 					return false
 				}
 				if canFlush {
 					flusher.Flush()
 				}
+			} else {
+				pending.releaseBodyChunk(chunk)
 			}
 		case <-doneCh:
 			for {
 				select {
 				case chunk := <-bodyCh:
 					if len(chunk) == 0 {
+						pending.releaseBodyChunk(chunk)
 						continue
 					}
 					_, wErr := w.Write(chunk)
-					tunnelproto.ReleaseBodyChunk(chunk)
+					pending.releaseBodyChunk(chunk)
 					if wErr != nil {
 						return false
 					}

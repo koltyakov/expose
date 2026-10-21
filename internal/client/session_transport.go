@@ -66,6 +66,12 @@ func (c *Client) connectSessionTransport(ctx context.Context, reg domain.Registe
 	case "ws":
 		return c.connectWebSocketTransport(ctx, reg)
 	case "quic":
+		if !canUseH3MultiStream(reg) && !canUseH3Compat(reg) {
+			return sessionTransportConn{}, nonRetriableSessionError{err: errors.New("server does not advertise HTTP/3 tunnel support")}
+		}
+		if err := validateSecureTransportURL(reg.H3URL, "https", ""); err != nil {
+			return sessionTransportConn{}, nonRetriableSessionError{err: err}
+		}
 		var errs []error
 		if canUseH3MultiStream(reg) {
 			conn, err := c.connectHTTP3MultiStreamTransport(ctx, reg)
@@ -73,6 +79,24 @@ func (c *Client) connectSessionTransport(ctx context.Context, reg domain.Registe
 				return conn, nil
 			}
 			errs = append(errs, fmt.Errorf("http3 multistream tunnel connect failed: %w", err))
+			if ctx.Err() != nil {
+				return sessionTransportConn{}, ctx.Err()
+			}
+			if canUseH3Compat(reg) {
+				// The server consumes connect tokens before activating a session.
+				// Even a rejected attempt may have used this token already.
+				fresh, err := c.registerWithResume(ctx, reg.TunnelID)
+				if err != nil {
+					if isNonRetriableRegisterError(err) {
+						err = nonRetriableSessionError{err: err}
+					}
+					return sessionTransportConn{}, fmt.Errorf("refresh HTTP/3 connect token: %w", err)
+				}
+				if fresh.TunnelID != reg.TunnelID {
+					return sessionTransportConn{}, errors.New("tunnel changed while refreshing HTTP/3 connect token; register again")
+				}
+				reg = fresh
+			}
 		}
 		if canUseH3Compat(reg) {
 			conn, err := c.connectHTTP3Transport(ctx, reg)
@@ -81,10 +105,9 @@ func (c *Client) connectSessionTransport(ctx context.Context, reg domain.Registe
 			}
 			errs = append(errs, fmt.Errorf("http3 tunnel connect failed: %w", err))
 		}
-		if !canUseH3MultiStream(reg) && !canUseH3Compat(reg) {
-			return sessionTransportConn{}, nonRetriableSessionError{err: errors.New("server does not advertise HTTP/3 tunnel support")}
-		}
-		return sessionTransportConn{}, nonRetriableSessionError{err: errors.Join(errs...)}
+		// Re-registration on the next iteration determines whether credentials
+		// are still valid. Network failures and spent tokens must remain retryable.
+		return sessionTransportConn{}, errors.Join(errs...)
 	default:
 		return c.connectWebSocketTransport(ctx, reg)
 	}
@@ -258,10 +281,12 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domai
 	}
 
 	transport := tunneltransport.NewStreamTransport("quic", stream, closeFn)
-	writer := tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	var writer *tunneltransport.WritePump
 	if protocol == tunnelCapabilityH3MultistreamV2 {
 		transport = tunneltransport.NewStreamTransportV2("quic", stream, closeFn)
 		writer = tunneltransport.NewStreamWritePumpV2(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	} else {
+		writer = tunneltransport.NewStreamWritePump(stream, clientWSWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
 	}
 
 	return sessionTransportConn{

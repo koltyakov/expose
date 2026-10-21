@@ -214,7 +214,13 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 	injectForwardedFor(requestHeaders, s.clientIP(r))
 
 	pending := newPendingRequest()
+	pending.sessionBudget = &sess.queuedResponses
+	pending.globalBudget = &s.queuedResponses
 	sess.pendingStore(reqID, pending)
+	defer func() {
+		pending.finish()
+		pending.discardBody()
+	}()
 
 	if _, err := s.sendRequestBody(sess, reqID, r, requestHeaders); err != nil {
 		s.abortPendingRequest(sess, reqID)

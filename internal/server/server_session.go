@@ -13,6 +13,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/koltyakov/expose/internal/auth"
+	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 	"github.com/koltyakov/expose/internal/tunneltransport"
@@ -60,7 +61,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	transport := tunneltransport.NewWebSocketTransport(conn)
-	writer := tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize)
 
 	limit, err := s.activeTunnels.limitFor(r.Context(), s.store, snap.route.Domain.APIKeyID)
 	if err != nil {
@@ -105,6 +105,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
 	keepLiveRoute = true
+	writer := tunneltransport.NewWebSocketWritePump(conn, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize)
 	s.activateSession(tunnelID, conn, transport, writer, sessionActivateOptions{})
 }
 
@@ -198,10 +199,12 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		return err
 	}
 	transport := tunneltransport.NewStreamTransport("quic", stream, closeFn)
-	writer := tunneltransport.NewStreamWritePump(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	var writer *tunneltransport.WritePump
 	if opts.h3StreamV2 {
 		transport = tunneltransport.NewStreamTransportV2("quic", stream, closeFn)
 		writer = tunneltransport.NewStreamWritePumpV2(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
+	} else {
+		writer = tunneltransport.NewStreamWritePump(stream, wsWriteTimeout, wsWriteControlQueueSize, wsWriteDataQueueSize, func() { _ = closeFn() })
 	}
 	if !opts.h3StreamV2 {
 		opts.transportName = "quic"
@@ -298,16 +301,17 @@ func (s *Server) activateSession(
 		transportName = strings.TrimSpace(opts.transportName)
 	}
 	sess := &session{
-		tunnelID:      tunnelID,
-		conn:          conn,
-		transport:     transport,
-		writer:        writer,
-		transportName: transportName,
-		h3StreamV2:    opts.h3StreamV2,
-		h3StreamPool:  opts.h3Pool,
-		h3AuthToken:   strings.TrimSpace(opts.h3AuthToken),
-		pending:       make(map[string]*pendingRequest),
-		wsPending:     make(map[string]*wsStream),
+		tunnelID:        tunnelID,
+		conn:            conn,
+		transport:       transport,
+		writer:          writer,
+		transportName:   transportName,
+		h3StreamV2:      opts.h3StreamV2,
+		h3StreamPool:    opts.h3Pool,
+		h3AuthToken:     strings.TrimSpace(opts.h3AuthToken),
+		pending:         make(map[string]*pendingRequest),
+		wsPending:       make(map[string]*wsStream),
+		queuedResponses: byteBudget{limit: queuedResponseLimit(s.cfg.MaxQueuedResponseBytesPerTunnel, config.DefaultMaxQueuedResponseBytesPerTunnel)},
 	}
 	if sess.h3AuthToken != "" {
 		s.registerH3SessionToken(sess.h3AuthToken, sess)
@@ -406,6 +410,7 @@ func (s *Server) readLoop(sess *session) {
 				}
 				if !pending.sendBody(sess, payload, streamBodySendTimeout) {
 					tunnelproto.ReleaseBodyChunk(payload)
+					s.responseQueueRejects.Add(1)
 					s.log.Warn("stream consumer too slow, aborting",
 						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID)
 					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {

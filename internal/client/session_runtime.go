@@ -334,9 +334,12 @@ func (rt *clientSessionRuntime) handleRequest(req *tunnelproto.HTTPRequest) {
 		defer cancel()
 
 		if !hasSlot {
+			waitCtx, stopWait := requestQueueContext(reqCtx, &forwardReq)
+			defer stopWait()
 			select {
 			case rt.requestSem <- struct{}{}:
-			case <-reqCtx.Done():
+				stopWait()
+			case <-waitCtx.Done():
 				return
 			}
 		}
@@ -479,7 +482,13 @@ func (rt *clientSessionRuntime) cancelRequest(id string) {
 	}
 }
 
-func requestContext(parent context.Context, req *tunnelproto.HTTPRequest) (context.Context, context.CancelFunc) {
+// Request lifetime follows cancellation. TimeoutMs bounds queue waits and
+// upstream inactivity, not the total duration of an active response stream.
+func requestContext(parent context.Context, _ *tunnelproto.HTTPRequest) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
+}
+
+func requestQueueContext(parent context.Context, req *tunnelproto.HTTPRequest) (context.Context, context.CancelFunc) {
 	if req != nil && req.TimeoutMs > 0 {
 		return context.WithTimeout(parent, time.Duration(req.TimeoutMs)*time.Millisecond)
 	}

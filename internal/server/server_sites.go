@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
@@ -96,13 +97,16 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	var release func()
 	if r.Method == http.MethodGet {
 		s.sitesMu.RLock()
-		defer s.sitesMu.RUnlock()
+		release = sync.OnceFunc(s.sitesMu.RUnlock)
 	} else {
 		s.sitesMu.Lock()
-		defer s.sitesMu.Unlock()
+		release = sync.OnceFunc(s.sitesMu.Unlock)
 	}
+	defer release()
+	w = &publicationResponseWriter{ResponseWriter: w, release: release}
 	sites, err := st.ListPublishedSites(r.Context(), key)
 	if err != nil {
 		s.siteError(w, err)
@@ -242,7 +246,9 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		site.ExpiresAt = &expires
 	}
 	s.sitesMu.Lock()
-	defer s.sitesMu.Unlock()
+	release := sync.OnceFunc(s.sitesMu.Unlock)
+	defer release()
+	w = &publicationResponseWriter{ResponseWriter: w, release: release}
 	sites, err := st.ListPublishedSites(r.Context(), key)
 	if err != nil {
 		s.siteError(w, err)
@@ -312,6 +318,7 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 	if previous != nil {
 		status = http.StatusOK
 		previousDir := filepath.Join(s.publishDir(), previous.StorageID())
+		s.siteManifests.delete(previous.StorageID())
 		s.siteRoots.Close(previousDir)
 		if err := os.RemoveAll(previousDir); err != nil && s.log != nil {
 			s.log.Warn("remove replaced site files", "site", site.ID, "err", err)
@@ -380,16 +387,18 @@ func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, sites []
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	files := []domain.PublishedFile{}
+	data := []byte("[]\n")
 	if site != nil {
-		files, err = publish.Manifest(filepath.Join(s.publishDir(), site.StorageID()))
+		data, err = s.publishedManifest(*site)
 		if err != nil {
 			s.siteError(w, err)
 			return
 		}
 	}
 	w.Header().Set("ETag", publishedSiteRevision(site))
-	writeJSON(w, http.StatusOK, files)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) siteError(w http.ResponseWriter, err error) {
@@ -442,6 +451,9 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 			s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 			return true
 		}
+		if r.URL.Path == publish.PresenceScriptPath || r.Method != http.MethodGet {
+			unlock()
+		}
 		run := s.prepareSitePresence(w, r, site)
 		unlock()
 		if run != nil {
@@ -481,6 +493,7 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.PublishedSite) error {
 	dir := filepath.Join(s.publishDir(), site.StorageID())
 	s.siteRoots.Close(dir)
+	s.siteManifests.delete(site.StorageID())
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}

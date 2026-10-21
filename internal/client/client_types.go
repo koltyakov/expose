@@ -177,7 +177,10 @@ func newForwardHTTPTransport(cfg config.ClientConfig) *http.Transport {
 	tr.MaxIdleConnsPerHost = 100
 	tr.MaxConnsPerHost = maxConcurrentForwardsFor(cfg)
 	tr.IdleConnTimeout = 90 * time.Second
-	tr.ResponseHeaderTimeout = 2 * time.Minute
+	// forwardAndSend bounds header inactivity using the request's TimeoutMs
+	// and refreshes that deadline during an active upload. A fixed transport
+	// timeout would silently cap larger server-configured header timeouts.
+	tr.ResponseHeaderTimeout = 0
 	return tr
 }
 

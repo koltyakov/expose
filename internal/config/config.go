@@ -41,43 +41,45 @@ type ClientConfig struct {
 
 // ServerConfig holds all settings required by the expose HTTPS server.
 type ServerConfig struct {
-	TURN                   TURNConfig
-	Bypasses               []ServerBypass
-	ListenHTTPS            string
-	ListenHTTP             string
-	PprofListen            string
-	DBPath                 string
-	PublishDir             string
-	PublishMaxBytes        int64
-	DBMaxOpenConns         int
-	DBMaxIdleConns         int
-	BaseDomain             string
-	APIKeyPepper           string
-	AccessCookieSecret     string
-	TLSMode                string
-	CertCacheDir           string
-	TLSCertFile            string
-	TLSKeyFile             string
-	LogLevel               string
-	RequestTimeout         time.Duration
-	MaxBodyBytes           int64 // WebSocket frame sizing only; HTTP body streams have no total-size cap.
-	ConnectTokenTTL        time.Duration
-	ClientPingTimeout      time.Duration
-	HeartbeatCheckInterval time.Duration
-	CleanupInterval        time.Duration
-	TunnelRetention        time.Duration
-	WAFEnabled             bool
-	WAFAuditOnly           bool
-	WAFBodyInspectLimit    int64
-	WAFMaxURILength        int
-	WAFMaxHeaderCount      int
-	MaxPendingPerTunnel    int
-	PublicRateLimitRPS     int
-	PublicRateLimitBurst   int
-	ACMEIssueRatePerHour   int
-	TrustedProxyCIDRs      []string
-	RouteCacheTTL          time.Duration
-	WAFCounterRetention    time.Duration
+	TURN                            TURNConfig
+	Bypasses                        []ServerBypass
+	ListenHTTPS                     string
+	ListenHTTP                      string
+	PprofListen                     string
+	DBPath                          string
+	PublishDir                      string
+	PublishMaxBytes                 int64
+	DBMaxOpenConns                  int
+	DBMaxIdleConns                  int
+	BaseDomain                      string
+	APIKeyPepper                    string
+	AccessCookieSecret              string
+	TLSMode                         string
+	CertCacheDir                    string
+	TLSCertFile                     string
+	TLSKeyFile                      string
+	LogLevel                        string
+	RequestTimeout                  time.Duration
+	MaxBodyBytes                    int64 // WebSocket frame sizing only; HTTP body streams have no total-size cap.
+	ConnectTokenTTL                 time.Duration
+	ClientPingTimeout               time.Duration
+	HeartbeatCheckInterval          time.Duration
+	CleanupInterval                 time.Duration
+	TunnelRetention                 time.Duration
+	WAFEnabled                      bool
+	WAFAuditOnly                    bool
+	WAFBodyInspectLimit             int64
+	WAFMaxURILength                 int
+	WAFMaxHeaderCount               int
+	MaxPendingPerTunnel             int
+	MaxQueuedResponseBytes          int64
+	MaxQueuedResponseBytesPerTunnel int64
+	PublicRateLimitRPS              int
+	PublicRateLimitBurst            int
+	ACMEIssueRatePerHour            int
+	TrustedProxyCIDRs               []string
+	RouteCacheTTL                   time.Duration
+	WAFCounterRetention             time.Duration
 	// PublicHTTP3 advertises the HTTP/3 listener to browsers with Alt-Svc.
 	// The public UDP port must match the public TCP port.
 	PublicHTTP3 bool
@@ -104,6 +106,11 @@ const defaultServerDBPath = "./expose.db"
 
 // DefaultPublishMaxBytes limits each site's total extracted file size.
 const DefaultPublishMaxBytes int64 = 10 << 20
+
+// Queued response budgets apply to streamed HTTP body buffers waiting for public
+// consumers on multiplexed tunnels, not to total transfer sizes.
+const DefaultMaxQueuedResponseBytes int64 = 128 << 20
+const DefaultMaxQueuedResponseBytesPerTunnel int64 = 16 << 20
 const defaultServerCertCacheDir = "./cert"
 
 // ParseClientFlags parses CLI flags and env vars into a [ClientConfig].
@@ -218,43 +225,46 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	var envErrs []error
 	bypassesJSON := EnvOrDefault("EXPOSE_BYPASSES", "")
 	cfg := ServerConfig{
-		ListenHTTPS:            EnvOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
-		ListenHTTP:             EnvOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
-		PprofListen:            strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
-		DBPath:                 EnvOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
-		PublishDir:             EnvOrDefault("EXPOSE_PUBLISH_DIR", ""),
-		PublishMaxBytes:        envInt64("EXPOSE_PUBLISH_MAX_BYTES", DefaultPublishMaxBytes, &envErrs),
-		DBMaxOpenConns:         envInt("EXPOSE_DB_MAX_OPEN_CONNS", 10, &envErrs),
-		DBMaxIdleConns:         envInt("EXPOSE_DB_MAX_IDLE_CONNS", 10, &envErrs),
-		BaseDomain:             EnvOrDefault("EXPOSE_DOMAIN", ""),
-		APIKeyPepper:           EnvOrDefault("EXPOSE_API_KEY_PEPPER", ""),
-		AccessCookieSecret:     EnvOrDefault("EXPOSE_ACCESS_COOKIE_SECRET", ""),
-		TLSMode:                EnvOrDefault("EXPOSE_TLS_MODE", "auto"),
-		CertCacheDir:           EnvOrDefault("EXPOSE_CERT_CACHE_DIR", defaultServerCertCacheDir),
-		TLSCertFile:            EnvOrDefault("EXPOSE_TLS_CERT_FILE", ""),
-		TLSKeyFile:             EnvOrDefault("EXPOSE_TLS_KEY_FILE", ""),
-		LogLevel:               EnvOrDefault("EXPOSE_LOG_LEVEL", "info"),
-		RequestTimeout:         30 * time.Second,
-		MaxBodyBytes:           10 * 1024 * 1024,
-		ConnectTokenTTL:        60 * time.Second,
-		ClientPingTimeout:      defaultServerClientPingTimeout,
-		HeartbeatCheckInterval: defaultServerHeartbeatCheckInterval,
-		CleanupInterval:        defaultServerCleanupInterval,
-		TunnelRetention:        envDuration("EXPOSE_TUNNEL_RETENTION", DefaultTunnelRetention, &envErrs),
-		WAFEnabled:             envBool("EXPOSE_WAF_ENABLE", true, &envErrs),
-		WAFAuditOnly:           envBool("EXPOSE_WAF_AUDIT_ONLY", false, &envErrs),
-		WAFBodyInspectLimit:    envInt64("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024, &envErrs),
-		WAFMaxURILength:        envInt("EXPOSE_WAF_MAX_URI_LENGTH", 0, &envErrs),
-		WAFMaxHeaderCount:      envInt("EXPOSE_WAF_MAX_HEADER_COUNT", 0, &envErrs),
-		MaxPendingPerTunnel:    envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 128, &envErrs),
-		PublicRateLimitRPS:     envInt("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0, &envErrs),
-		PublicRateLimitBurst:   envInt("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0, &envErrs),
-		ACMEIssueRatePerHour:   envInt("EXPOSE_ACME_ISSUE_RATE_PER_HOUR", 10, &envErrs),
-		TrustedProxyCIDRs:      splitCommaSeparated(EnvOrDefault("EXPOSE_TRUSTED_PROXY_CIDRS", "")),
-		RouteCacheTTL:          envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),
-		WAFCounterRetention:    envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
-		PublicHTTP3:            envBool("EXPOSE_PUBLIC_HTTP3", false, &envErrs),
-		TURN:                   turnConfigFromEnv(&envErrs),
+		ListenHTTPS:                     EnvOrDefault("EXPOSE_LISTEN_HTTPS", defaultServerHTTPSListen),
+		ListenHTTP:                      EnvOrDefault("EXPOSE_LISTEN_HTTP_CHALLENGE", defaultServerHTTPChallengeListen),
+		PprofListen:                     strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
+		DBPath:                          EnvOrDefault("EXPOSE_DB_PATH", defaultServerDBPath),
+		PublishDir:                      EnvOrDefault("EXPOSE_PUBLISH_DIR", ""),
+		PublishMaxBytes:                 envInt64("EXPOSE_PUBLISH_MAX_BYTES", DefaultPublishMaxBytes, &envErrs),
+		DBMaxOpenConns:                  envInt("EXPOSE_DB_MAX_OPEN_CONNS", 10, &envErrs),
+		DBMaxIdleConns:                  envInt("EXPOSE_DB_MAX_IDLE_CONNS", 10, &envErrs),
+		BaseDomain:                      EnvOrDefault("EXPOSE_DOMAIN", ""),
+		APIKeyPepper:                    EnvOrDefault("EXPOSE_API_KEY_PEPPER", ""),
+		AccessCookieSecret:              EnvOrDefault("EXPOSE_ACCESS_COOKIE_SECRET", ""),
+		TLSMode:                         EnvOrDefault("EXPOSE_TLS_MODE", "auto"),
+		CertCacheDir:                    EnvOrDefault("EXPOSE_CERT_CACHE_DIR", defaultServerCertCacheDir),
+		TLSCertFile:                     EnvOrDefault("EXPOSE_TLS_CERT_FILE", ""),
+		TLSKeyFile:                      EnvOrDefault("EXPOSE_TLS_KEY_FILE", ""),
+		LogLevel:                        EnvOrDefault("EXPOSE_LOG_LEVEL", "info"),
+		RequestTimeout:                  envDuration("EXPOSE_REQUEST_TIMEOUT", 30*time.Second, &envErrs),
+		HTTPSWriteTimeout:               envDuration("EXPOSE_HTTPS_WRITE_TIMEOUT", 60*time.Second, &envErrs),
+		MaxBodyBytes:                    10 * 1024 * 1024,
+		ConnectTokenTTL:                 60 * time.Second,
+		ClientPingTimeout:               defaultServerClientPingTimeout,
+		HeartbeatCheckInterval:          defaultServerHeartbeatCheckInterval,
+		CleanupInterval:                 defaultServerCleanupInterval,
+		TunnelRetention:                 envDuration("EXPOSE_TUNNEL_RETENTION", DefaultTunnelRetention, &envErrs),
+		WAFEnabled:                      envBool("EXPOSE_WAF_ENABLE", true, &envErrs),
+		WAFAuditOnly:                    envBool("EXPOSE_WAF_AUDIT_ONLY", false, &envErrs),
+		WAFBodyInspectLimit:             envInt64("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024, &envErrs),
+		WAFMaxURILength:                 envInt("EXPOSE_WAF_MAX_URI_LENGTH", 0, &envErrs),
+		WAFMaxHeaderCount:               envInt("EXPOSE_WAF_MAX_HEADER_COUNT", 0, &envErrs),
+		MaxPendingPerTunnel:             envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 128, &envErrs),
+		MaxQueuedResponseBytes:          envInt64("EXPOSE_MAX_QUEUED_RESPONSE_BYTES", DefaultMaxQueuedResponseBytes, &envErrs),
+		MaxQueuedResponseBytesPerTunnel: envInt64("EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL", DefaultMaxQueuedResponseBytesPerTunnel, &envErrs),
+		PublicRateLimitRPS:              envInt("EXPOSE_PUBLIC_RATE_LIMIT_RPS", 0, &envErrs),
+		PublicRateLimitBurst:            envInt("EXPOSE_PUBLIC_RATE_LIMIT_BURST", 0, &envErrs),
+		ACMEIssueRatePerHour:            envInt("EXPOSE_ACME_ISSUE_RATE_PER_HOUR", 10, &envErrs),
+		TrustedProxyCIDRs:               splitCommaSeparated(EnvOrDefault("EXPOSE_TRUSTED_PROXY_CIDRS", "")),
+		RouteCacheTTL:                   envDuration("EXPOSE_ROUTE_CACHE_TTL", time.Minute, &envErrs),
+		WAFCounterRetention:             envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
+		PublicHTTP3:                     envBool("EXPOSE_PUBLIC_HTTP3", false, &envErrs),
+		TURN:                            turnConfigFromEnv(&envErrs),
 	}
 	if err := errors.Join(envErrs...); err != nil {
 		return cfg, err
@@ -269,6 +279,10 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
 	fs.StringVar(&cfg.PublishDir, "publish-dir", cfg.PublishDir, "Published site storage directory (default: <db path>.sites)")
 	fs.Int64Var(&cfg.PublishMaxBytes, "publish-max-bytes", cfg.PublishMaxBytes, "Maximum total extracted bytes per published site")
+	fs.Int64Var(&cfg.MaxQueuedResponseBytes, "max-queued-response-bytes", cfg.MaxQueuedResponseBytes, "Maximum retained streamed HTTP response queue bytes across multiplexed tunnels")
+	fs.Int64Var(&cfg.MaxQueuedResponseBytesPerTunnel, "max-queued-response-bytes-per-tunnel", cfg.MaxQueuedResponseBytesPerTunnel, "Maximum retained streamed HTTP response queue bytes per multiplexed tunnel")
+	fs.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "Public request read, tunnel queue/header wait, and upstream inactivity timeout")
+	fs.DurationVar(&cfg.HTTPSWriteTimeout, "https-write-timeout", cfg.HTTPSWriteTimeout, "Public response write inactivity timeout")
 	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "SQLite max open connections")
 	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "SQLite max idle connections")
 	fs.StringVar(&cfg.BaseDomain, "domain", cfg.BaseDomain, "Public base domain, e.g. example.com")
@@ -334,6 +348,12 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 	if cfg.MaxPendingPerTunnel <= 0 {
 		return cfg, errors.New("max pending per tunnel must be > 0")
+	}
+	if cfg.MaxQueuedResponseBytes <= 0 || cfg.MaxQueuedResponseBytesPerTunnel <= 0 {
+		return cfg, errors.New("queued response byte limits must be > 0")
+	}
+	if cfg.RequestTimeout <= 0 || cfg.HTTPSWriteTimeout <= 0 {
+		return cfg, errors.New("request and HTTPS write timeouts must be > 0")
 	}
 	if cfg.WAFBodyInspectLimit < 0 {
 		return cfg, errors.New("waf body inspect limit must be >= 0")

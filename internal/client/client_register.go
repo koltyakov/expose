@@ -59,6 +59,10 @@ func (c *Client) openLocalWebSocket(ctx context.Context, base *url.URL, req *tun
 }
 
 func (c *Client) register(ctx context.Context) (domain.RegisterResponse, error) {
+	return c.registerWithResume(ctx, c.resumeID)
+}
+
+func (c *Client) registerWithResume(ctx context.Context, resumeID string) (domain.RegisterResponse, error) {
 	mode := strings.TrimSpace(c.cfg.RegistrationMode)
 	if mode == "" {
 		mode = "temporary"
@@ -91,7 +95,7 @@ func (c *Client) register(ctx context.Context) (domain.RegisterResponse, error) 
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
-	if resumeID := strings.TrimSpace(c.resumeID); resumeID != "" {
+	if resumeID := strings.TrimSpace(resumeID); resumeID != "" {
 		req.Header.Set(domain.RegisterResumeTunnelHeader, resumeID)
 	}
 

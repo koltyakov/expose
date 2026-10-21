@@ -92,13 +92,17 @@ func (s *Server) runSitePresence(conn *websocket.Conn, site domain.PublishedSite
 			return nil
 		}
 		now := time.Now().UTC()
+		var persist func()
 		stats.mu.Lock()
 		if presence, ok := stats.presence[conn]; ok {
 			presence.seen = now
 			stats.presence[conn] = presence
-			stats.touchVisitorLocked(fingerprint, now)
+			persist = stats.touchVisitorLocked(fingerprint, now)
 		}
 		stats.mu.Unlock()
+		if persist != nil {
+			persist()
+		}
 		s.queueDomainTouch(site.ID)
 		return conn.SetReadDeadline(now.Add(timeout))
 	})

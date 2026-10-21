@@ -203,11 +203,13 @@ func runSessionUntilInterrupt(ctx context.Context, rt sessionRuntime, autoUpdate
 		return err
 	case <-ctx.Done():
 		rt.close()
-		<-done
+		shutdownErr := <-done
+		_ = shutdownErr // Report the interruption rather than the shutdown result.
 		return ctx.Err()
 	case <-autoUpdateCh:
 		rt.close()
-		<-done
+		shutdownErr := <-done
+		_ = shutdownErr // Preserve the auto-update signal for the caller.
 		return ErrAutoUpdated
 	}
 }

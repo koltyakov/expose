@@ -1,12 +1,12 @@
 module github.com/koltyakov/expose
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/logging v0.2.4
 	github.com/pion/turn/v5 v5.1.2
-	github.com/quic-go/quic-go v0.63.0
+	github.com/quic-go/quic-go v0.64.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0

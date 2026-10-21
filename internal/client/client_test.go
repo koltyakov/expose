@@ -148,8 +148,8 @@ func TestNewUsesClonedForwardTransportWithSafeDefaults(t *testing.T) {
 	if tr.MaxConnsPerHost != defaultMaxConcurrentForwards {
 		t.Fatalf("expected MaxConnsPerHost=%d, got %d", defaultMaxConcurrentForwards, tr.MaxConnsPerHost)
 	}
-	if tr.ResponseHeaderTimeout != 2*time.Minute {
-		t.Fatalf("expected ResponseHeaderTimeout=2m, got %s", tr.ResponseHeaderTimeout)
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Fatalf("header waits must use the per-request inactivity timer, got transport timeout %s", tr.ResponseHeaderTimeout)
 	}
 }
 
@@ -1743,10 +1743,10 @@ func TestPumpStreamedRequestBodyMessagesCancelsOnReadError(t *testing.T) {
 	}
 }
 
-func TestRequestContextAppliesMessageTimeout(t *testing.T) {
+func TestRequestQueueContextAppliesMessageTimeout(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := requestContext(context.Background(), &tunnelproto.HTTPRequest{TimeoutMs: 25})
+	ctx, cancel := requestQueueContext(context.Background(), &tunnelproto.HTTPRequest{TimeoutMs: 25})
 	defer cancel()
 
 	select {

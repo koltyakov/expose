@@ -15,6 +15,7 @@ import (
 type routeCache struct {
 	mu            sync.RWMutex
 	entries       map[string]routeCacheEntry
+	misses        map[string]struct{}
 	hostsByTunnel map[string]map[string]struct{}
 	ttl           time.Duration
 	maxEntries    int
@@ -32,8 +33,8 @@ type routeCacheEntry struct {
 const defaultRouteCacheTTL = time.Minute
 const defaultRouteCacheMaxEntries = 10_000
 
-// routeCacheEvictBatch caps how many expired entries a single insert reclaims,
-// so eviction stays O(1)-ish rather than scanning the whole map.
+// routeCacheEvictBatch caps entries examined, including unexpired entries.
+// A full, fresh cache must not trigger a complete scan under the write lock.
 const routeCacheEvictBatch = 8
 
 func (c *routeCache) get(host string) (domain.TunnelRoute, bool) {
@@ -56,6 +57,7 @@ func (c *routeCache) lookup(host string) (domain.TunnelRoute, bool, bool) {
 		c.mu.Lock()
 		if stale, exists := c.entries[host]; exists && nowUnix > stale.expiresAtUnixNano {
 			delete(c.entries, host)
+			delete(c.misses, host)
 			c.untrackHostLocked(stale.route.Tunnel.ID, host)
 		}
 		c.mu.Unlock()
@@ -108,6 +110,7 @@ func (c *routeCache) storeEntry(host string, entry routeCacheEntry) {
 	defer c.mu.Unlock()
 
 	if prev, exists := c.entries[host]; exists {
+		delete(c.misses, host)
 		c.untrackHostLocked(prev.route.Tunnel.ID, host)
 	} else if len(c.entries) >= c.entryLimit() {
 		c.evictLocked()
@@ -117,6 +120,11 @@ func (c *routeCache) storeEntry(host string, entry routeCacheEntry) {
 	c.entries[host] = entry
 	if entry.found {
 		c.trackHostLocked(entry.route.Tunnel.ID, host)
+	} else {
+		if c.misses == nil {
+			c.misses = make(map[string]struct{})
+		}
+		c.misses[host] = struct{}{}
 	}
 }
 
@@ -126,37 +134,38 @@ func (c *routeCache) storeEntry(host string, entry routeCacheEntry) {
 // cached too, a spread of unknown hostnames could fill every slot and then
 // legitimate new hosts would go uncached, hitting the store on every request
 // until the janitor's next sweep minutes later. Evicting instead bounds the
-// damage to the entries actually displaced. Expired entries go first; failing
-// that, Go's randomised map iteration gives a cheap random victim.
+// damage to the entries actually displaced. Sample a bounded set for expired
+// entries, then use the miss index to preserve hits without a second full scan.
 func (c *routeCache) evictLocked() {
 	nowUnix := c.nowNanos()
-	evicted := 0
+	var victim string
+	var candidate routeCacheEntry
+	expired := false
+	examined := 0
 	for host, e := range c.entries {
+		if examined == 0 || (!e.found && candidate.found) {
+			victim, candidate = host, e
+		}
 		if nowUnix > e.expiresAtUnixNano {
-			delete(c.entries, host)
-			c.untrackHostLocked(e.route.Tunnel.ID, host)
-			evicted++
-			if evicted >= routeCacheEvictBatch {
-				return
-			}
+			victim, candidate = host, e
+			expired = true
+			break
+		}
+		examined++
+		if examined >= routeCacheEvictBatch {
+			break
 		}
 	}
-	if evicted > 0 {
-		return
-	}
-
-	// Nothing expired: drop misses before hits, since a miss is cheaper to
-	// recompute than an active route.
-	for host, e := range c.entries {
-		if !e.found {
-			delete(c.entries, host)
-			return
+	if !expired {
+		for host := range c.misses {
+			victim, candidate = host, c.entries[host]
+			break
 		}
 	}
-	for host, e := range c.entries {
-		delete(c.entries, host)
-		c.untrackHostLocked(e.route.Tunnel.ID, host)
-		return
+	if victim != "" {
+		delete(c.entries, victim)
+		delete(c.misses, victim)
+		c.untrackHostLocked(candidate.route.Tunnel.ID, victim)
 	}
 }
 
@@ -167,6 +176,7 @@ func (c *routeCache) cleanup() {
 	for host, e := range c.entries {
 		if nowUnix > e.expiresAtUnixNano {
 			delete(c.entries, host)
+			delete(c.misses, host)
 			c.untrackHostLocked(e.route.Tunnel.ID, host)
 		}
 	}
@@ -181,6 +191,7 @@ func (c *routeCache) deleteHost(host string) {
 	defer c.mu.Unlock()
 	if e, ok := c.entries[host]; ok {
 		delete(c.entries, host)
+		delete(c.misses, host)
 		c.untrackHostLocked(e.route.Tunnel.ID, host)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -226,6 +228,55 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	}
 	if w := api("GET", "/_expose/v1/sites/stats/stats", "owner", nil); w.Code != 401 {
 		t.Fatalf("revoked owner can read stats: %d", w.Code)
+	}
+}
+
+func TestVisitorPersistenceDoesNotHoldStatsLock(t *testing.T) {
+	stats := (&Server{}).statsForSite("site")
+	started, release := make(chan struct{}), make(chan struct{})
+	var writes atomic.Int32
+	stats.persistVisitor = func([32]byte) error {
+		writes.Add(1)
+		close(started)
+		<-release
+		return nil
+	}
+	entry := domain.PublishedSiteRequest{Time: time.Now(), Method: "GET"}
+	finished := make(chan struct{})
+	go func() { defer close(finished); stats.record(entry, "ip", "agent") }()
+	defer func() { close(release); <-finished }()
+	<-started
+	duplicate := make(chan struct{})
+	go func() {
+		defer close(duplicate)
+		stats.record(entry, "ip", "agent")
+		_ = stats.snapshot(time.Now())
+	}()
+	select {
+	case <-duplicate:
+	case <-time.After(time.Second):
+		t.Fatal("visitor storage blocked another request or stats snapshot")
+	}
+	if writes.Load() != 1 {
+		t.Fatal("concurrent visit duplicated a pending write")
+	}
+}
+
+func TestFailedVisitorPersistenceRetriesOnNextVisit(t *testing.T) {
+	stats := (&Server{}).statsForSite("site")
+	var writes int
+	stats.persistVisitor = func([32]byte) error {
+		writes++
+		if writes == 1 {
+			return errors.New("storage busy")
+		}
+		return nil
+	}
+	for range 3 {
+		stats.record(domain.PublishedSiteRequest{Time: time.Now()}, "ip", "agent")
+	}
+	if writes != 2 || len(stats.visitorWrites) != 0 || stats.snapshot(time.Now()).Visitors != 1 {
+		t.Fatalf("failed write was lost or durable visitor written twice: writes=%d pending=%d", writes, len(stats.visitorWrites))
 	}
 }
 

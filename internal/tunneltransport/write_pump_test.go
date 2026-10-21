@@ -223,8 +223,8 @@ func TestAcquireReleaseWriteCompletion(t *testing.T) {
 	// Acquire again — channel should be drained.
 	comp2 := acquireWriteCompletion()
 	select {
-	case <-comp2.ch:
-		t.Fatal("channel should be empty after acquire")
+	case err := <-comp2.ch:
+		t.Fatalf("channel should be empty after acquire, got %v", err)
 	default:
 	}
 	releaseWriteCompletion(comp2)

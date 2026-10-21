@@ -99,3 +99,75 @@ func (w *stalledSiteWriter) WriteHeader(status int) {
 	w.once.Do(func() { close(w.started); <-w.release })
 	w.ResponseRecorder.WriteHeader(status)
 }
+
+func TestStalledPublicationAPIResponseDoesNotBlockCleanup(t *testing.T) {
+	for _, path := range []string{"", "/files?domain=docs", "/docs", "/docs/stats", "/missing", "/files?domain=invalid.domain"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			srv, _ := newIncrementalTestServer(t)
+			root := t.TempDir()
+			writeIncrementalTestFile(t, root, "index.html", "hello")
+			var archive bytes.Buffer
+			if err := publish.Archive(root, &archive); err != nil {
+				t.Fatal(err)
+			}
+			w := incrementalSiteRequest(srv, "POST", serviceapi.Sites+"?domain=docs", "owner", "", archive.Bytes())
+			if w.Code != http.StatusCreated {
+				t.Fatalf("publish: %d", w.Code)
+			}
+			assertPublicationResponseUnlocked(t, srv, "GET", serviceapi.Sites+path, nil)
+		})
+	}
+	for _, method := range []string{"POST", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			srv, _ := newIncrementalTestServer(t)
+			root := t.TempDir()
+			writeIncrementalTestFile(t, root, "index.html", "hello")
+			var archive bytes.Buffer
+			if err := publish.Archive(root, &archive); err != nil {
+				t.Fatal(err)
+			}
+			if method == "DELETE" {
+				w := incrementalSiteRequest(srv, "POST", serviceapi.Sites+"?domain=docs", "owner", "", archive.Bytes())
+				if w.Code != http.StatusCreated {
+					t.Fatalf("publish: %d", w.Code)
+				}
+				assertPublicationResponseUnlocked(t, srv, method, serviceapi.Sites+"/docs", nil)
+			} else {
+				assertPublicationResponseUnlocked(t, srv, method, serviceapi.Sites+"?domain=docs", archive.Bytes())
+			}
+		})
+	}
+}
+
+func assertPublicationResponseUnlocked(t *testing.T, srv *Server, method, path string, body []byte) {
+	t.Helper()
+	slow := &stalledSiteWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{}), release: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(slow.release) })
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		r := httptest.NewRequest(method, path, bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer owner")
+		srv.handleSites(slow, r)
+	}()
+	defer func() { release(); <-finished }()
+	select {
+	case <-slow.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("response did not start")
+	}
+	cleanup := make(chan error, 1)
+	go func() { cleanup <- srv.cleanupPublishedSites(context.Background()) }()
+	select {
+	case err := <-cleanup:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		release()
+		err := <-cleanup
+		t.Fatalf("stalled API response blocked publication cleanup: %v", err)
+	}
+}

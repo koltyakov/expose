@@ -74,59 +74,62 @@ var _ serverStore = (*sqlite.Store)(nil)
 // Server is the main expose HTTPS server that manages tunnel registrations,
 // WebSocket sessions, TLS certificates, and public HTTP proxying.
 type Server struct {
-	turn             *turnrelay.Relay
-	cfg              config.ServerConfig
-	store            serverStore
-	log              *slog.Logger
-	hub              *hub
-	version          string
-	updateChecks     chan struct{}
-	updateCheckMu    sync.Mutex
-	lastUpdateCheck  time.Time
-	wildcardTLSOn    bool
-	requestSeq       atomic.Uint64
-	regLimiter       *rateLimiter
-	authLimiter      *rateLimiter
-	lookupLimiter    *rateLimiter
-	publicLimiter    *rateLimiter
-	accessLimiter    *rateLimiter
-	accessChecks     atomic.Int64
-	acmeIssueLimiter *rateLimiter
-	acmeIssueMu      sync.Mutex
-	acmeIssueHosts   map[string]time.Time
-	trustedProxies   []netip.Prefix
-	bypasses         map[string]*serverBypass
-	basicAuthCache   basicAuthSuccessCache
-	routes           routeCache
-	routeLookups     lookupGroup[liveRouteSnapshot]
-	routeVersions    routeVersions
-	liveRoutes       *liveRouteIndex
-	activeTunnels    *activeTunnelTracker
-	runtimeCtx       atomic.Value // context.Context
-	domainTouches    chan string
-	domainTouchMu    sync.Mutex
-	domainTouched    map[string]struct{}
-	routeLifecycleMu sync.Mutex
-	sitesMu          sync.RWMutex
-	siteRoots        *publish.RootCache // closed under sitesMu before deleting a publication
-	siteHosts        sync.Map
-	siteLookups      siteLookupCache
-	siteStats        sync.Map // publication ID -> *siteStats
-	disconnects      chan string
-	disconnectMu     sync.Mutex
-	disconnectQ      map[string]struct{}
-	disconnectWg     sync.WaitGroup
-	wafBlocks        sync.Map // hostname → *wafCounter
-	wafAuditQueue    chan wafAuditEvent
-	h3Sessions       sync.Map // auth token -> *session
-	wafAuditDrops    atomic.Int64
-	domainTouchDrops atomic.Int64
-	disconnectDrops  atomic.Int64
-	routeCacheHits   atomic.Int64
-	routeCacheMisses atomic.Int64
-	routeStoreLoads  atomic.Int64
-	connectionsTotal atomic.Int64
-	shutdownNanos    atomic.Int64
+	turn                 *turnrelay.Relay
+	cfg                  config.ServerConfig
+	store                serverStore
+	log                  *slog.Logger
+	hub                  *hub
+	version              string
+	updateChecks         chan struct{}
+	updateCheckMu        sync.Mutex
+	lastUpdateCheck      time.Time
+	wildcardTLSOn        bool
+	requestSeq           atomic.Uint64
+	regLimiter           *rateLimiter
+	authLimiter          *rateLimiter
+	lookupLimiter        *rateLimiter
+	publicLimiter        *rateLimiter
+	accessLimiter        *rateLimiter
+	accessChecks         atomic.Int64
+	acmeIssueLimiter     *rateLimiter
+	acmeIssueMu          sync.Mutex
+	acmeIssueHosts       map[string]time.Time
+	trustedProxies       []netip.Prefix
+	bypasses             map[string]*serverBypass
+	basicAuthCache       basicAuthSuccessCache
+	routes               routeCache
+	routeLookups         lookupGroup[liveRouteSnapshot]
+	routeVersions        routeVersions
+	liveRoutes           *liveRouteIndex
+	activeTunnels        *activeTunnelTracker
+	runtimeCtx           atomic.Value // context.Context
+	domainTouches        chan string
+	domainTouchMu        sync.Mutex
+	domainTouched        map[string]struct{}
+	routeLifecycleMu     sync.Mutex
+	sitesMu              sync.RWMutex
+	siteRoots            *publish.RootCache // closed under sitesMu before deleting a publication
+	siteHosts            sync.Map
+	siteLookups          siteLookupCache
+	siteManifests        siteManifestCache
+	siteStats            sync.Map // publication ID -> *siteStats
+	disconnects          chan string
+	disconnectMu         sync.Mutex
+	disconnectQ          map[string]struct{}
+	disconnectWg         sync.WaitGroup
+	wafBlocks            sync.Map // hostname → *wafCounter
+	wafAuditQueue        chan wafAuditEvent
+	h3Sessions           sync.Map // auth token -> *session
+	wafAuditDrops        atomic.Int64
+	domainTouchDrops     atomic.Int64
+	disconnectDrops      atomic.Int64
+	routeCacheHits       atomic.Int64
+	routeCacheMisses     atomic.Int64
+	routeStoreLoads      atomic.Int64
+	connectionsTotal     atomic.Int64
+	shutdownNanos        atomic.Int64
+	queuedResponses      byteBudget
+	responseQueueRejects atomic.Int64
 
 	rejectionLogLimiter *rateLimiter
 }
@@ -166,6 +169,7 @@ type session struct {
 	webSocketCount   atomic.Int64
 	lastSeenUnixNano atomic.Int64
 	closing          atomic.Bool
+	queuedResponses  byteBudget
 }
 
 type sessionWriter interface {
@@ -300,11 +304,19 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		disconnectQ:      make(map[string]struct{}),
 		wafAuditQueue:    make(chan wafAuditEvent, wafAuditQueueSize),
 		siteRoots:        publish.NewRootCache(siteRootCacheSize),
+		queuedResponses:  byteBudget{limit: queuedResponseLimit(cfg.MaxQueuedResponseBytes, config.DefaultMaxQueuedResponseBytes)},
 
 		rejectionLogLimiter: newConfiguredRateLimiter(1, 5, 0),
 	}
 	s.initBypasses(store)
 	return s
+}
+
+func queuedResponseLimit(value, fallback int64) int64 {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func newEphemeralAccessCookieSecret() string {

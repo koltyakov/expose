@@ -76,6 +76,53 @@ func TestPublishSizeLimitConfig(t *testing.T) {
 	}
 }
 
+func TestQueuedResponseByteLimitConfig(t *testing.T) {
+	for _, name := range []string{"EXPOSE_MAX_QUEUED_RESPONSE_BYTES", "EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL"} {
+		t.Setenv(name, "")
+	}
+	cfg, err := ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.MaxQueuedResponseBytes != 128<<20 || cfg.MaxQueuedResponseBytesPerTunnel != 16<<20 {
+		t.Fatalf("default response budgets: %+v, %v", cfg, err)
+	}
+	t.Setenv("EXPOSE_MAX_QUEUED_RESPONSE_BYTES", "4096")
+	t.Setenv("EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL", "2048")
+	cfg, err = ParseServerFlags([]string{"--domain=example.com", "--max-queued-response-bytes=8192"})
+	if err != nil || cfg.MaxQueuedResponseBytes != 8192 || cfg.MaxQueuedResponseBytesPerTunnel != 2048 {
+		t.Fatalf("configured response budgets: %+v, %v", cfg, err)
+	}
+	for _, name := range []string{"EXPOSE_MAX_QUEUED_RESPONSE_BYTES", "EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL"} {
+		for _, value := range []string{"0", "-1", "bad"} {
+			t.Setenv(name, value)
+			if _, err := ParseServerFlags([]string{"--domain=example.com"}); err == nil {
+				t.Fatalf("accepted %s=%q", name, value)
+			}
+		}
+		t.Setenv(name, "4096")
+	}
+}
+
+func TestPublicInactivityTimeoutConfig(t *testing.T) {
+	t.Setenv("EXPOSE_REQUEST_TIMEOUT", "2m")
+	t.Setenv("EXPOSE_HTTPS_WRITE_TIMEOUT", "45s")
+	cfg, err := ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.RequestTimeout != 2*time.Minute || cfg.HTTPSWriteTimeout != 45*time.Second {
+		t.Fatalf("env timeouts: %+v, %v", cfg, err)
+	}
+	cfg, err = ParseServerFlags([]string{"--domain=example.com", "--request-timeout=10s", "--https-write-timeout=20s"})
+	if err != nil || cfg.RequestTimeout != 10*time.Second || cfg.HTTPSWriteTimeout != 20*time.Second {
+		t.Fatalf("flag timeouts: %+v, %v", cfg, err)
+	}
+	for _, name := range []string{"EXPOSE_REQUEST_TIMEOUT", "EXPOSE_HTTPS_WRITE_TIMEOUT"} {
+		for _, value := range []string{"0", "-1s", "bad"} {
+			t.Setenv(name, value)
+			if _, err := ParseServerFlags([]string{"--domain=example.com"}); err == nil {
+				t.Fatalf("accepted %s=%q", name, value)
+			}
+		}
+		t.Setenv(name, "30s")
+	}
+}
+
 func TestParseClientFlagsPasswordSourcesAndTrim(t *testing.T) {
 	t.Setenv("EXPOSE_PASSWORD", " from-env ")
 

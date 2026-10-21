@@ -169,7 +169,8 @@ func TestPublishedSitePresenceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("first tab closed: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("first tab did not close")
 	}

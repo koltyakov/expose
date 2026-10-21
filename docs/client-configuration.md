@@ -142,6 +142,7 @@ Notes:
 - `--transport` applies to `expose http` and `expose static`.
 - WebSocket is the default because it delivers higher throughput and lower latency in the common case (see [Benchmark Report](benchmark.md)). Use `--transport=quic` when you need QUIC benefits: lossy or high-latency networks, mobile/roaming clients, or environments where middleboxes break long-lived WebSocket connections.
 - HTTP/3 requires UDP reachability on the same public port as HTTPS.
+- A failed multi-stream connection obtains a fresh single-use connect token before trying compatibility mode. Temporary connection failures retry registration and reconnection; unsupported HTTP/3 configurations and rejected registration credentials stop the client.
 
 ## Login
 

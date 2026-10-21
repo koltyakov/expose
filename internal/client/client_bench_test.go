@@ -68,12 +68,7 @@ func BenchmarkForwardAndSendInlineResponse(b *testing.B) {
 	b.SetBytes(responseSize)
 
 	for b.Loop() {
-		c.forwardAndSend(context.Background(), base, req, nil, func(msg tunnelproto.Message) error {
-			if msg.Kind != tunnelproto.KindResponse || msg.Response == nil || msg.Response.Status != http.StatusOK {
-				b.Fatalf("unexpected inline response message: %+v", msg)
-			}
-			return nil
-		}, nil)
+		benchmarkForwardResponse(b, c, base, req, responseSize)
 	}
 }
 
@@ -152,14 +147,36 @@ func BenchmarkForwardAndSendParallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			c.forwardAndSend(context.Background(), base, req, nil, func(msg tunnelproto.Message) error {
-				if msg.Kind != tunnelproto.KindResponse || msg.Response == nil || msg.Response.Status != http.StatusOK {
-					b.Fatalf("unexpected parallel response message: %+v", msg)
-				}
-				return nil
-			}, nil)
+			benchmarkForwardResponse(b, c, base, req, responseSize)
 		}
 	})
+}
+
+// Scheduling under load can legitimately push a small response past the inline
+// window. Validate the complete response rather than requiring one wire shape.
+func benchmarkForwardResponse(b *testing.B, c *Client, base *url.URL, req *tunnelproto.HTTPRequest, size int) {
+	var headers, received int
+	var streamed, ended bool
+	c.forwardAndSend(context.Background(), base, req, nil, func(msg tunnelproto.Message) error {
+		switch msg.Kind {
+		case tunnelproto.KindResponse:
+			if msg.Response == nil || msg.Response.Status != http.StatusOK {
+				b.Errorf("unexpected response: %+v", msg.Response)
+				return nil
+			}
+			headers++
+			streamed = msg.Response.Streamed
+			received += len(msg.Response.Body)
+		case tunnelproto.KindRespBodyEnd:
+			ended = msg.BodyChunk != nil && msg.BodyChunk.Error == ""
+		default:
+			b.Errorf("unexpected response message: %s", msg.Kind)
+		}
+		return nil
+	}, func(_ string, payload []byte) error { received += len(payload); return nil })
+	if headers != 1 || received != size || (streamed && !ended) {
+		b.Errorf("incomplete response: headers=%d bytes=%d streamed=%t end=%t", headers, received, streamed, ended)
+	}
 }
 
 func newBenchmarkForwardClient(b *testing.B, responseSize int) (*Client, *url.URL) {
@@ -186,6 +203,7 @@ func newBenchmarkForwardClient(b *testing.B, responseSize int) (*Client, *url.UR
 		Timeout:               5 * time.Second,
 		MaxConcurrentForwards: 512,
 	}, nil)
+	b.Cleanup(c.fwdClient.CloseIdleConnections)
 	return c, base
 }
 

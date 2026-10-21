@@ -291,11 +291,15 @@ func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) htt
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hasRequestBody(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		controller := http.NewResponseController(w)
 		if err := controller.SetReadDeadline(time.Now().Add(timeout)); err == nil {
 			defer func() {
 				deadline := time.Time{}
-				if r.ProtoMajor == 1 && r.Body != nil && r.Body != http.NoBody && !serviceapi.IsServicePath(r.URL.Path) {
+				if r.ProtoMajor == 1 && hasRequestBody(r) && !serviceapi.IsServicePath(r.URL.Path) {
 					// Small responses flush after ServeHTTP returns. net/http may
 					// drain the original body during that flush or final Close.
 					deadline = time.Now().Add(timeout)

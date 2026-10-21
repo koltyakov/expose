@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -59,6 +60,84 @@ func TestPublicDeadlinesBoundImplicitBodyDrains(t *testing.T) {
 				t.Fatal("handler remained blocked on an implicit body drain")
 			}
 		})
+	}
+}
+
+func TestPublicDeadlinesBoundMultiplexedSlowReaders(t *testing.T) {
+	for _, protocol := range []string{"h2", "h3"} {
+		t.Run(protocol, func(t *testing.T) {
+			done := make(chan error, 1)
+			handler := publicDeadlineMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				chunk := make([]byte, 64<<10)
+				for {
+					if _, err := w.Write(chunk); err != nil {
+						done <- err
+						return
+					}
+				}
+			}), time.Second, 100*time.Millisecond)
+			var client *http.Client
+			var url string
+			if protocol == "h2" {
+				server := httptest.NewUnstartedServer(handler)
+				server.EnableHTTP2 = true
+				server.StartTLS()
+				defer server.Close()
+				client, url = server.Client(), server.URL
+			} else {
+				addr, closeServer := startHTTP3IntegrationServer(t, handler)
+				defer closeServer()
+				_, conn, closeClient := newHTTP3IntegrationClient(t, addr)
+				defer closeClient()
+				client, url = &http.Client{Transport: conn}, "https://"+addr
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			// Withhold reads until transport flow control blocks the server.
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("stalled write returned without an error")
+				}
+			case <-ctx.Done():
+				t.Fatal("stalled response did not hit its write deadline")
+			}
+		})
+	}
+}
+
+func TestPublicWriteWatchdogIgnoresStaleCallbacks(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer func() { _ = conn.Close(); _ = peer.Close() }()
+	underlying := &deadlineConnectionWriter{Conn: conn, header: make(http.Header)}
+	w := &publicDeadlineWriter{ResponseWriter: underlying, controller: http.NewResponseController(underlying), timeout: time.Hour, multiplexed: true}
+	w.beginWrite()
+	timer := w.writeTimer
+	w.endWrite()
+	w.writeUntil = time.Now().Add(-time.Second)
+	w.expireWrite() // Callback queued before Stop, executed after the write ended.
+	w.beginWrite()
+	defer w.endWrite()
+	w.expireWrite() // Callback from a previous write, executed during a fresh write.
+	if w.writeTimer != timer {
+		t.Fatal("watchdog timer was not reused")
+	}
+	read := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(peer, make([]byte, 2))
+		read <- err
+	}()
+	if _, err := conn.Write([]byte("ok")); err != nil {
+		t.Fatalf("stale callback expired a later write: %v", err)
+	}
+	if err := <-read; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -143,17 +222,21 @@ func (w *deadlineConnectionWriter) Header() http.Header { return w.header }
 func (*deadlineConnectionWriter) WriteHeader(int)       {}
 
 func TestPublicDeadlinesStillBoundBlockedIO(t *testing.T) {
-	for _, reading := range []bool{true, false} {
-		t.Run(fmt.Sprint(reading), func(t *testing.T) {
+	for _, tc := range []struct{ reading, multiplexed bool }{{true, false}, {false, false}, {false, true}} {
+		t.Run(fmt.Sprintf("reading=%t/multiplexed=%t", tc.reading, tc.multiplexed), func(t *testing.T) {
 			t.Parallel()
 			conn, peer := net.Pipe()
 			defer func() { _ = conn.Close(); _ = peer.Close() }()
 			w := &deadlineConnectionWriter{Conn: conn, header: make(http.Header)}
 			r := httptest.NewRequest(http.MethodPost, "/blocked", nil)
 			r.Body = conn
+			r.ContentLength = -1
+			if tc.multiplexed {
+				r.ProtoMajor = 2
+			}
 			var blockedErr error
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if reading {
+				if tc.reading {
 					_, blockedErr = r.Body.Read(make([]byte, 1))
 				} else {
 					_, blockedErr = w.Write([]byte("blocked"))

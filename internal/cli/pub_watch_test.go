@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -619,14 +620,79 @@ func TestPubWatchSnapshotDetectsAtomicAndTimestampPreservingSaves(t *testing.T) 
 		t.Fatalf("same-size, same-mtime atomic save was missed: %v", err)
 	}
 	if pubFileChangeTime(after["index.html"]) != nil {
-		writeIncrementalCLIFile(t, root, "index.html", "old")
-		if err := os.Chtimes(filepath.Join(root, "index.html"), after["index.html"].ModTime(), after["index.html"].ModTime()); err != nil {
-			t.Fatal(err)
+		// Metadata can distinguish these saves only after the filesystem's
+		// change-time clock advances. Collisions are covered by content verification.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			writeIncrementalCLIFile(t, root, "index.html", "old")
+			if err := os.Chtimes(filepath.Join(root, "index.html"), after["index.html"].ModTime(), after["index.html"].ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			preserved, err := publish.FileSnapshot(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(pubFileChangeTime(after["index.html"]), pubFileChangeTime(preserved["index.html"])) {
+				if samePubSnapshot(after, preserved) {
+					t.Fatal("distinct change time was missed")
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("filesystem change-time clock did not advance")
+			}
+			time.Sleep(time.Millisecond)
 		}
-		preserved, err := publish.FileSnapshot(root)
-		if err != nil || samePubSnapshot(after, preserved) {
-			t.Fatalf("timestamp-preserving write was missed: %v", err)
-		}
+	}
+}
+
+func TestPubWatchVerifiesContentWhenMetadataMatches(t *testing.T) {
+	for _, mode := range []string{"unchanged", "changed", "retry"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			writeIncrementalCLIFile(t, root, "index.html", "old")
+			h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
+			if mode != "unchanged" {
+				writeIncrementalCLIFile(t, root, "index.html", "new")
+				// Give the watcher the observed metadata as its baseline, simulating
+				// an invisible edit without relying on the host's timestamp precision.
+				var err error
+				snapshot, err = publish.FileSnapshot(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "retry" {
+				h.failCount, h.failStatus = 1, http.StatusServiceUnavailable
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			var output pubWatchTestOutput
+			output.onEvent = func(event pubWatchEvent) {
+				h.mu.Lock()
+				defer h.mu.Unlock()
+				if mode == "unchanged" && h.fetches >= 2 || mode != "unchanged" && h.commits == 1 {
+					cancel()
+				}
+			}
+			timing := fastPubWatchTiming()
+			timing.Verify = 20 * time.Millisecond
+			if err := watchPublishedSite(ctx, client, opts, initial, snapshot, &output, false, true, timing); err != nil {
+				t.Fatal(err)
+			}
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if mode == "unchanged" {
+				if h.fetches < 2 || h.posts != 0 {
+					t.Fatalf("unchanged content was uploaded or not verified: fetches=%d posts=%d", h.fetches, h.posts)
+				}
+			} else {
+				data, err := os.ReadFile(filepath.Join(h.dir, "index.html"))
+				if err != nil || string(data) != "new" || h.commits != 1 || h.posts != 1+h.failCount {
+					t.Fatalf("invisible edit not committed exactly once: data=%q commits=%d posts=%d err=%v", data, h.commits, h.posts, err)
+				}
+			}
+		})
 	}
 }
 

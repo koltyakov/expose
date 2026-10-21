@@ -150,3 +150,38 @@ func TestUpstreamIdleTimeoutFallbacks(t *testing.T) {
 		t.Fatalf("default fallback=%s", got)
 	}
 }
+
+func TestRequestActivityReusesTimerWithoutCancelingPausedReads(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	activity := newRequestActivity(time.Hour, cancel)
+	defer activity.stop()
+	timer := activity.timer
+	activity.finishHeaders()
+	activity.mu.Lock()
+	activity.deadline = time.Now().Add(-time.Second)
+	activity.mu.Unlock()
+	activity.expire() // A callback already queued when the header timer stopped.
+	if ctx.Err() != nil {
+		t.Fatal("paused timer canceled the request")
+	}
+	activity.beginRead()
+	deadline := activity.deadline
+	activity.touch() // A duplex upload must not extend the response read deadline.
+	if activity.deadline != deadline || activity.timer != timer {
+		t.Fatal("response read changed timer ownership or accepted upload activity")
+	}
+	activity.expire() // An older callback must honor the newly armed deadline.
+	if ctx.Err() != nil {
+		t.Fatal("stale callback canceled a fresh read")
+	}
+	activity.endRead()
+	activity.beginRead()
+	activity.mu.Lock()
+	activity.deadline = time.Now().Add(-time.Second)
+	activity.mu.Unlock()
+	activity.expire()
+	if ctx.Err() == nil {
+		t.Fatal("expired active read did not cancel the request")
+	}
+}

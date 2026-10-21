@@ -20,7 +20,7 @@ import (
 )
 
 type pubWatchTiming struct {
-	Poll, Debounce, Stats, Retry time.Duration
+	Poll, Debounce, Stats, Retry, Verify time.Duration
 }
 
 func (t pubWatchTiming) defaults() pubWatchTiming {
@@ -35,6 +35,9 @@ func (t pubWatchTiming) defaults() pubWatchTiming {
 	}
 	if t.Retry <= 0 {
 		t.Retry = time.Second
+	}
+	if t.Verify <= 0 {
+		t.Verify = 30 * time.Second
 	}
 	return t
 }
@@ -105,7 +108,9 @@ func filterPubWatchSnapshot(snapshot map[string]os.FileInfo, published map[strin
 	}
 }
 
-// Unix change times catch writes that preserve size and modification time.
+// Unix change times usually catch writes that preserve size and modification time.
+// Multiple writes within a filesystem clock tick can still have identical metadata;
+// the watch loop periodically compares content to cover those collisions.
 // FileInfo.Sys is platform-specific; other platforms use the portable fields.
 func pubFileChangeTime(info os.FileInfo) any {
 	value := reflect.ValueOf(info.Sys())
@@ -243,6 +248,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 	statsPoll := time.NewTicker(timing.Stats)
 	defer statsPoll.Stop()
 	observed := baseline
+	nextVerify := time.Now().Add(timing.Verify)
 	var changedAt, nextRetry time.Time
 	retryDelay := timing.Retry
 	scanError, uploadError := "", ""
@@ -298,7 +304,12 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				observed, changedAt = snapshot, time.Now()
 				nextRetry, retryDelay = time.Time{}, timing.Retry
 			}
-			if !uploadBusy && !samePubSnapshot(snapshot, baseline) && time.Since(changedAt) >= timing.Debounce && !time.Now().Before(nextRetry) {
+			dirty := !samePubSnapshot(snapshot, baseline)
+			// Metadata polling stays cheap. A periodic content comparison catches
+			// same-size, same-timestamp saves, including coarse filesystem clocks.
+			// Staged sources already compare Git object identities.
+			verify := opts.Staged == nil && !time.Now().Before(nextVerify)
+			if !uploadBusy && (dirty || verify) && (!dirty || time.Since(changedAt) >= timing.Debounce) && !time.Now().Before(nextRetry) {
 				startUpload(snapshot)
 				if err := redraw(); err != nil {
 					return err
@@ -363,6 +374,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				published = pubPublishedPaths(event.result.Files)
 				filterPubWatchSnapshot(event.snapshot, published)
 				baseline = event.snapshot
+				nextVerify = time.Now().Add(timing.Verify)
 				uploadError, nextRetry, retryDelay = "", time.Time{}, timing.Retry
 				status.State = "Watching for changes"
 				if event.result.Uploaded {

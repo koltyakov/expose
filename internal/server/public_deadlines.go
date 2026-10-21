@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/expose/internal/serviceapi"
@@ -23,15 +24,21 @@ func publicDeadlineMiddleware(next http.Handler, readTimeout, writeTimeout time.
 		_ = controller.SetWriteDeadline(time.Time{})
 		// net/http flushes small buffered responses after the handler returns.
 		defer func() { _ = controller.SetWriteDeadline(time.Now().Add(writeTimeout)) }()
-		if r.Body != nil && r.Body != http.NoBody && readTimeout > 0 {
+		if hasRequestBody(r) && readTimeout > 0 {
 			r.Body = &publicDeadlineBody{ReadCloser: r.Body, controller: controller, timeout: readTimeout}
 		}
-		writer := &publicDeadlineWriter{ResponseWriter: w, controller: controller, timeout: writeTimeout}
-		if r.ProtoMajor == 1 && r.Body != nil && r.Body != http.NoBody {
+		writer := &publicDeadlineWriter{ResponseWriter: w, controller: controller, timeout: writeTimeout, multiplexed: r.ProtoMajor >= 2}
+		if r.ProtoMajor == 1 && hasRequestBody(r) {
 			writer.drainTimeout = readTimeout
 		}
 		next.ServeHTTP(writer, r)
 	})
+}
+
+// Incoming requests use zero for a known-empty body and -1 for an unknown
+// length. HTTP/2 still supplies a non-nil requestBody for an empty stream.
+func hasRequestBody(r *http.Request) bool {
+	return r.Body != nil && r.Body != http.NoBody && (r.ContentLength != 0 || len(r.TransferEncoding) != 0)
 }
 
 type publicDeadlineBody struct {
@@ -58,11 +65,31 @@ type publicDeadlineWriter struct {
 	controller   *http.ResponseController
 	timeout      time.Duration
 	drainTimeout time.Duration
+	multiplexed  bool
+	writeMu      sync.Mutex
+	writeTimer   *time.Timer
+	writeUntil   time.Time
+	writing      bool
 }
 
 func (w *publicDeadlineWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *publicDeadlineWriter) beginWrite() {
+	if w.multiplexed && w.timeout > 0 {
+		// HTTP/2 deadline updates synchronously cross into its connection loop.
+		// Fast writes need only arm this reusable watchdog; touch the stream's
+		// deadline when an actual write stalls.
+		w.writeMu.Lock()
+		w.writing = true
+		w.writeUntil = time.Now().Add(w.timeout)
+		if w.writeTimer == nil {
+			w.writeTimer = time.AfterFunc(w.timeout, w.expireWrite)
+		} else {
+			w.writeTimer.Reset(w.timeout)
+		}
+		w.writeMu.Unlock()
+		return
+	}
 	_ = w.controller.SetWriteDeadline(time.Now().Add(w.timeout))
 	// net/http can read the original HTTP/1.1 body before writing headers.
 	// That implicit drain bypasses publicDeadlineBody.Read entirely.
@@ -72,10 +99,32 @@ func (w *publicDeadlineWriter) beginWrite() {
 }
 
 func (w *publicDeadlineWriter) endWrite() {
+	if w.multiplexed && w.timeout > 0 {
+		w.writeMu.Lock()
+		w.writing = false
+		w.writeTimer.Stop()
+		w.writeMu.Unlock()
+		return
+	}
 	_ = w.controller.SetWriteDeadline(time.Time{})
 	if w.drainTimeout > 0 {
 		_ = w.controller.SetReadDeadline(time.Time{})
 	}
+}
+
+func (w *publicDeadlineWriter) expireWrite() {
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+	if !w.writing {
+		return
+	}
+	if remaining := time.Until(w.writeUntil); remaining > 0 {
+		w.writeTimer.Reset(remaining)
+		return
+	}
+	// endWrite waits for this call before allowing ServeHTTP to return. A
+	// stopped callback therefore cannot access a recycled response writer.
+	_ = w.controller.SetWriteDeadline(time.Now())
 }
 
 func (w *publicDeadlineWriter) WriteHeader(status int) {

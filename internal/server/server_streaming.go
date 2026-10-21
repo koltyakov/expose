@@ -74,7 +74,7 @@ func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, h
 // Writers must finish consuming borrowed buffers before returning.
 func (s *Server) sendRequestBodyWith(reqID string, r *http.Request, headers map[string][]string, writeMsg func(tunnelproto.Message) error, writeChunk func([]byte) error) (bool, error) {
 	requestTimeoutMs := s.requestTimeoutMillis()
-	if r.Body == nil || r.Body == http.NoBody {
+	if !hasRequestBody(r) {
 		return false, writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindRequest,
 			Request: &tunnelproto.HTTPRequest{

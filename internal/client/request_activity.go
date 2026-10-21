@@ -29,13 +29,16 @@ type requestActivity struct {
 	timeout  time.Duration
 	cancel   context.CancelFunc
 	stopped  bool
+	active   bool
+	headers  bool
 }
 
 func newRequestActivity(timeout time.Duration, cancel context.CancelFunc) *requestActivity {
-	a := &requestActivity{timeout: timeout, cancel: cancel}
+	a := &requestActivity{timeout: timeout, cancel: cancel, headers: true}
 	if timeout > 0 {
 		a.mu.Lock()
 		a.deadline = time.Now().Add(timeout)
+		a.active = true
 		a.timer = time.AfterFunc(timeout, a.expire)
 		a.mu.Unlock()
 	}
@@ -45,16 +48,17 @@ func newRequestActivity(timeout time.Duration, cancel context.CancelFunc) *reque
 func (a *requestActivity) touch() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.timer != nil && !a.stopped {
+	if a.timer != nil && !a.stopped && a.active && a.headers {
 		a.deadline = time.Now().Add(a.timeout)
-		a.timer.Reset(a.timeout)
+		// The callback rechecks this deadline. Busy uploads need not modify
+		// the runtime timer heap on every chunk.
 	}
 }
 
 func (a *requestActivity) expire() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.stopped {
+	if a.stopped || !a.active {
 		return
 	}
 	if remaining := time.Until(a.deadline); remaining > 0 {
@@ -65,13 +69,41 @@ func (a *requestActivity) expire() {
 	a.cancel()
 }
 
+func (a *requestActivity) finishHeaders() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.headers = false
+	a.pauseLocked()
+}
+
+func (a *requestActivity) beginRead() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.timer != nil && !a.stopped {
+		a.active = true
+		a.deadline = time.Now().Add(a.timeout)
+		a.timer.Reset(a.timeout)
+	}
+}
+
+func (a *requestActivity) endRead() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pauseLocked()
+}
+
+func (a *requestActivity) pauseLocked() {
+	a.active = false
+	if a.timer != nil {
+		a.timer.Stop()
+	}
+}
+
 func (a *requestActivity) stop() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.stopped = true
-	if a.timer != nil {
-		a.timer.Stop()
-	}
+	a.pauseLocked()
 }
 
 // idleResponseBody bounds each upstream read, not time spent forwarding an
@@ -79,15 +111,11 @@ func (a *requestActivity) stop() {
 // stalled network read without retaining a goroutine for every chunk.
 type idleResponseBody struct {
 	io.ReadCloser
-	timeout time.Duration
-	cancel  context.CancelFunc
+	activity *requestActivity
 }
 
 func (b idleResponseBody) Read(p []byte) (int, error) {
-	if b.timeout <= 0 {
-		return b.ReadCloser.Read(p)
-	}
-	timer := time.AfterFunc(b.timeout, b.cancel)
-	defer timer.Stop()
+	b.activity.beginRead()
+	defer b.activity.endRead()
 	return b.ReadCloser.Read(p)
 }

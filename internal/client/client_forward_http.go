@@ -257,7 +257,7 @@ func (c *Client) forwardAndSend(
 	}
 
 	resp, err := c.fwdClient.Do(localReq)
-	activity.stop()
+	activity.finishHeaders()
 	if err != nil {
 		_ = writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindResponse,
@@ -273,7 +273,7 @@ func (c *Client) forwardAndSend(
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusSwitchingProtocols && resp.Body != http.NoBody {
-		resp.Body = idleResponseBody{ReadCloser: resp.Body, timeout: timeout, cancel: cancel}
+		resp.Body = idleResponseBody{ReadCloser: resp.Body, activity: activity}
 	}
 
 	respHeaders := tunnelproto.ShallowCloneHeaders(resp.Header)

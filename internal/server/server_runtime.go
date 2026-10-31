@@ -392,6 +392,7 @@ func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *htt
 	defer func() { s.shutdownNanos.Store(time.Since(started).Nanoseconds()) }()
 	drainTimeout := durationOr(s.cfg.ShutdownDrainTime, 5*time.Second)
 	waitTimeout := durationOr(s.cfg.ShutdownWaitTime, 15*time.Second)
+	s.closeBypasses()
 
 	s.log.Info("shutdown: draining connections", "timeout", drainTimeout)
 	drainErrCh := make(chan error, 1)
@@ -409,6 +410,12 @@ func (s *Server) gracefulShutdown(httpsServer *http.Server, challengeServer *htt
 		}
 	}
 	firstErr := <-drainErrCh
+	if !waitGroupWait(&s.bypassWG, waitTimeout) {
+		s.log.Warn("shutdown: timed out waiting for local service proxies", "timeout", waitTimeout)
+	}
+	// A request admitted before draining may have returned a connection to its
+	// upstream idle pool after the first close pass.
+	s.closeBypasses()
 	s.log.Info("shutdown: complete")
 	return firstErr
 }

@@ -14,6 +14,9 @@ type ServerBypass struct {
 	Port             int    `json:"port"`
 	DisableWAF       bool   `json:"disable_waf,omitempty"`
 	DisableRateLimit bool   `json:"disable_rate_limit,omitempty"`
+	MaxInFlight      int    `json:"max_in_flight,omitempty"`
+	MaxHTTPRequests  int    `json:"max_http_requests,omitempty"`
+	MaxUpgrades      int    `json:"max_upgrades,omitempty"`
 }
 
 func parseServerBypasses(raw, baseDomain string) ([]ServerBypass, error) {
@@ -47,6 +50,9 @@ func parseServerBypasses(raw, baseDomain string) ([]ServerBypass, error) {
 		}
 		if route.Port < 1 || route.Port > 65535 {
 			return nil, fmt.Errorf("server bypass %q port must be between 1 and 65535", route.Subdomain)
+		}
+		if route.MaxInFlight < 0 || route.MaxHTTPRequests < 0 || route.MaxUpgrades < 0 {
+			return nil, fmt.Errorf("server bypass %q admission limits must not be negative", route.Subdomain)
 		}
 		if seen[route.Subdomain] {
 			return nil, fmt.Errorf("duplicate server bypass subdomain %q", route.Subdomain)

@@ -38,6 +38,9 @@ func TestServerBypassesRejectInvalidConfig(t *testing.T) {
 		`[{"subdomain":"bad name","port":3000}]`,
 		`[{"subdomain":"app","port":3000,"disable_waf":"true"}]`,
 		`[{"subdomain":"app","port":3000,"disable_wfa":true}]`,
+		`[{"subdomain":"app","port":3000,"max_in_flight":-1}]`,
+		`[{"subdomain":"app","port":3000,"max_http_requests":-1}]`,
+		`[{"subdomain":"app","port":3000,"max_upgrades":-1}]`,
 		`[{"subdomain":"app","port":3000},{"subdomain":"APP","port":9000}]`,
 		`[{"subdomain":"` + strings.Repeat("a", 63) + `.` + strings.Repeat("b", 63) + `.` + strings.Repeat("c", 63) + `.` + strings.Repeat("d", 63) + `","port":3000}]`,
 	} {
@@ -47,5 +50,16 @@ func TestServerBypassesRejectInvalidConfig(t *testing.T) {
 				t.Fatal("accepted invalid bypass configuration")
 			}
 		})
+	}
+}
+
+func TestServerBypassAdmissionConfig(t *testing.T) {
+	cfg, err := ParseServerFlags([]string{"--domain=example.com", `--bypasses=[{"subdomain":"app","port":3000,"max_in_flight":200,"max_http_requests":40,"max_upgrades":160}]`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := cfg.Bypasses[0]
+	if r.MaxInFlight != 200 || r.MaxHTTPRequests != 40 || r.MaxUpgrades != 160 {
+		t.Fatalf("limits lost: %+v", r)
 	}
 }

@@ -96,6 +96,7 @@ type Server struct {
 	acmeIssueHosts       map[string]time.Time
 	trustedProxies       []netip.Prefix
 	bypasses             map[string]*serverBypass
+	bypassWG             sync.WaitGroup
 	basicAuthCache       basicAuthSuccessCache
 	routes               routeCache
 	routeLookups         lookupGroup[liveRouteSnapshot]

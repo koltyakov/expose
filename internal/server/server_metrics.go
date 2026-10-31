@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
@@ -36,6 +37,33 @@ func (s *Server) MetricsHandler() http.HandlerFunc {
 		metric("expose_active_tunnel_sessions", activeSessions)
 		metric("expose_pending_http_requests", pendingHTTP)
 		metric("expose_open_websockets", openWebSockets)
+		hosts := make([]string, 0, len(s.bypasses))
+		for host := range s.bypasses {
+			hosts = append(hosts, host)
+		}
+		sort.Strings(hosts)
+		for _, host := range hosts {
+			b := s.bypasses[host]
+			b.mu.Lock()
+			httpPending, upgradePending, active := b.httpPending, b.upgradePending, len(b.upgrades)
+			b.mu.Unlock()
+			for _, class := range []struct {
+				name        string
+				used, limit int
+			}{
+				{"http", httpPending, b.limits.http}, {"upgrade", upgradePending, b.limits.upgrades},
+				{"total", httpPending + upgradePending, b.limits.total},
+			} {
+				_, _ = fmt.Fprintf(w, "expose_bypass_in_flight{route=%q,class=%q} %d\nexpose_bypass_limit{route=%q,class=%q} %d\n", host, class.name, class.used, host, class.name, class.limit)
+			}
+			_, _ = fmt.Fprintf(w, "expose_bypass_active_upgrades{route=%q} %d\nexpose_bypass_upgrade_handshakes{route=%q} %d\n", host, active, host, max(0, upgradePending-active))
+			for i, reason := range []string{"total", "http", "upgrade", "shutdown"} {
+				_, _ = fmt.Fprintf(w, "expose_bypass_rejections_total{route=%q,reason=%q} %d\n", host, reason, b.rejects[i].Load())
+			}
+			_, _ = fmt.Fprintf(w, "expose_bypass_header_requests_total{route=%q} %d\nexpose_bypass_header_duration_seconds_total{route=%q} %g\n", host, b.headerCount.Load(), host, float64(b.headerNanos.Load())/1e9)
+			_, _ = fmt.Fprintf(w, "expose_bypass_upgrades_total{route=%q} %d\nexpose_bypass_upgrade_duration_seconds_total{route=%q} %g\n", host, b.upgradeCount.Load(), host, float64(b.upgradeNanos.Load())/1e9)
+			_, _ = fmt.Fprintf(w, "expose_bypass_upgrade_completions_total{route=%q} %d\n", host, b.upgradeCompleted.Load())
+		}
 		metric("expose_tunnel_connections_total", s.connectionsTotal.Load())
 		metric("expose_response_queue_bytes", s.queuedResponses.used.Load())
 		metric("expose_response_queue_limit_bytes", s.queuedResponses.limit)

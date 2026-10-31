@@ -22,7 +22,7 @@ func TestBypassCompressionNegotiationTransport(t *testing.T) {
 			Bypasses: []config.ServerBypass{{Subdomain: "fixture", Port: 8080}},
 		}}
 		srv.initBypasses(nil)
-		wrapped := srv.bypasses["fixture.example.com"].proxy.Transport.(bypassTransport)
+		wrapped := srv.bypasses["fixture.example.com"].proxy.Transport.(trackingBypassTransport).base.(bypassTransport)
 		tr := wrapped.base.(*http.Transport)
 		defer tr.CloseIdleConnections()
 		if !tr.DisableCompression || tr == http.DefaultTransport {
@@ -136,7 +136,7 @@ func TestBypassCompressionNegotiationRepresentations(t *testing.T) {
 				Bypasses: []config.ServerBypass{{Subdomain: "fixture", Port: bypassTestPort(t, upstream)}},
 			}, publicLimiter: newConfiguredRateLimiter(0, 100, time.Minute)}
 			srv.initBypasses(nil)
-			wrapped := srv.bypasses["fixture.example.com"].proxy.Transport.(bypassTransport)
+			wrapped := srv.bypasses["fixture.example.com"].proxy.Transport.(trackingBypassTransport).base.(bypassTransport)
 			defer wrapped.base.(*http.Transport).CloseIdleConnections()
 			req := httptest.NewRequest(method, "https://fixture.example.com/fixture", nil).WithContext(t.Context())
 			if tc.present {

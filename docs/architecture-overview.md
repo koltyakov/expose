@@ -125,6 +125,8 @@ Pre-existing `Host`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`
 
 ## Reliability
 
+Server-local bypass routes have separate bounded HTTP and upgrade admission under an aggregate cap. Upgrades cannot consume the HTTP reservation at default limits. The proxy tracks upgraded upstream bodies explicitly because ordinary HTTP server shutdown does not own hijacked WebSockets. Shutdown closes those bodies, rejects late upgrades, closes idle upstream transports, and waits boundedly for the handlers. See [server-local services](server-configuration.md#server-local-services) for defaults, overrides, and route metrics.
+
 - Client sends periodic **keepalive pings** over WebSocket
 - Server **expires stale sessions** via background janitor
 - Client **auto-reconnects** with exponential backoff on disconnect

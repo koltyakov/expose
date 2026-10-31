@@ -7,6 +7,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,8 +17,22 @@ import (
 
 type serverBypass struct {
 	config.ServerBypass
-	proxy   *httputil.ReverseProxy
-	pending atomic.Int64
+	proxy            *httputil.ReverseProxy
+	pending          atomic.Int64
+	mu               sync.Mutex
+	owner            *Server
+	closing          bool
+	httpPending      int
+	upgradePending   int
+	limits           bypassLimits
+	upgrades         map[*trackedBypassUpgrade]struct{}
+	transport        *http.Transport
+	rejects          [4]atomic.Int64
+	headerCount      atomic.Int64
+	headerNanos      atomic.Int64
+	upgradeCount     atomic.Int64
+	upgradeCompleted atomic.Int64
+	upgradeNanos     atomic.Int64
 }
 
 func (s *Server) initBypasses(store *sqlite.Store) {
@@ -35,8 +50,9 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 		// traffic redials per request and piles up TIME_WAIT sockets.
 		transport.MaxIdleConnsPerHost = transport.MaxIdleConns
 		transport.ResponseHeaderTimeout = durationOr(s.cfg.RequestTimeout, 30*time.Second)
+		route := &serverBypass{ServerBypass: cfg, owner: s, transport: transport, limits: bypassLimitsFor(cfg, s.cfg), upgrades: make(map[*trackedBypassUpgrade]struct{})}
 		proxy := &httputil.ReverseProxy{
-			Transport: bypassTransport{transport, transport.ResponseHeaderTimeout},
+			Transport: trackingBypassTransport{bypassTransport{transport, transport.ResponseHeaderTimeout}, route},
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
 				pr.Out.Host = pr.In.Host
@@ -56,7 +72,8 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 				http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			},
 		}
-		s.bypasses[host] = &serverBypass{ServerBypass: cfg, proxy: proxy}
+		route.proxy = proxy
+		s.bypasses[host] = route
 		hosts = append(hosts, host)
 	}
 	if store != nil {
@@ -135,12 +152,12 @@ func (s *Server) serveBypass(w http.ResponseWriter, r *http.Request, host string
 		s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 		return true
 	}
-	if route.pending.Add(1) > maxPendingPerSessionFor(s.cfg) {
-		route.pending.Add(-1)
+	upgrade := isBypassUpgrade(r)
+	if !route.acquire(upgrade) {
 		s.writePublicRejection(w, r, http.StatusServiceUnavailable, "local service overloaded", rejectionConcurrency)
 		return true
 	}
-	defer route.pending.Add(-1)
+	defer route.release(upgrade)
 	var bodyFailed bool
 	ctx := context.WithValue(r.Context(), bypassBodyFailureKey{}, &bodyFailed)
 	route.proxy.ServeHTTP(w, r.WithContext(ctx))

@@ -38,7 +38,12 @@ func TestH3WorkerDisconnectCancelsInlineForward(t *testing.T) {
 	serverStreams := make(chan *http3.Stream, 2)
 	addr, shutdown := startHTTP3TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		serverStreams <- w.(http3.HTTPStreamer).HTTPStream()
+		stream, err := w.(http3.HTTPStreamer).HTTPStream()
+		if err != nil {
+			t.Errorf("take over worker stream: %v", err)
+			return
+		}
+		serverStreams <- stream
 	}))
 	defer shutdown()
 	started := make(chan struct{})

@@ -1248,10 +1248,13 @@ func TestInjectForwardedForDropsMultipleUntrustedHeaderValues(t *testing.T) {
 
 type fakeHTTP3ResponseWriter struct {
 	*httptest.ResponseRecorder
+	streamErr error
 }
 
-func (w *fakeHTTP3ResponseWriter) HTTPStream() *http3.Stream {
-	return nil
+var _ http3.HTTPStreamer = (*fakeHTTP3ResponseWriter)(nil)
+
+func (w *fakeHTTP3ResponseWriter) HTTPStream() (*http3.Stream, error) {
+	return nil, w.streamErr
 }
 
 func TestHandleConnectH3TokenSetupFailureDoesNotMarkTunnelConnected(t *testing.T) {
@@ -1309,6 +1312,103 @@ func TestHandleConnectH3TokenSetupFailureDoesNotMarkTunnelConnected(t *testing.T
 	}
 	if got := srv.activeTunnels.activeCount(key.ID); got != 0 {
 		t.Fatalf("expected no active tunnels after h3 session setup failure, got %d", got)
+	}
+}
+
+func TestHandleConnectH3StreamTakeoverFailure(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	sess := &session{tunnelID: "tun_1", h3StreamPool: newH3StreamPool(1)}
+	defer sess.closeH3StreamPool()
+	srv.registerH3SessionToken("h3_token", sess)
+	req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/connect-h3/stream", nil)
+	req.Header.Set(h3SessionHeader, "h3_token")
+	rr := &fakeHTTP3ResponseWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		streamErr:        errors.New("stream reset"),
+	}
+
+	srv.handleConnectH3Stream(rr, req)
+
+	if got := sess.h3StreamPool.idle(); got != 0 {
+		t.Fatalf("expected no workers after takeover failure, got %d", got)
+	}
+	if got := srv.lookupSessionByH3Token("h3_token"); got != sess {
+		t.Fatal("worker takeover failure removed the control session")
+	}
+}
+
+func TestHandleConnectH3TakeoverFailurePreservesTunnelState(t *testing.T) {
+	t.Parallel()
+
+	for _, connected := range []bool{false, true} {
+		name := "new tunnel"
+		if connected {
+			name = "existing session"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, err := sqlite.Open(filepath.Join(t.TempDir(), "connect-h3.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			ctx := t.Context()
+			key, err := store.CreateAPIKeyWithLimit(ctx, "connect-h3", auth.HashAPIKey("secret", ""), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, tunnelRec, err := store.AllocateDomainAndTunnelWithClientMeta(ctx, key.ID, "temporary", "connect-h3", "example.com", "machine-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := store.CreateConnectToken(ctx, tunnelRec.ID, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := New(config.ServerConfig{BaseDomain: "example.com", ConnectTokenTTL: time.Minute}, store, slog.New(slog.NewTextHandler(io.Discard, nil)), "dev")
+			var previous *session
+			if connected {
+				if err := store.TrySetTunnelConnected(ctx, tunnelRec.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := srv.ensureLiveRouteForTunnel(ctx, tunnelRec.ID); err != nil {
+					t.Fatal(err)
+				}
+				previous = &session{tunnelID: tunnelRec.ID}
+				srv.attachPublishedSession(tunnelRec.ID, previous)
+				srv.replaceSession(tunnelRec.ID, previous)
+				srv.activeTunnels.markConnected(key.ID, tunnelRec.ID)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/_expose/v1/tunnels/connect-h3?token="+token, nil)
+			rr := &fakeHTTP3ResponseWriter{
+				ResponseRecorder: httptest.NewRecorder(),
+				streamErr:        errors.New("stream reset"),
+			}
+
+			srv.handleConnectH3(rr, req)
+
+			route, err := store.FindRouteByTunnelID(ctx, tunnelRec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := route.Tunnel.State == domain.TunnelStateConnected; got != connected {
+				t.Fatalf("expected connected=%v after takeover failure, got %v", connected, got)
+			}
+			wantActive := 0
+			if connected {
+				wantActive = 1
+			}
+			if got := srv.activeTunnels.activeCount(key.ID); got != wantActive {
+				t.Fatalf("expected %d active tunnels after takeover failure, got %d", wantActive, got)
+			}
+			if got := srv.hub.sessions[tunnelRec.ID]; got != previous {
+				t.Fatal("takeover failure changed the existing session")
+			}
+			if snap, ok := srv.liveRoutes.lookupTunnel(tunnelRec.ID); ok != connected || snap.session != previous {
+				t.Fatal("takeover failure did not preserve the expected live route")
+			}
+		})
 	}
 }
 

@@ -179,10 +179,17 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to mark tunnel connected", http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(http.StatusOK)
+	stream, err := httpStreamer.HTTPStream()
+	if err != nil {
+		s.log.Error("http3 stream takeover failed", "tunnel_id", tunnelID, "err", err)
+		if snap.session == nil {
+			s.markTunnelDisconnectedNowLocked(s.serverContext(), tunnelID)
+		}
+		return
+	}
 	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
 	keepLiveRoute = true
-	w.WriteHeader(http.StatusOK)
-	stream := httpStreamer.HTTPStream()
 	var conn *quic.Conn
 	if v := r.Context().Value(http3ConnContextKey{}); v != nil {
 		if qc, ok := v.(*quic.Conn); ok {
@@ -253,7 +260,11 @@ func (s *Server) handleConnectH3Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	stream := httpStreamer.HTTPStream()
+	stream, err := httpStreamer.HTTPStream()
+	if err != nil {
+		s.log.Error("http3 worker stream takeover failed", "tunnel_id", sess.tunnelID, "err", err)
+		return
+	}
 	if !sess.addH3Worker(stream) {
 		closeH3Stream(stream)
 		return

@@ -432,7 +432,12 @@ func setupBenchmarkQUICSessions(
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		registrations <- workerRegistration{tunnelID: tunnelID, stream: streamer.HTTPStream()}
+		stream, err := streamer.HTTPStream()
+		if err != nil {
+			b.Errorf("take over worker stream: %v", err)
+			return
+		}
+		registrations <- workerRegistration{tunnelID: tunnelID, stream: stream}
 	})
 
 	addr, shutdown := startHTTP3IntegrationServer(b, mux)

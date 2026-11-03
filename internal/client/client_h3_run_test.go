@@ -72,7 +72,15 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 			registerMu.Unlock()
 			w.Header().Set(h3SessionHeader, "session-token")
 			w.WriteHeader(http.StatusOK)
-			stream := streamer.HTTPStream()
+			stream, err := streamer.HTTPStream()
+			if err != nil {
+				select {
+				case <-done:
+				default:
+					t.Errorf("take over control stream: %v", err)
+				}
+				return
+			}
 			<-done
 			closeHTTP3TestStream(stream)
 		})
@@ -87,7 +95,15 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			stream := streamer.HTTPStream()
+			stream, err := streamer.HTTPStream()
+			if err != nil {
+				select {
+				case <-done:
+				default:
+					t.Errorf("take over worker stream: %v", err)
+				}
+				return
+			}
 			<-done
 			closeHTTP3TestStream(stream)
 		})
@@ -265,7 +281,11 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 			}
 			w.Header().Set(h3SessionHeader, "session-token")
 			w.WriteHeader(http.StatusOK)
-			stream := streamer.HTTPStream()
+			stream, err := streamer.HTTPStream()
+			if err != nil {
+				recordAsyncTestError(asyncErrCh, "take over control stream: %v", err)
+				return
+			}
 			<-controlDone
 			closeHTTP3TestStream(stream)
 		case "/_expose/v1/tunnels/connect-h3/stream":
@@ -279,7 +299,11 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			stream := streamer.HTTPStream()
+			stream, err := streamer.HTTPStream()
+			if err != nil {
+				recordAsyncTestError(asyncErrCh, "take over worker stream: %v", err)
+				return
+			}
 			defer closeHTTP3TestStream(stream)
 
 			if !dispatched.CompareAndSwap(false, true) {
@@ -287,7 +311,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 				return
 			}
 
-			err := tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{
+			err = tunnelproto.WriteStreamJSONV2(stream, tunnelproto.Message{
 				Kind: tunnelproto.KindWSOpen,
 				WSOpen: &tunnelproto.WSOpen{
 					ID:     "ws_h3_display",
@@ -665,12 +689,20 @@ func TestClientRunH3ReplacesWorkerTakenByWebSocket(t *testing.T) {
 		case "/_expose/v1/tunnels/connect-h3":
 			w.Header().Set(h3SessionHeader, "session-token")
 			w.WriteHeader(http.StatusOK)
-			stream := streamer.HTTPStream()
+			stream, err := streamer.HTTPStream()
+			if err != nil {
+				recordAsyncTestError(asyncErrCh, "take over control stream: %v", err)
+				return
+			}
 			<-controlDone
 			closeHTTP3TestStream(stream)
 		case "/_expose/v1/tunnels/connect-h3/stream":
 			w.WriteHeader(http.StatusOK)
-			stream := streamer.HTTPStream()
+			stream, err := streamer.HTTPStream()
+			if err != nil {
+				recordAsyncTestError(asyncErrCh, "take over worker stream: %v", err)
+				return
+			}
 			defer closeHTTP3TestStream(stream)
 			// The server never asks for more workers in this test.
 			if workers.Add(1) == 1 {

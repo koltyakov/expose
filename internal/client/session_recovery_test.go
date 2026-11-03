@@ -53,7 +53,9 @@ func TestQUICFallbackRefreshesSingleUseToken(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_ = w.(http3.HTTPStreamer).HTTPStream()
+		if _, err := w.(http3.HTTPStreamer).HTTPStream(); err != nil {
+			t.Errorf("take over control stream: %v", err)
+		}
 	}))
 	defer shutdown()
 	reg := domain.RegisterResponse{

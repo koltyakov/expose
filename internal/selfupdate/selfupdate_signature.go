@@ -13,7 +13,7 @@ import (
 const (
 	signatureBundleAssetName = "checksums.txt.sigstore.json"
 	requireSignatureEnv      = "EXPOSE_REQUIRE_SIGNATURE"
-	releaseWorkflowIdentity  = `^https://github\.com/koltyakov/expose/\.github/workflows/release\.yml@refs/tags/.*$`
+	releaseWorkflowIdentity  = "https://github.com/koltyakov/expose/.github/workflows/release.yml@refs/tags/"
 	githubActionsOIDCIssuer  = "https://token.actions.githubusercontent.com"
 	maxSignatureBundleBytes  = 2 << 20
 )
@@ -41,7 +41,7 @@ func verifyReleaseSignature(ctx context.Context, rel *Release, manifest []byte) 
 	if bundleURL == "" {
 		return fmt.Errorf("release %s is missing %s or %s; refusing unsigned update", rel.TagName, checksumAssetName, signatureBundleAssetName)
 	}
-	bundle, err := download(ctx, bundleURL)
+	bundle, err := downloadLimited(ctx, bundleURL, maxSignatureBundleBytes)
 	if err != nil {
 		return fmt.Errorf("download signature bundle: %w", err)
 	}
@@ -66,7 +66,7 @@ func verifyReleaseSignature(ctx context.Context, rel *Release, manifest []byte) 
 	cmd := cosignCommandContext(ctx, cosignPath,
 		"verify-blob",
 		"--bundle", bundlePath,
-		"--certificate-identity-regexp", releaseWorkflowIdentity,
+		"--certificate-identity", releaseWorkflowIdentity+rel.TagName,
 		"--certificate-oidc-issuer", githubActionsOIDCIssuer,
 		manifestPath,
 	)

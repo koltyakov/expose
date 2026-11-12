@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 )
 
@@ -28,6 +28,16 @@ const (
 
 var releaseHTTPClient = &http.Client{Timeout: 20 * time.Second, CheckRedirect: githubAPIRedirect}
 var downloadHTTPClient = &http.Client{Timeout: 5 * time.Minute, CheckRedirect: assetRedirect}
+
+// Resolve once, before replacement. On Windows os.Executable can subsequently
+// refer to the renamed old executable rather than the installed replacement.
+var executablePath = sync.OnceValues(func() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("determine executable: %w", err)
+	}
+	return filepath.EvalSymlinks(exe)
+})
 
 // allowedAssetHosts lists the only hosts release artifacts (archives and the
 // checksum manifest) may be downloaded from. Release metadata comes from the
@@ -129,6 +139,22 @@ func Check(ctx context.Context, currentVersion string) (*Release, error) {
 // current binary. The caller should have already confirmed the user wants
 // to proceed.
 func Apply(ctx context.Context, rel *Release) (*Result, error) {
+	exe, err := executablePath()
+	if err != nil {
+		return nil, err
+	}
+	return applyAt(ctx, rel, exe)
+}
+
+func applyAt(ctx context.Context, rel *Release, exe string) (*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if rel == nil {
+		return nil, errors.New("missing release")
+	}
 	assetName, err := assetNameForPlatform()
 	if err != nil {
 		return nil, err
@@ -148,11 +174,22 @@ func Apply(ctx context.Context, rel *Release) (*Result, error) {
 		return nil, fmt.Errorf("download %s: %w", assetName, err)
 	}
 
+	lock, err := lockExecutable(exe)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Close() }()
+
+	// Authenticate the small manifest before spending bandwidth on the archive.
+	expected, err := releaseChecksum(ctx, rel, assetName)
+	if err != nil {
+		return nil, fmt.Errorf("verify %s: %w", assetName, err)
+	}
 	data, err := download(ctx, dlURL)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", assetName, err)
 	}
-	if err := verifyAssetChecksum(ctx, rel, assetName, data); err != nil {
+	if err := verifyChecksum(assetName, data, expected); err != nil {
 		return nil, fmt.Errorf("verify %s: %w", assetName, err)
 	}
 
@@ -161,7 +198,10 @@ func Apply(ctx context.Context, rel *Release) (*Result, error) {
 		return nil, fmt.Errorf("extract binary: %w", err)
 	}
 
-	if err := replaceBinary(binary); err != nil {
+	if err := validateBinary(binary); err != nil {
+		return nil, fmt.Errorf("validate binary: %w", err)
+	}
+	if err := replaceBinaryAtContext(ctx, exe, binary); err != nil {
 		return nil, fmt.Errorf("replace binary: %w", err)
 	}
 
@@ -190,17 +230,14 @@ func CheckAndApply(ctx context.Context, currentVersion string) (*Result, error) 
 	return result, nil
 }
 
-// Restart re-executes the current binary with the original arguments and
-// environment. On success this function does not return (the process image
-// is replaced). On failure it returns an error.
+// Restart starts the installed binary with the original arguments and
+// environment after the caller has shut down its services. Unix replaces the
+// process image and never returns on success. Windows starts a replacement
+// which waits for this process to exit; the caller must exit after success.
 func Restart() error {
-	exe, err := os.Executable()
+	exe, err := executablePath()
 	if err != nil {
 		return fmt.Errorf("determine executable: %w", err)
 	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-	return syscall.Exec(exe, os.Args, os.Environ())
+	return restartExecutable(exe, os.Args, os.Environ())
 }

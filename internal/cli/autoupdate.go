@@ -79,14 +79,13 @@ func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slo
 	}
 }
 
-// restartProcess re-executes the current binary. On success syscall.Exec
-// replaces the process and this function never returns. On failure it
-// logs the error and returns exit code 1.
+// restartProcess replaces the process on Unix. Windows launches a replacement
+// that waits for this process to exit, so success must return exit code zero.
 func restartProcess(logger *slog.Logger) int {
 	logger.Info("auto-update: restarting process")
 	if err := selfupdate.Restart(); err != nil {
 		fmt.Fprintln(os.Stderr, "auto-update: restart failed:", err)
 		return 1
 	}
-	return 0 // unreachable on success
+	return 0
 }

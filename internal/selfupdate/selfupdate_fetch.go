@@ -44,6 +44,10 @@ func fetchLatestRelease(ctx context.Context) (*Release, error) {
 }
 
 func download(ctx context.Context, url string) ([]byte, error) {
+	return downloadLimited(ctx, url, maxDownloadBytes)
+}
+
+func downloadLimited(ctx context.Context, url string, limit int64) ([]byte, error) {
 	if err := validateAssetURL(url); err != nil {
 		return nil, err
 	}
@@ -61,11 +65,11 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download returned %s", resp.Status)
 	}
-	if resp.ContentLength > maxDownloadBytes {
-		return nil, fmt.Errorf("download too large: %d bytes exceeds limit %d", resp.ContentLength, maxDownloadBytes)
+	if resp.ContentLength > limit {
+		return nil, fmt.Errorf("download too large: %d bytes exceeds limit %d", resp.ContentLength, limit)
 	}
 
-	return readAllWithLimit(resp.Body, maxDownloadBytes)
+	return readAllWithLimit(resp.Body, limit)
 }
 
 func readAllWithLimit(r io.Reader, limit int64) ([]byte, error) {

@@ -4,11 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -199,7 +200,7 @@ func TestReplaceBinary(t *testing.T) {
 	}
 
 	newContent := []byte("new-binary-content")
-	if err := replaceBinaryAt(exe, newContent); err != nil {
+	if err := replaceBinaryAtContext(t.Context(), exe, newContent); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,37 +213,37 @@ func TestReplaceBinary(t *testing.T) {
 	}
 }
 
-func TestReplaceBinaryCopy(t *testing.T) {
+func TestReplaceBinaryCancellationPreservesInstalled(t *testing.T) {
 	t.Parallel()
 
-	// Create a fake binary that is writable, simulating the fallback path.
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "expose")
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	newContent := []byte("updated-via-copy")
-	if err := replaceBinaryCopy(exe, newContent, ""); err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := replaceBinaryAtContext(ctx, exe, []byte("new")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
 	}
 
 	got, err := os.ReadFile(exe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, newContent) {
-		t.Fatalf("binary content = %q, want %q", got, newContent)
+	if string(got) != "old" {
+		t.Fatalf("installed binary changed to %q", got)
 	}
 }
 
 func TestReplaceBinaryFailsWhenDirNotWritable(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires Unix directory permissions and an unprivileged user")
+	}
 
-	// Create a temp directory and make it read-only so CreateTemp in
-	// that directory fails with EACCES, triggering the fallback path.
-	// Since the dir is also not writable for unlinking, the fallback
-	// should fail with a helpful error.
+	// A directory permission failure must never cause an unlink/copy fallback.
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "expose")
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
@@ -254,32 +255,40 @@ func TestReplaceBinaryFailsWhenDirNotWritable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
-	err := replaceBinaryAt(exe, []byte("new"))
+	err := replaceBinaryAtContext(t.Context(), exe, []byte("new"))
 	if err == nil {
 		t.Fatal("expected error when directory is not writable")
 	}
 	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "not permitted") {
 		t.Fatalf("expected permission-related error, got: %v", err)
 	}
+	got, err := os.ReadFile(exe)
+	if err != nil || string(got) != "old" {
+		t.Fatalf("installed binary = %q, error = %v", got, err)
+	}
 }
 
-func TestShouldFallbackToCopy(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "nil", err: nil, want: false},
-		{name: "permission", err: syscall.EACCES, want: true},
-		{name: "text file busy string", err: errors.New("rename: text file busy"), want: true},
-		{name: "cross device string", err: errors.New("rename: invalid cross-device link"), want: true},
-		{name: "other error", err: errors.New("rename failed"), want: false},
+func TestUpdateLock(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "expose")
+	first, err := lockExecutable(exe)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldFallbackToCopy(tt.err); got != tt.want {
-				t.Fatalf("shouldFallbackToCopy() = %v, want %v", got, tt.want)
-			}
-		})
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := lockExecutable(exe)
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("concurrent update acquired the lock")
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := lockExecutable(exe)
+	if err != nil {
+		t.Fatalf("lock was not released: %v", err)
+	}
+	_ = third.Close()
+	if _, err = os.Stat(exe + ".update.lock"); err != nil {
+		t.Fatalf("stable lock file removed: %v", err)
 	}
 }

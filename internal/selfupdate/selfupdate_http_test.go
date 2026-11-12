@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -215,6 +216,24 @@ func TestDownload(t *testing.T) {
 	}
 	if _, err := download(context.Background(), server.URL+"/large"); err == nil || !strings.Contains(err.Error(), "download too large") {
 		t.Fatalf("download(large) error = %v, want size error", err)
+	}
+}
+
+func TestDownloadLimitedRejectsLargeMetadata(t *testing.T) {
+	for _, chunked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chunked=%v", chunked), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if chunked {
+					w.(http.Flusher).Flush()
+				}
+				_, _ = w.Write([]byte("too large"))
+			}))
+			defer server.Close()
+			useDownloadServer(t, server)
+			if _, err := downloadLimited(t.Context(), server.URL, 4); err == nil {
+				t.Fatal("accepted oversized metadata")
+			}
+		})
 	}
 }
 

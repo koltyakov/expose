@@ -18,11 +18,8 @@ const checksumAssetName = "checksums.txt"
 
 const maxChecksumBytes = 1 << 20 // 1 MiB
 
-// verifyAssetChecksum downloads the release checksum manifest and verifies
-// that the SHA-256 digest of data matches the entry recorded for assetName.
-// The manifest is required: releases without one are rejected rather than
-// applied unverified.
-func verifyAssetChecksum(ctx context.Context, rel *Release, assetName string, data []byte) error {
+// releaseChecksum authenticates the manifest before the archive is downloaded.
+func releaseChecksum(ctx context.Context, rel *Release, assetName string) (string, error) {
 	var manifestURL string
 	for _, a := range rel.Assets {
 		if a.Name == checksumAssetName {
@@ -31,25 +28,20 @@ func verifyAssetChecksum(ctx context.Context, rel *Release, assetName string, da
 		}
 	}
 	if manifestURL == "" {
-		return fmt.Errorf("release %s has no %s asset; refusing unverified update", rel.TagName, checksumAssetName)
+		return "", fmt.Errorf("release %s has no %s asset; refusing unverified update", rel.TagName, checksumAssetName)
 	}
 
-	manifest, err := download(ctx, manifestURL)
+	manifest, err := downloadLimited(ctx, manifestURL, maxChecksumBytes)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", checksumAssetName, err)
-	}
-	if int64(len(manifest)) > maxChecksumBytes {
-		return fmt.Errorf("%s exceeds %d bytes", checksumAssetName, maxChecksumBytes)
+		return "", fmt.Errorf("download %s: %w", checksumAssetName, err)
 	}
 	if err := verifyReleaseSignature(ctx, rel, manifest); err != nil {
-		return fmt.Errorf("verify release signature: %w", err)
+		return "", fmt.Errorf("verify release signature: %w", err)
 	}
+	return checksumForAsset(manifest, assetName)
+}
 
-	expected, err := checksumForAsset(manifest, assetName)
-	if err != nil {
-		return err
-	}
-
+func verifyChecksum(assetName string, data []byte, expected string) error {
 	sum := sha256.Sum256(data)
 	actual := hex.EncodeToString(sum[:])
 	if subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) != 1 {

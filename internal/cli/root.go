@@ -4,13 +4,23 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/koltyakov/expose/internal/selfupdate"
 )
 
 // Run is the main CLI entry point. It parses args and dispatches to the
 // appropriate subcommand, returning a process exit code.
 func Run(args []string) int {
+	var err error
+	args, err = selfupdate.ResumeRestart(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "auto-update: restart handoff failed:", err)
+		return 1
+	}
 	resolveVersion()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

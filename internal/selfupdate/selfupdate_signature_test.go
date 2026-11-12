@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -56,7 +57,9 @@ func TestVerifyReleaseSignatureRunsCosign(t *testing.T) {
 	useDownloadServer(t, server)
 
 	cosignPath := filepath.Join(t.TempDir(), "cosign")
-	if err := os.WriteFile(cosignPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	argsPath := filepath.Join(t.TempDir(), "args")
+	t.Setenv("EXPOSE_TEST_COSIGN_ARGS", argsPath)
+	if err := os.WriteFile(cosignPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$EXPOSE_TEST_COSIGN_ARGS\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	previous := cosignLookPath
@@ -68,5 +71,12 @@ func TestVerifyReleaseSignatureRunsCosign(t *testing.T) {
 	}}
 	if err := verifyReleaseSignature(context.Background(), rel, []byte("manifest")); err != nil {
 		t.Fatalf("verifyReleaseSignature() error = %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "--certificate-identity\n"+releaseWorkflowIdentity+rel.TagName+"\n") {
+		t.Fatalf("signature verification was not pinned to selected tag: %s", args)
 	}
 }

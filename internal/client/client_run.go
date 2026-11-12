@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
@@ -26,12 +27,22 @@ func (c *Client) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("invalid local URL: %w", err)
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	var updateWG sync.WaitGroup
+	defer func() {
+		cancel()
+		updateWG.Wait()
+	}()
 
 	// Auto-update: periodic background check + server-version-change trigger.
 	autoUpdateCh := make(chan struct{}, 1) // signals that the binary was replaced
 	var lastServerVersion string
 	if c.autoUpdate {
-		go c.runAutoUpdateLoop(ctx, autoUpdateCh)
+		updateWG.Add(1)
+		go func() {
+			defer updateWG.Done()
+			c.runAutoUpdateLoop(ctx, autoUpdateCh)
+		}()
 	}
 
 	var retry reconnectSchedule
@@ -142,16 +153,24 @@ func (c *Client) Run(ctx context.Context) error {
 			reg.ServerVersion != lastServerVersion {
 			c.log.Info("server version changed", "from", lastServerVersion, "to", reg.ServerVersion)
 			if c.trySelfUpdate(ctx) {
+				rt.close()
 				return ErrAutoUpdated
 			}
 		}
 		lastServerVersion = reg.ServerVersion
 		// Check for updates in the background (non-blocking).
-		go c.checkForUpdates(ctx)
+		if !c.autoUpdate {
+			updateWG.Add(1)
+			go func() {
+				defer updateWG.Done()
+				c.checkForUpdates(ctx)
+			}()
+		}
 
 		// Check if the background auto-update loop applied an update.
 		select {
 		case <-autoUpdateCh:
+			rt.close()
 			return ErrAutoUpdated
 		default:
 		}

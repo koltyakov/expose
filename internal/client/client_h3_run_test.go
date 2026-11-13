@@ -34,6 +34,9 @@ import (
 )
 
 func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	localUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok")
@@ -76,6 +79,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 			if err != nil {
 				select {
 				case <-done:
+				case <-ctx.Done():
 				default:
 					t.Errorf("take over control stream: %v", err)
 				}
@@ -99,6 +103,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 			if err != nil {
 				select {
 				case <-done:
+				case <-ctx.Done():
 				default:
 					t.Errorf("take over worker stream: %v", err)
 				}
@@ -159,8 +164,6 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go func() {
 		runErrCh <- c.Run(ctx)
 	}()
@@ -195,6 +198,8 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 		t.Fatalf("expected resumed tunnel id tun_h3, got %q", secondReady.TunnelID)
 	}
 
+	// Readiness does not wait for worker handshakes. Their takeover can still
+	// be in flight when cancellation closes the client connection.
 	cancel()
 	select {
 	case err := <-runErrCh:

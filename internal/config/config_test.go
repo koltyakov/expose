@@ -76,6 +76,48 @@ func TestPublishSizeLimitConfig(t *testing.T) {
 	}
 }
 
+func TestPublishUploadBoundsConfig(t *testing.T) {
+	names := []string{
+		"EXPOSE_PUBLISH_UPLOAD_IDLE_TIMEOUT",
+		"EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS",
+		"EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS_PER_KEY",
+	}
+	for _, name := range names {
+		t.Setenv(name, "")
+	}
+	cfg, err := ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.PublishUploadIdleTimeout != 30*time.Second || cfg.PublishMaxConcurrentUploads != 8 || cfg.PublishMaxConcurrentUploadsPerKey != 2 {
+		t.Fatalf("default upload bounds: %+v, %v", cfg, err)
+	}
+	t.Setenv(names[0], "2m")
+	t.Setenv(names[1], "12")
+	t.Setenv(names[2], "3")
+	cfg, err = ParseServerFlags([]string{"--domain=example.com"})
+	if err != nil || cfg.PublishUploadIdleTimeout != 2*time.Minute || cfg.PublishMaxConcurrentUploads != 12 || cfg.PublishMaxConcurrentUploadsPerKey != 3 {
+		t.Fatalf("env upload bounds: %+v, %v", cfg, err)
+	}
+	cfg, err = ParseServerFlags([]string{"--domain=example.com", "--publish-upload-idle-timeout=45s", "--publish-max-concurrent-uploads=4", "--publish-max-concurrent-uploads-per-key=1"})
+	if err != nil || cfg.PublishUploadIdleTimeout != 45*time.Second || cfg.PublishMaxConcurrentUploads != 4 || cfg.PublishMaxConcurrentUploadsPerKey != 1 {
+		t.Fatalf("flag upload bounds: %+v, %v", cfg, err)
+	}
+	flags := []string{"publish-upload-idle-timeout", "publish-max-concurrent-uploads", "publish-max-concurrent-uploads-per-key"}
+	for i, name := range names {
+		for _, value := range []string{"0", "-1", "invalid"} {
+			if i == 0 && value == "-1" {
+				value = "-1s"
+			}
+			t.Setenv(name, value)
+			if _, err := ParseServerFlags([]string{"--domain=example.com"}); err == nil {
+				t.Fatalf("accepted %s=%q", name, value)
+			}
+			t.Setenv(name, "")
+			if _, err := ParseServerFlags([]string{"--domain=example.com", "--" + flags[i] + "=" + value}); err == nil {
+				t.Fatalf("accepted --%s=%s", flags[i], value)
+			}
+		}
+	}
+}
+
 func TestQueuedResponseByteLimitConfig(t *testing.T) {
 	for _, name := range []string{"EXPOSE_MAX_QUEUED_RESPONSE_BYTES", "EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL"} {
 		t.Setenv(name, "")

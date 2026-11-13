@@ -109,6 +109,7 @@ type Server struct {
 	domainTouched        map[string]struct{}
 	routeLifecycleMu     sync.Mutex
 	sitesMu              sync.RWMutex
+	siteUploads          siteUploadLimiter
 	siteRoots            *publish.RootCache // closed under sitesMu before deleting a publication
 	siteHosts            sync.Map
 	siteLookups          siteLookupCache

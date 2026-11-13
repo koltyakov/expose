@@ -217,7 +217,11 @@ expose server --publish-max-bytes=26214400
 
 This configured limit applies to the sum of all files, including reused files on incremental updates. Separately, archives accept at most 20,000 entries, counting files and explicit directory records. Incremental target manifests accept at most 20,000 files, including unchanged files, and at most 8 MiB of uncompressed JSON metadata. The control manifest does not count as a content entry or against the content-byte budget. The CLI checks file counts and encoded manifest size before uploading. Exceeding any of these server limits returns HTTP `413`; staging files are removed and an existing publication stays intact. There is no separate compressed-size cap. Invalid archives never become routable. There is no upload-policy override for blocked files.
 
-Authenticated publishing uploads have no total transfer deadline in the client or server. The CLI spools the compressed archive to a temporary file, then streams it over HTTP; the server streams decompression and extraction to a staging directory. File contents are not buffered in memory. Transfer duration does not impose an additional limit. Ctrl+C cancels an upload. Reverse proxies may impose their own limits.
+Authenticated publishing uploads have no total transfer deadline in the client or server, but the server waits at most **30 seconds** for progress on each upload body read. Configure this positive duration with `EXPOSE_PUBLISH_UPLOAD_IDLE_TIMEOUT` or `--publish-upload-idle-timeout`. An upload that keeps progressing can outlive this interval. A stalled upload receives HTTP `408`, its staging files are removed, and an existing publication stays intact.
+
+The server admits at most **8 active uploads globally** and **2 per API key**, including extraction and commit. Configure positive counts with `EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS` / `--publish-max-concurrent-uploads` and `EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS_PER_KEY` / `--publish-max-concurrent-uploads-per-key`. Excess uploads are rejected without queuing or creating staging files. A per-key limit returns HTTP `429`; a global limit returns HTTP `503`. Both include `Retry-After: 1`. Slots are released on completion, failure, timeout, or cancellation.
+
+The CLI spools the compressed archive to a temporary file, then streams it over HTTP; the server streams decompression and extraction to a staging directory. File contents are not buffered in memory. Ctrl+C cancels an upload. Reverse proxies may impose their own limits.
 
 ## Server storage
 

@@ -36,6 +36,9 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--db`                    | `EXPOSE_DB_PATH`                 | `./expose.db` | SQLite database path                                           |
 | `--publish-dir`           | `EXPOSE_PUBLISH_DIR`             | `<db path>.sites` | Storage directory for published static sites                 |
 | `--publish-max-bytes`     | `EXPOSE_PUBLISH_MAX_BYTES`       | `10485760` | Maximum total extracted size per published site, in bytes, default 10 MiB |
+| `--publish-upload-idle-timeout` | `EXPOSE_PUBLISH_UPLOAD_IDLE_TIMEOUT` | `30s` | Maximum wait for progress on a site upload body read |
+| `--publish-max-concurrent-uploads` | `EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS` | `8` | Maximum active site uploads across all API keys |
+| `--publish-max-concurrent-uploads-per-key` | `EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS_PER_KEY` | `2` | Maximum active site uploads per API key |
 | `--db-max-open-conns`     | `EXPOSE_DB_MAX_OPEN_CONNS`       | `10`          | SQLite max open connections                                    |
 | `--db-max-idle-conns`     | `EXPOSE_DB_MAX_IDLE_CONNS`       | `10`          | SQLite max idle connections                                    |
 | `--tls-mode`              | `EXPOSE_TLS_MODE`                | `auto`        | TLS mode: `auto`, `dynamic`, or `wildcard`                     |

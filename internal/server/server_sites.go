@@ -202,6 +202,18 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		http.Error(w, s.hostnameConflict(r.Context(), key, host).Error(), http.StatusConflict)
 		return
 	}
+	releaseUpload, rejectionStatus := s.siteUploads.acquire(key, s.cfg.PublishMaxConcurrentUploads, s.cfg.PublishMaxConcurrentUploadsPerKey)
+	if releaseUpload == nil {
+		// HTTP/1 otherwise tries to drain the rejected body before replying.
+		// A stalled sender must not turn admission rejection into a wait.
+		if r.ProtoMajor == 1 {
+			w.Header().Set("Connection", "close")
+		}
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many active site uploads; retry publishing", rejectionStatus)
+		return
+	}
+	defer releaseUpload()
 	if err := os.MkdirAll(s.publishDir(), 0700); err != nil {
 		s.siteError(w, err)
 		return
@@ -212,11 +224,25 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		return
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	// Site size is bounded by PublishMaxBytes, not transfer duration. Only
-	// authenticated, validated uploads bypass ordinary request deadlines.
+	// Active uploads may outlive ordinary absolute deadlines, but each body
+	// read must make progress within the idle interval.
 	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Time{})
 	_ = controller.SetWriteDeadline(time.Time{})
+	idleTimeout := durationOr(s.cfg.PublishUploadIdleTimeout, config.DefaultPublishUploadIdleTimeout)
+	r.Body = &publicDeadlineBody{ReadCloser: r.Body, controller: controller, timeout: idleTimeout}
+	writeTimeout := durationOr(s.cfg.HTTPSWriteTimeout, httpsWriteTimeout)
+	defer func() {
+		// Close can drain unread HTTP/1 bytes without going through Read.
+		// Bound that work before returning the slot, and leave a deadline for
+		// net/http's final buffered response flush.
+		_ = r.Body.Close()
+		_ = controller.SetWriteDeadline(time.Now().Add(writeTimeout))
+	}()
+	writer := &publicDeadlineWriter{ResponseWriter: w, controller: controller, timeout: writeTimeout, multiplexed: r.ProtoMajor >= 2}
+	if r.ProtoMajor == 1 {
+		writer.drainTimeout = idleTimeout
+	}
+	w = writer
 	maxBytes := s.cfg.PublishMaxBytes
 	if maxBytes <= 0 {
 		maxBytes = config.DefaultPublishMaxBytes

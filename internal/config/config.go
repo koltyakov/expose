@@ -80,6 +80,12 @@ type ServerConfig struct {
 	TrustedProxyCIDRs               []string
 	RouteCacheTTL                   time.Duration
 	WAFCounterRetention             time.Duration
+
+	// Publishing transfer bounds are separate from ordinary request deadlines.
+	PublishUploadIdleTimeout          time.Duration
+	PublishMaxConcurrentUploads       int
+	PublishMaxConcurrentUploadsPerKey int
+
 	// PublicHTTP3 advertises the HTTP/3 listener to browsers with Alt-Svc.
 	// The public UDP port must match the public TCP port.
 	PublicHTTP3 bool
@@ -106,6 +112,11 @@ const defaultServerDBPath = "./expose.db"
 
 // DefaultPublishMaxBytes limits each site's total extracted file size.
 const DefaultPublishMaxBytes int64 = 10 << 20
+
+// Publishing bounds are independent of ordinary request deadlines.
+const DefaultPublishUploadIdleTimeout = 30 * time.Second
+const DefaultPublishMaxConcurrentUploads = 8
+const DefaultPublishMaxConcurrentUploadsPerKey = 2
 
 // Queued response budgets apply to streamed HTTP body buffers waiting for public
 // consumers on multiplexed tunnels, not to total transfer sizes.
@@ -265,6 +276,10 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		WAFCounterRetention:             envDuration("EXPOSE_WAF_COUNTER_RETENTION", time.Hour, &envErrs),
 		PublicHTTP3:                     envBool("EXPOSE_PUBLIC_HTTP3", false, &envErrs),
 		TURN:                            turnConfigFromEnv(&envErrs),
+
+		PublishUploadIdleTimeout:          envDuration("EXPOSE_PUBLISH_UPLOAD_IDLE_TIMEOUT", DefaultPublishUploadIdleTimeout, &envErrs),
+		PublishMaxConcurrentUploads:       envInt("EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS", DefaultPublishMaxConcurrentUploads, &envErrs),
+		PublishMaxConcurrentUploadsPerKey: envInt("EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS_PER_KEY", DefaultPublishMaxConcurrentUploadsPerKey, &envErrs),
 	}
 	if err := errors.Join(envErrs...); err != nil {
 		return cfg, err
@@ -279,6 +294,9 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
 	fs.StringVar(&cfg.PublishDir, "publish-dir", cfg.PublishDir, "Published site storage directory (default: <db path>.sites)")
 	fs.Int64Var(&cfg.PublishMaxBytes, "publish-max-bytes", cfg.PublishMaxBytes, "Maximum total extracted bytes per published site")
+	fs.DurationVar(&cfg.PublishUploadIdleTimeout, "publish-upload-idle-timeout", cfg.PublishUploadIdleTimeout, "Maximum wait for progress while reading a site upload")
+	fs.IntVar(&cfg.PublishMaxConcurrentUploads, "publish-max-concurrent-uploads", cfg.PublishMaxConcurrentUploads, "Maximum active site uploads across all API keys")
+	fs.IntVar(&cfg.PublishMaxConcurrentUploadsPerKey, "publish-max-concurrent-uploads-per-key", cfg.PublishMaxConcurrentUploadsPerKey, "Maximum active site uploads per API key")
 	fs.Int64Var(&cfg.MaxQueuedResponseBytes, "max-queued-response-bytes", cfg.MaxQueuedResponseBytes, "Maximum retained streamed HTTP response queue bytes across multiplexed tunnels")
 	fs.Int64Var(&cfg.MaxQueuedResponseBytesPerTunnel, "max-queued-response-bytes-per-tunnel", cfg.MaxQueuedResponseBytesPerTunnel, "Maximum retained streamed HTTP response queue bytes per multiplexed tunnel")
 	fs.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "Public request read, tunnel queue/header wait, and upstream inactivity timeout")
@@ -336,6 +354,12 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 	}
 	if cfg.PublishMaxBytes <= 0 {
 		return cfg, errors.New("publish max bytes must be > 0")
+	}
+	if cfg.PublishUploadIdleTimeout <= 0 {
+		return cfg, errors.New("publish upload idle timeout must be > 0")
+	}
+	if cfg.PublishMaxConcurrentUploads <= 0 || cfg.PublishMaxConcurrentUploadsPerKey <= 0 {
+		return cfg, errors.New("publish concurrent upload limits must be > 0")
 	}
 	if cfg.DBMaxOpenConns <= 0 {
 		return cfg, errors.New("db max open conns must be > 0")

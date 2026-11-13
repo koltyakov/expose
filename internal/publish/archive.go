@@ -20,7 +20,20 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
-var ErrSiteTooLarge = errors.New("site exceeds maximum extracted size")
+const (
+	// MaxArchiveEntries bounds archive records, including explicit directories,
+	// and the number of files in an incremental target manifest.
+	MaxArchiveEntries = 20_000
+	// MaxManifestBytes bounds uncompressed incremental metadata independently
+	// of the site's configured content-byte budget.
+	MaxManifestBytes int64 = 8 << 20
+)
+
+var (
+	ErrSiteTooLarge     = errors.New("site exceeds maximum extracted size")
+	ErrManifestTooLarge = errors.New("incremental manifest exceeds maximum size")
+	ErrTooManyEntries   = errors.New("site exceeds maximum entry count")
+)
 
 // ValidatePath rejects unsafe names and private file paths.
 func ValidatePath(name string) error {
@@ -141,6 +154,9 @@ func scanPublicFiles(root *os.Root, warn func(string, error), maxBytes int64) ([
 		if info.Size() > limit-total {
 			return fmt.Errorf("%w (%d bytes)", ErrSiteTooLarge, limit)
 		}
+		if len(names) >= MaxArchiveEntries {
+			return fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
+		}
 		total += info.Size()
 		names = append(names, name)
 		return nil
@@ -215,6 +231,9 @@ func archive(dir string, dst io.Writer, warn func(string, error), report func(Ar
 		if err != nil {
 			return err
 		}
+		if int64(len(metadata)) > MaxManifestBytes {
+			return fmt.Errorf("%w (%d bytes)", ErrManifestTooLarge, MaxManifestBytes)
+		}
 		if err := tw.WriteHeader(&tar.Header{Name: deltaManifestName, Mode: 0600, Size: int64(len(metadata)), Typeflag: tar.TypeReg}); err != nil {
 			return err
 		}
@@ -280,7 +299,8 @@ func Extract(src io.Reader, dir string) error {
 	return ExtractWithLimit(src, dir, math.MaxInt64)
 }
 
-// ExtractWithLimit enforces a total extracted byte limit across all entries.
+// ExtractWithLimit enforces a total extracted byte limit and MaxArchiveEntries,
+// counting both files and explicit directory records.
 func ExtractWithLimit(src io.Reader, dir string, maxBytes int64) error {
 	_, err := extractArchive(src, dir, maxBytes, false)
 	return err
@@ -312,11 +332,13 @@ func extractArchive(src io.Reader, dir string, maxBytes int64, delta bool) ([]do
 		if header.Name != deltaManifestName || header.Typeflag != tar.TypeReg || header.Size < 0 {
 			return nil, fmt.Errorf("invalid incremental manifest header")
 		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			return nil, err
+		if header.Size > MaxManifestBytes {
+			return nil, fmt.Errorf("%w (%d bytes)", ErrManifestTooLarge, MaxManifestBytes)
 		}
-		if err := json.Unmarshal(data, &manifest); err != nil {
+		// tar.Reader exposes at most header.Size bytes for this entry.
+		// Decode files individually to bound the slice before validation too.
+		manifest, err = decodeManifest(tr)
+		if err != nil {
 			return nil, fmt.Errorf("invalid incremental manifest: %w", err)
 		}
 		if err := validateManifest(manifest, maxBytes, true); err != nil {
@@ -357,6 +379,9 @@ func extractTar(tr *tar.Reader, dir string, maxBytes int64, expected map[string]
 		}
 		if err != nil {
 			return err
+		}
+		if len(seen) >= MaxArchiveEntries {
+			return fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
 		}
 		name := h.Name
 		if h.Typeflag == tar.TypeDir {

@@ -215,9 +215,9 @@ The server limits each site's total extracted file size to **10 MiB** by default
 expose server --publish-max-bytes=26214400
 ```
 
-This configured limit applies to the sum of all files, including reused files on incremental updates. Oversized sites receive HTTP `413`, their staging files are removed, and an existing publication stays intact. There are no separate compressed-size, file-count, or manifest-size caps. Invalid archives never become routable. There is no upload-policy override for blocked files.
+This configured limit applies to the sum of all files, including reused files on incremental updates. Separately, archives accept at most 20,000 entries, counting files and explicit directory records. Incremental target manifests accept at most 20,000 files, including unchanged files, and at most 8 MiB of uncompressed JSON metadata. The control manifest does not count as a content entry or against the content-byte budget. The CLI checks file counts and encoded manifest size before uploading. Exceeding any of these server limits returns HTTP `413`; staging files are removed and an existing publication stays intact. There is no separate compressed-size cap. Invalid archives never become routable. There is no upload-policy override for blocked files.
 
-Authenticated publishing uploads have no total transfer deadline in the client or server. The CLI spools the compressed archive to a temporary file, then streams it over HTTP; the server streams decompression and extraction to a staging directory. File contents are not buffered in memory. Transfer duration and archive size do not impose additional limits beyond the configured total extracted size. Ctrl+C cancels an upload. Reverse proxies may impose their own limits.
+Authenticated publishing uploads have no total transfer deadline in the client or server. The CLI spools the compressed archive to a temporary file, then streams it over HTTP; the server streams decompression and extraction to a staging directory. File contents are not buffered in memory. Transfer duration does not impose an additional limit. Ctrl+C cancels an upload. Reverse proxies may impose their own limits.
 
 ## Server storage
 

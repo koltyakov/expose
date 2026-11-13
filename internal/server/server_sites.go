@@ -234,7 +234,9 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 			return
 		}
 		status := http.StatusBadRequest
-		if errors.Is(err, publish.ErrSiteTooLarge) {
+		if errors.Is(err, publish.ErrSiteTooLarge) ||
+			errors.Is(err, publish.ErrManifestTooLarge) ||
+			errors.Is(err, publish.ErrTooManyEntries) {
 			status = http.StatusRequestEntityTooLarge
 		}
 		http.Error(w, "invalid site archive: "+err.Error(), status)

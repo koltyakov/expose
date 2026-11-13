@@ -3,6 +3,7 @@ package publish
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -117,6 +118,9 @@ func validateManifest(files []domain.PublishedFile, maxBytes int64, requireIndex
 	if maxBytes <= 0 {
 		return fmt.Errorf("extracted size limit must be positive")
 	}
+	if len(files) > MaxArchiveEntries {
+		return fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
+	}
 	seen := make(map[string]bool, len(files))
 	var total int64
 	for _, file := range files {
@@ -152,6 +156,42 @@ func validateManifest(files []domain.PublishedFile, maxBytes int64, requireIndex
 		return fmt.Errorf("publish requires a root index.html")
 	}
 	return nil
+}
+
+// decodeManifest bounds file count while decoding, rather than after allocating
+// the entire array. The caller must bound src to MaxManifestBytes.
+func decodeManifest(src io.Reader) ([]domain.PublishedFile, error) {
+	decoder := json.NewDecoder(src)
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if token != json.Delim('[') {
+		return nil, fmt.Errorf("manifest must be a file array")
+	}
+	var files []domain.PublishedFile
+	for decoder.More() {
+		if len(files) >= MaxArchiveEntries {
+			return nil, fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
+		}
+		var file domain.PublishedFile
+		if err := decoder.Decode(&file); err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, err
+	}
+	// Preserve json.Unmarshal's rejection of a second value or trailing junk.
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unexpected data after manifest")
+	}
+	return files, nil
 }
 
 type FileDiff struct {

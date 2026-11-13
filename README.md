@@ -19,6 +19,7 @@
 - **Real-time client dashboard** with request log, latency percentiles, WAF counters, and connection stats
 - **Auto-update** - server and client can self-update in the background with automatic restart and client reconnection
 - **Password-protected tunnels** with a built-in access form and edge session cookie (per-tunnel or per-config)
+- **Delegated form login** for apps with Basic Auth via `--protect=upstream-basic`, without a second expose password
 - **Env-first configuration** - minimal CLI flags, `.env` support, and interactive setup wizards
 - **Rate limiting** on tunnel registration plus optional public traffic throttling per hostname+client IP
 - **Persistent login** - authenticate once with `expose login`, credentials are saved locally

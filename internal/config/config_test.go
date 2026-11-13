@@ -256,6 +256,18 @@ func TestParseClientFlagsProtectBasicMode(t *testing.T) {
 	}
 }
 
+func TestParseClientFlagsProtectUpstreamBasic(t *testing.T) {
+	t.Setenv("EXPOSE_USER", "operator")
+	t.Setenv("EXPOSE_PASSWORD", strings.Repeat("x", 257))
+	cfg, err := ParseClientFlags([]string{"--port", "8080", "--protect=upstream-basic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Protect || cfg.ProtectMode != "upstream-basic" || cfg.User != "" || cfg.Password != "" {
+		t.Fatalf("delegation must not use edge credentials: %+v", cfg)
+	}
+}
+
 func TestParseClientFlagsPasswordEnablesProtect(t *testing.T) {
 	t.Setenv("EXPOSE_PASSWORD", "abc")
 	cfg, err := ParseClientFlags([]string{"--port", "8080"})

@@ -69,14 +69,19 @@ func (s *Server) runJanitor(ctx context.Context) {
 	heartbeatTicker := time.NewTicker(s.cfg.HeartbeatCheckInterval)
 	cleanupTicker := time.NewTicker(s.cfg.CleanupInterval)
 	bucketTicker := time.NewTicker(regCleanupAge)
+	delegatedTicker := time.NewTicker(time.Minute)
 	defer heartbeatTicker.Stop()
 	defer cleanupTicker.Stop()
 	defer bucketTicker.Stop()
+	defer delegatedTicker.Stop()
+	defer func() { s.delegatedAccess.cleanup(time.Now().Add(delegatedAccessTTL)) }()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case now := <-delegatedTicker.C:
+			s.delegatedAccess.cleanup(now)
 		case <-heartbeatTicker.C:
 			s.disconnectRevokedSessions(ctx)
 			// Revocation happens in another process; dropping cached site

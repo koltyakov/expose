@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/config"
 )
 
@@ -19,6 +20,7 @@ type upConfig struct {
 
 type upAccessConfig struct {
 	Protect     bool
+	Mode        string
 	User        string
 	Password    string
 	PasswordEnv string // deprecated alias for Password; accepted for compatibility
@@ -87,6 +89,17 @@ func (c *upConfig) normalizeAndValidate() error {
 	if c.Access.Password != "" {
 		c.Access.Protect = true
 	}
+	mode, err := access.NormalizeMode(c.Access.Mode)
+	if err != nil {
+		return err
+	}
+	c.Access.Mode = mode
+	if mode != "" {
+		c.Access.Protect = true
+	}
+	if mode == access.ModeUpstreamBasic {
+		c.Access.User, c.Access.Password, c.Access.PasswordEnv = "", "", ""
+	}
 
 	if len(c.Tunnels) == 0 {
 		return errors.New("config must define at least one tunnel")
@@ -99,6 +112,9 @@ func (c *upConfig) normalizeAndValidate() error {
 		t.Name = strings.TrimSpace(t.Name)
 		t.Subdomain = normalizeUpSubdomain(t.Subdomain)
 		t.Dir = strings.TrimSpace(t.Dir)
+		if mode == access.ModeUpstreamBasic && t.Dir != "" {
+			return fmt.Errorf("tunnels[%d]: upstream-basic requires an upstream application with Basic Auth, not a static directory", i)
+		}
 		if t.Name == "" {
 			t.Name = t.Subdomain
 			if t.Name == "" {

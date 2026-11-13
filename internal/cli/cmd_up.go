@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	accesspkg "github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/client"
 	"github.com/koltyakov/expose/internal/client/settings"
 	"github.com/koltyakov/expose/internal/config"
@@ -204,6 +205,7 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 		clientCfg.ServerURL = credCfg.ServerURL
 		clientCfg.APIKey = credCfg.APIKey
 		clientCfg.Protect = cfg.Access.Protect
+		clientCfg.ProtectMode = cfg.Access.Mode
 		clientCfg.User = cfg.Access.User
 		clientCfg.Password = cfg.Access.Password
 
@@ -264,6 +266,19 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 }
 
 func resolveUpAccess(access upAccessConfig) (upAccessConfig, error) {
+	mode, err := accesspkg.NormalizeMode(access.Mode)
+	if err != nil {
+		return access, err
+	}
+	access.Mode = mode
+	if mode == accesspkg.ModeUpstreamBasic {
+		access.Protect = true
+		access.User, access.Password, access.PasswordEnv = "", "", ""
+		return access, nil
+	}
+	if mode != "" {
+		access.Protect = true
+	}
 	access.User = strings.TrimSpace(access.User)
 	if access.User == "" {
 		access.User = "admin"

@@ -813,6 +813,7 @@ func (s *Server) replaceSession(tunnelID string, next *session) *session {
 }
 
 func (s *Server) removeSessionIfCurrent(sess *session) bool {
+	defer s.delegatedAccess.removeConnection(sess)
 	s.hub.mu.Lock()
 	current, ok := s.hub.sessions[sess.tunnelID]
 	if !ok || current != sess {

@@ -15,6 +15,7 @@ Usage:
   expose http <port>                    Expose local port (temporary subdomain)
   expose http <port> --domain=myapp     Expose with a named subdomain
                                         --protect enables form protection, --protect=basic opts into Basic Auth
+                                        --protect=upstream-basic delegates form credentials to your app's Basic Auth
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
   expose pub <dir>                     Upload and host a static site on the server

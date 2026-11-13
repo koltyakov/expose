@@ -18,6 +18,7 @@ func TestNormalizeMode(t *testing.T) {
 		{name: "true maps to form", input: "true", want: ModeForm},
 		{name: "form passes through", input: "form", want: ModeForm},
 		{name: "basic is normalized", input: " BASIC ", want: ModeBasic},
+		{name: "delegated is normalized", input: " UPSTREAM-BASIC ", want: ModeUpstreamBasic},
 		{name: "invalid mode errors", input: "digest", wantErr: true},
 	}
 

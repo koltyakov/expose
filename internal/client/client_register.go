@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+	"github.com/koltyakov/expose/internal/access"
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
@@ -76,12 +77,16 @@ func (c *Client) registerWithResume(ctx context.Context, resumeID string) (domai
 	if user == "" {
 		user = "admin"
 	}
+	password := strings.TrimSpace(c.cfg.Password)
+	if c.cfg.ProtectMode == access.ModeUpstreamBasic {
+		user, password = "", ""
+	}
 	body, _ := json.Marshal(domain.RegisterRequest{
 		Mode:            mode,
 		Subdomain:       strings.TrimSpace(c.cfg.Name),
 		User:            user,
 		AccessMode:      strings.TrimSpace(c.cfg.ProtectMode),
-		Password:        strings.TrimSpace(c.cfg.Password),
+		Password:        password,
 		ClientHostname:  strings.TrimSpace(hostname),
 		ClientMachineID: machineID,
 		LocalPort:       fmt.Sprintf("%d", c.cfg.LocalPort),

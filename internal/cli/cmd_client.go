@@ -43,7 +43,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	port := parseIntEnv("EXPOSE_PORT", 0)
 	fs.IntVar(&port, "port", port, "Local HTTP port on 127.0.0.1")
 	fs.StringVar(&name, "domain", name, "Requested public subdomain (e.g. myapp)")
-	fs.StringVar(&protectMode, "protect", protectMode, "Protect this tunnel; modes: form (default) or basic")
+	fs.StringVar(&protectMode, "protect", protectMode, "Protect this tunnel; modes: form (default), basic or upstream-basic")
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	fs.StringVar(&transport, "transport", transport, "Tunnel transport: ws|quic")
@@ -168,6 +168,10 @@ func runStatic(ctx context.Context, args []string) int {
 	mode, err := access.NormalizeMode(cfg.ProtectMode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return 2
+	}
+	if mode == access.ModeUpstreamBasic {
+		fmt.Fprintln(os.Stderr, "static command error: upstream-basic requires an upstream application with Basic Auth")
 		return 2
 	}
 	cfg.ProtectMode = mode

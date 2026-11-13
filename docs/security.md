@@ -52,9 +52,19 @@ Tunnels can require a password for public access. When enabled:
 
 The tunnel client returns upstream redirects to the public caller without following them. An application's redirect endpoint therefore cannot make the client fetch a redirect destination inside its private network.
 
+### Delegated form authentication
+
+`--protect=upstream-basic` is opt-in and uses the application's Basic Auth rather than an expose password hash. A bodyless GET through the configured tunnel checks the submitted credentials. Expose intercepts upstream `401` responses, revokes the visitor's session, and renders its form without a browser Basic Auth challenge.
+
+Delegated cookies contain only 256 random bits. The server stores the credentials in recoverable form in memory for a fixed 15-minute session, never in SQLite or in the cookie. Sessions are bound to the hostname, tunnel, API key, and live tunnel connection. They do not survive reconnection, re-registration, or restart. The store is capped at 4096 sessions and removes expired entries at least once a minute. When full, new sessions receive `503` rather than evicting active visitors.
+
+These cookies use the same host-only `__Host-` name, `Secure`, `HttpOnly`, and `SameSite=Lax` attributes as edge form cookies. Browser cross-origin login submissions, unsafe requests, and WebSocket handshakes are rejected. Application requests receive the session's Basic credentials, not a caller-supplied `Authorization` header. Expose strips its cookie before forwarding and prevents upstream responses from overwriting it. Delegated HTTP responses use `Cache-Control: no-store`.
+
+The application remains responsible for authentication and authorization on every resource. The expose server must be trusted with the active credentials. Delegation does not protect an upstream that accepts unauthenticated requests.
+
 ## Cookie Security
 
-Access cookies for password-protected tunnels use:
+Edge form cookies for password-protected tunnels use:
 
 | Property | Value |
 |----------|-------|

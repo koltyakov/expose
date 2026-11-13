@@ -82,8 +82,17 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 		return preparedRegisterRequest{}, false
 	}
 
+	mode, err := access.NormalizeMode(req.AccessMode)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return preparedRegisterRequest{}, false
+	}
+	req.AccessMode = mode
+	if mode == access.ModeUpstreamBasic {
+		req.User, req.Password = "", ""
+	}
 	req.User = strings.TrimSpace(req.User)
-	if req.User == "" {
+	if req.User == "" && mode != access.ModeUpstreamBasic {
 		req.User = "admin"
 	}
 	if len(req.User) > 64 {
@@ -96,16 +105,10 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 		http.Error(w, "password must be at most 256 characters", http.StatusBadRequest)
 		return preparedRegisterRequest{}, false
 	}
-	mode, err := access.NormalizeMode(req.AccessMode)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return preparedRegisterRequest{}, false
-	}
-	req.AccessMode = mode
 	if req.Password != "" && req.AccessMode == "" {
 		req.AccessMode = access.ModeForm
 	}
-	if req.AccessMode != "" && req.Password == "" {
+	if req.AccessMode != "" && req.AccessMode != access.ModeUpstreamBasic && req.Password == "" {
 		http.Error(w, "protect mode requires password", http.StatusBadRequest)
 		return preparedRegisterRequest{}, false
 	}
@@ -120,6 +123,8 @@ func (s *Server) parseAndValidateRegisterRequest(w http.ResponseWriter, r *http.
 	accessMode := ""
 	if req.Password != "" {
 		accessUser = req.User
+		accessMode = req.AccessMode
+	} else if req.AccessMode == access.ModeUpstreamBasic {
 		accessMode = req.AccessMode
 	}
 

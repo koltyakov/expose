@@ -208,8 +208,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 
 	requestHeaders := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
-	stripPublicAccessCookie(requestHeaders)
-	stripPublicAccessCredentials(requestHeaders, route)
+	preparePublicAccessHeaders(requestHeaders, r, route)
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, s.clientIP(r))
 
@@ -247,6 +246,12 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		s.abortPendingRequest(sess, reqID)
 		if r.Context().Err() == nil {
 			http.Error(w, "tunnel closed", http.StatusBadGateway)
+		}
+		return
+	}
+	if s.handleDelegatedAccessResponse(w, r, route, resp.Status, resp.Headers) {
+		if resp.Streamed {
+			s.abortPendingRequest(sess, reqID)
 		}
 		return
 	}

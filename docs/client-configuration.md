@@ -55,7 +55,7 @@ The API also defaults to seven days and accepts a `retention` query parameter, f
 | `--api-key`      | `EXPOSE_API_KEY`                 | API key for authentication                                                           |
 | `--profile`      | -                                | Saved login profile; omitted uses the existing default login                        |
 | `--transport`    | `EXPOSE_TRANSPORT`               | Tunnel transport: `ws` (default), `quic`                                             |
-| `--protect`      | -                                | Enable protection for this tunnel (`form` by default, `basic` via `--protect=basic`) |
+| `--protect`      | -                                | Protection mode: `form` by default, `basic`, or `upstream-basic` to delegate to the app |
 | -                | `EXPOSE_USER`                    | Access-form username (default: `admin`)                                              |
 | -                | `EXPOSE_PASSWORD`                | Access-form password                                                                 |
 | -                | `EXPOSE_CLIENT_MACHINE_ID`       | Stable client machine ID override used for registration and default static hostnames |
@@ -249,6 +249,22 @@ expose auth curl --url https://myapp.example.com --password "$EXPOSE_PASSWORD"
 ```
 
 Add `--format header` to print a `Cookie:` header you can pass directly to `curl -H`.
+
+### Delegate to the application's Basic Auth
+
+If your local application already requires Basic Auth, use expose's form instead of the browser's native password dialog:
+
+```bash
+expose http 3000 --domain=myapp --protect=upstream-basic
+```
+
+Visitors enter their **application credentials**, not a separate expose password. `EXPOSE_USER` and `EXPOSE_PASSWORD` are ignored in this mode, and expose does not prompt the tunnel operator for credentials.
+
+Expose checks a login by sending a bodyless GET to the submitted path through the configured tunnel with `Authorization: Basic …`. A successful `2xx` or `3xx` response creates a session and redirects the visitor to their original relative URL. Probe redirects are not followed. An upstream `401` shows the form without forwarding `WWW-Authenticate` or the upstream response body. Failed logins are throttled.
+
+Sessions last 15 minutes without sliding renewal. The server keeps recoverable Basic credentials only in memory, behind a random 256-bit, host-only `Secure`, `HttpOnly`, `SameSite=Lax` cookie. It attaches those credentials to subsequent HTTP requests and WebSocket handshakes, strips the expose cookie before forwarding, and ignores browser-supplied `Authorization`. An upstream `401` revokes the session. Expiry, tunnel reconnection or re-registration, and server restart require a new login.
+
+Use this only with an application that enforces Basic Auth on its protected resources. Expose does not add an independent password check in this mode. Each upstream request still passes through the application's authentication. The expose server can read the credentials while the session is active, so it must be trusted. `expose static` does not support this mode.
 
 ## Static Files
 

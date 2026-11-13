@@ -178,13 +178,13 @@
       <div>
         <p class="eyebrow">Expose protection</p>
         <h1>Protected route</h1>
-        <p>This tunnel is gated before traffic reaches the upstream app. Sign in once to continue without using HTTP auth headers.</p>
+        {{if .Delegated}}<p>Sign in with your application's credentials. Expose forwards them to the application using Basic Auth.</p>{{else}}<p>This tunnel is gated before traffic reaches the upstream app. Sign in once to continue without using HTTP auth headers.</p>{{end}}
       </div>
       <div class="host">{{.Host}}</div>
     </section>
     <section class="panel">
       <h2>Sign in to continue</h2>
-      <p class="panel-copy">The access session is stored in a dedicated host-scoped cookie and stays out of the upstream app's auth flow.</p>
+      {{if .Delegated}}<p class="panel-copy">Your application checks your credentials. Expose keeps them in memory for 15 minutes; your cookie contains only a random session ID.</p>{{else}}<p class="panel-copy">The access session is stored in a dedicated host-scoped cookie and stays out of the upstream app's auth flow.</p>{{end}}
       {{if .ErrorText}}<p class="error" role="alert">{{.ErrorText}}</p>{{end}}
       <form method="post" action="{{.Action}}" novalidate>
         <input type="hidden" name="{{.ActionField}}" value="login">

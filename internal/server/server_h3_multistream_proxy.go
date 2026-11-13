@@ -53,8 +53,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 
 	requestHeaders := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(requestHeaders)
-	stripPublicAccessCookie(requestHeaders)
-	stripPublicAccessCredentials(requestHeaders, route)
+	preparePublicAccessHeaders(requestHeaders, r, route)
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, s.clientIP(r))
 
@@ -77,6 +76,12 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 	resp := msg.Response
+	if s.handleDelegatedAccessResponse(w, r, route, resp.Status, resp.Headers) {
+		if resp.Streamed {
+			requeue = false // Unread probe/challenge body frames must not be reused.
+		}
+		return
+	}
 	if shouldServeFallbackFavicon(r, resp.Status) {
 		if resp.Streamed {
 			// Streamed 404 responses may still have unread body frames.
@@ -118,7 +123,7 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
-	if route.Tunnel.AccessPasswordHash != "" && !publicWebSocketOriginAllowed(r) {
+	if publicAccessProtected(route) && !publicWebSocketOriginAllowed(r) {
 		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
 		return
 	}
@@ -138,8 +143,7 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 
 	headers := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
-	stripPublicAccessCookie(headers)
-	stripPublicAccessCredentials(headers, route)
+	preparePublicAccessHeaders(headers, r, route)
 	injectForwardedProxyHeaders(headers, r)
 	injectForwardedFor(headers, s.clientIP(r))
 	openMsg := tunnelproto.Message{
@@ -166,12 +170,15 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	ack := msg.WSOpenAck
 	if !ack.OK {
 		status, message := publicWSOpenFailure(ack)
+		if s.handleDelegatedAccessResponse(w, r, route, status, nil) {
+			return
+		}
 		http.Error(w, message, status)
 		return
 	}
 
 	checkOrigin := func(*http.Request) bool { return true }
-	if route.Tunnel.AccessPasswordHash != "" {
+	if publicAccessProtected(route) {
 		checkOrigin = publicWebSocketOriginAllowed
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: checkOrigin}

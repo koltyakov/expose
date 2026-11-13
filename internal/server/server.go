@@ -98,6 +98,7 @@ type Server struct {
 	bypasses             map[string]*serverBypass
 	bypassWG             sync.WaitGroup
 	basicAuthCache       basicAuthSuccessCache
+	delegatedAccess      delegatedAccessSessions
 	routes               routeCache
 	routeLookups         lookupGroup[liveRouteSnapshot]
 	routeVersions        routeVersions

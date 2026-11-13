@@ -73,6 +73,9 @@ func (c *basicAuthSuccessCache) remember(key [sha256.Size]byte, now time.Time) {
 }
 
 func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute) bool {
+	if publicAccessMode(route) == access.ModeUpstreamBasic {
+		return s.authorizeDelegatedAccess(w, r, route)
+	}
 	if route.Tunnel.AccessPasswordHash == "" {
 		return true
 	}
@@ -344,6 +347,7 @@ type publicAccessFormData struct {
 	UserField     string
 	User          string
 	PasswordField string
+	Delegated     bool
 }
 
 func writePublicAccessForm(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, state publicAccessFormState, status int) {
@@ -370,6 +374,7 @@ func writePublicAccessForm(w http.ResponseWriter, r *http.Request, route domain.
 		UserField:     publicAccessFormUserField,
 		User:          state.User,
 		PasswordField: publicAccessFormPasswordField,
+		Delegated:     publicAccessMode(route) == access.ModeUpstreamBasic,
 	})
 }
 

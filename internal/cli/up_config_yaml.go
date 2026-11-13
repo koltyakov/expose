@@ -21,6 +21,9 @@ func renderUpYAML(cfg upConfig) string {
 		if cfg.Access.Protect {
 			fmt.Fprintf(&b, "  protect: %t\n", cfg.Access.Protect)
 		}
+		if cfg.Access.Mode != "" {
+			fmt.Fprintf(&b, "  mode: %s\n", yamlQuoteString(cfg.Access.Mode))
+		}
 		if cfg.Access.User != "" {
 			fmt.Fprintf(&b, "  user: %s\n", yamlQuoteString(cfg.Access.User))
 		}
@@ -143,6 +146,12 @@ func parseUpYAML(raw string) (upConfig, error) {
 				return cfg, fmt.Errorf("line %d: expected protect field key: value", lineNo)
 			}
 			switch key {
+			case "mode":
+				v, err := parseYAMLString(value)
+				if err != nil {
+					return cfg, fmt.Errorf("line %d: %w", lineNo, err)
+				}
+				cfg.Access.Mode = v
 			case "protect":
 				v, err := parseYAMLBool(value)
 				if err != nil {

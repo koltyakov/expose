@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/serviceapi"
@@ -95,6 +97,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tunnelRec.AccessUser = prepared.accessUser
 	tunnelRec.AccessMode = prepared.accessMode
 	tunnelRec.AccessPasswordHash = prepared.passwordHash
+	s.delegatedAccess.removeTunnel(tunnelRec.ID)
 	tunnelRec.WAFPathRules = nil
 	if len(prepared.request.WAFIgnorePaths) > 0 {
 		tunnelRec.WAFPathRules = &domain.WAFPathRules{IgnorePaths: append([]string(nil), prepared.request.WAFIgnorePaths...)}
@@ -190,6 +193,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		s.writePublicRejection(w, r, http.StatusTooManyRequests, "rate limit exceeded", rejectionRateLimit)
 		return
 	}
+	if publicAccessMode(route) == access.ModeUpstreamBasic {
+		r = r.WithContext(context.WithValue(r.Context(), delegatedConnectionKey{}, sess))
+	}
 
 	if !s.authorizePublicRequest(w, r, route) {
 		return
@@ -212,7 +218,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
-	if route.Tunnel.AccessPasswordHash != "" && !publicWebSocketOriginAllowed(r) {
+	if publicAccessProtected(route) && !publicWebSocketOriginAllowed(r) {
 		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
 		return
 	}
@@ -229,8 +235,7 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 
 	headers := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
-	stripPublicAccessCookie(headers)
-	stripPublicAccessCredentials(headers, route)
+	preparePublicAccessHeaders(headers, r, route)
 	injectForwardedProxyHeaders(headers, r)
 	injectForwardedFor(headers, s.clientIP(r))
 	openMsg := tunnelproto.Message{
@@ -271,12 +276,15 @@ func (s *Server) handlePublicWebSocket(w http.ResponseWriter, r *http.Request, r
 
 	if !ack.OK {
 		status, message := publicWSOpenFailure(ack)
+		if s.handleDelegatedAccessResponse(w, r, route, status, nil) {
+			return
+		}
 		http.Error(w, message, status)
 		return
 	}
 
 	checkOrigin := func(*http.Request) bool { return true }
-	if route.Tunnel.AccessPasswordHash != "" {
+	if publicAccessProtected(route) {
 		checkOrigin = publicWebSocketOriginAllowed
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: checkOrigin}

@@ -39,6 +39,10 @@ type endToEndTunnel struct {
 // and local HTTP transport. TLS verification is disabled only for the generated
 // loopback certificate; both the public and tunnel connections are encrypted.
 func newEndToEndTunnel(t testing.TB, transport string, upstreamHandler http.Handler, timeout time.Duration) *endToEndTunnel {
+	return newEndToEndProtectedTunnel(t, transport, upstreamHandler, timeout, "")
+}
+
+func newEndToEndProtectedTunnel(t testing.TB, transport string, upstreamHandler http.Handler, timeout time.Duration, protectMode string) *endToEndTunnel {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ready" {
@@ -116,7 +120,7 @@ func newEndToEndTunnel(t testing.TB, transport string, upstreamHandler http.Hand
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	c := New(config.ClientConfig{ServerURL: serverURL, APIKey: "e2e-key", Name: "bench", LocalPort: port, Transport: transport, Timeout: 5 * time.Second, PingInterval: time.Second}, logger)
+	c := New(config.ClientConfig{ServerURL: serverURL, APIKey: "e2e-key", Name: "bench", LocalPort: port, Transport: transport, Timeout: 5 * time.Second, PingInterval: time.Second, ProtectMode: protectMode}, logger)
 	c.apiClient.Transport = publicTransport
 	c.h3TLSConfig = tlsConfig.Clone()
 	t.Cleanup(c.fwdClient.CloseIdleConnections)
@@ -156,7 +160,7 @@ func newEndToEndTunnel(t testing.TB, transport string, upstreamHandler http.Hand
 		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			if resp.StatusCode == http.StatusOK || (protectMode != "" && resp.StatusCode == http.StatusUnauthorized) {
 				return h
 			}
 		}

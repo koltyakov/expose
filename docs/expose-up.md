@@ -90,6 +90,7 @@ Applies the same built-in access form and edge session cookie to every tunnel st
 - `user` (optional, default `admin`)
 - `protect` (optional, default `false`) - enable protection when no literal password is stored in YAML
 - `password` (optional) - literal password or env var name
+- `mode` (optional) - `form`, `basic`, or `upstream-basic`; setting a mode enables protection
 
 Notes:
 - If `password` is uppercase (for example `EXPOSE_PASSWORD`) and an environment variable with that name exists, `expose up` uses the env var value.
@@ -97,6 +98,20 @@ Notes:
 - To supply the password only through `EXPOSE_PASSWORD`, set `protect: true` and omit `password`; `expose up` then uses `EXPOSE_PASSWORD`.
 - Legacy `password_env` is still accepted for older configs, but `password` is the canonical field.
 - In interactive terminals, `expose up` prompts for a password if protection is enabled and none is available.
+- With `mode: upstream-basic`, expose delegates to the local application's Basic Auth. No operator credentials are used or prompted for. See [delegated form authentication](client-configuration.md#delegate-to-the-applications-basic-auth).
+
+For an application that already requires Basic Auth:
+
+```yaml
+version: 1
+protect:
+  mode: upstream-basic
+tunnels:
+  - subdomain: app
+    port: 3000
+```
+
+In delegated mode, every service mounted on the same subdomain receives that visitor's Basic credentials. Only combine services you trust with those credentials. Each application must enforce its own authentication. Static directory routes are not supported in this mode; use `form` protection for configs that include them.
 
 ### `tunnels[]`
 

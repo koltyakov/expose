@@ -350,7 +350,17 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream(leavePool func()) error {
 	if err != nil {
 		return err
 	}
-	defer closeH3RequestStream(stream)
+	graceful := false
+	defer func() {
+		if graceful {
+			// Preserve a rejected WebSocket acknowledgment. Resetting
+			// the write side can discard it before the server receives it.
+			stream.CancelRead(0)
+			_ = stream.Close()
+		} else {
+			closeH3RequestStream(stream)
+		}
+	}()
 
 	req, err := http.NewRequestWithContext(rt.ctx, http.MethodPost, rt.h3WorkerURL, nil)
 	if err != nil {
@@ -403,7 +413,9 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream(leavePool func()) error {
 			}
 		case tunnelproto.KindWSOpen:
 			leavePool()
-			return rt.handleWorkerWS(stream, msg.WSOpen)
+			var err error
+			graceful, err = rt.handleWorkerWS(stream, msg.WSOpen)
+			return err
 		}
 	}
 }
@@ -499,18 +511,18 @@ func pumpStreamedRequestBodyMessages(
 	}
 }
 
-func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream, open *tunnelproto.WSOpen) error {
+func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream, open *tunnelproto.WSOpen) (flushAck bool, err error) {
 	if open == nil {
-		return nil
+		return false, nil
 	}
 	streamID := strings.TrimSpace(open.ID)
 	if streamID == "" {
-		return nil
+		return false, nil
 	}
 
 	upstreamConn, status, subprotocol, err := rt.client.openLocalWebSocket(rt.ctx, rt.localBase, open)
 	if err != nil {
-		_ = writeH3RequestStreamJSON(stream, tunnelproto.Message{
+		err := writeH3RequestStreamJSON(stream, tunnelproto.Message{
 			Kind: tunnelproto.KindWSOpenAck,
 			WSOpenAck: &tunnelproto.WSOpenAck{
 				ID:     streamID,
@@ -519,7 +531,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 				Error:  err.Error(),
 			},
 		}, rt.useStreamV2)
-		return nil
+		return err == nil, err
 	}
 	defer func() { _ = upstreamConn.Close() }()
 	rt.client.trackWSOpen(streamID, open)
@@ -534,7 +546,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			Subprotocol: subprotocol,
 		},
 	}, rt.useStreamV2); err != nil {
-		return err
+		return false, err
 	}
 
 	var writeMu sync.Mutex
@@ -577,15 +589,15 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 	for {
 		select {
 		case <-rt.ctx.Done():
-			return rt.ctx.Err()
+			return false, rt.ctx.Err()
 		case <-localErr:
-			return nil
+			return false, nil
 		default:
 		}
 
 		msg, err := readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
 		if err != nil {
-			return nil
+			return false, nil
 		}
 		switch msg.Kind {
 		case tunnelproto.KindWSData:
@@ -598,19 +610,19 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 			}
 			_ = upstreamConn.SetWriteDeadline(time.Now().Add(clientWSWriteTimeout))
 			if err := upstreamConn.WriteMessage(msg.WSData.MessageType, payload); err != nil {
-				return nil
+				return false, nil
 			}
 			rt.client.recordTraffic(traffic.DirectionInbound, int64(len(payload)))
 		case tunnelproto.KindWSClose:
 			if msg.WSClose == nil {
-				return nil
+				return false, nil
 			}
 			_ = upstreamConn.WriteControl(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(msg.WSClose.Code, msg.WSClose.Text),
 				time.Now().Add(5*time.Second),
 			)
-			return nil
+			return false, nil
 		}
 	}
 }

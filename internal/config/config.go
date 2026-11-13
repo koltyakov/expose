@@ -152,7 +152,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server public URL (e.g. https://example.com)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key")
 	fs.StringVar(&cfg.Transport, "transport", cfg.Transport, "Tunnel transport: ws|quic")
-	fs.StringVar(&cfg.ProtectMode, "protect", cfg.ProtectMode, "Protect this tunnel; modes: form (default) or basic")
+	fs.StringVar(&cfg.ProtectMode, "protect", cfg.ProtectMode, "Protect this tunnel; modes: form (default), basic or upstream-basic")
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
@@ -171,6 +171,10 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		return cfg, err
 	}
 	cfg.ProtectMode = mode
+	if mode == access.ModeUpstreamBasic {
+		// Delegated protection never uses the operator's edge credentials.
+		cfg.User, cfg.Password = "", ""
+	}
 	if cfg.LocalPort == 0 {
 		return cfg, errors.New("missing --port or EXPOSE_PORT")
 	}

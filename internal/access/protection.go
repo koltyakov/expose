@@ -12,8 +12,9 @@ const (
 	FormPasswordField = "__expose_access_password"
 	FormNextField     = "__expose_access_next"
 
-	ModeForm  = "form"
-	ModeBasic = "basic"
+	ModeForm          = "form"
+	ModeBasic         = "basic"
+	ModeUpstreamBasic = "upstream-basic"
 )
 
 func NormalizeMode(raw string) (string, error) {
@@ -23,9 +24,9 @@ func NormalizeMode(raw string) (string, error) {
 		return "", nil
 	case "true":
 		return ModeForm, nil
-	case ModeForm, ModeBasic:
+	case ModeForm, ModeBasic, ModeUpstreamBasic:
 		return raw, nil
 	default:
-		return "", fmt.Errorf("invalid protect mode %q (expected form or basic)", raw)
+		return "", fmt.Errorf("invalid protect mode %q (expected form, basic or upstream-basic)", raw)
 	}
 }

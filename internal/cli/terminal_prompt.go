@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/config"
 )
 
@@ -69,6 +70,10 @@ func appendFlagIfNotEmpty(args []string, flagName, value string) []string {
 
 func promptClientPasswordIfNeeded(ctx context.Context, cfg *config.ClientConfig) error {
 	if cfg == nil || !cfg.Protect {
+		return nil
+	}
+	if cfg.ProtectMode == access.ModeUpstreamBasic {
+		cfg.User, cfg.Password = "", ""
 		return nil
 	}
 	if strings.TrimSpace(cfg.User) == "" {

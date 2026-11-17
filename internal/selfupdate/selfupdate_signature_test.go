@@ -62,7 +62,7 @@ func TestVerifyReleaseSignature(t *testing.T) {
 	rel.Assets = nil
 	// These former escape hatches must not affect embedded trust or enforcement.
 	t.Setenv("EXPOSE_REQUIRE_SIGNATURE", "false")
-	t.Setenv("EXPOSE_RELEASE_KEYS", releasesign.KeysJSON)
+	t.Setenv("RELEASE_SIGNING_PUBLIC_KEYS", releasesign.KeysJSON)
 	if err := verifyReleaseSignature(t.Context(), rel, manifest); err == nil {
 		t.Fatal("accepted unsigned release")
 	}

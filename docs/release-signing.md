@@ -10,25 +10,46 @@ Configure these settings in `koltyakov/expose` before publishing:
 
 | Name | GitHub type | Value |
 | --- | --- | --- |
-| `EXPOSE_RELEASE_KEYS` | Actions variable | `{"release":"<base64 raw 32-byte public key>"}` |
-| `EXPOSE_RELEASE_PRIVATE_KEY` | Actions secret | Ed25519 private key in PKCS#8 PEM format |
+| `RELEASE_SIGNING_PUBLIC_KEYS` | Repository variable | `{"release-2026-11-17":"<base64 raw 32-byte public key>"}` |
+| `RELEASE_SIGNING_KEY_ID` | Repository variable | `release-2026-11-17` |
+| `RELEASE_SIGNING_PRIVATE_KEY` | Secret in the `release` environment | Ed25519 private key in PKCS#8 PEM format |
 
 These are Expose's own keys. Do not reuse BBX, TLS, or peer identity keys.
 No feed initialization variable is needed. Releases use immutable per-tag metadata.
-Nothing in this migration provisions a production key or changes GitHub settings.
+These names and scopes are shared with Control and BBX. Control also checks its
+public variable against reviewed source pins. Public settings belong at repository
+level; private keys belong only in the `release` environment, not repository secrets.
 
-Generate the key on a trusted machine. For example, OpenSSL 3 can create
-PKCS#8 PEM with `openssl genpkey -algorithm ED25519 -out release-private.pem`.
+Store the local files under `~/.ssh/github/`: `expose.pem` is PKCS#8 private PEM,
+`expose.pub` is SPKI public PEM, and `expose.json` is the public JSON key map.
+Control uses the basename `control`; Browser Bridge uses `bbx`. The directory
+must have mode `0700` and private keys `0600`.
+
+Generate new keys on a trusted machine, outside the checkout. OpenSSL 3 can create
+PKCS#8 PEM with `openssl genpkey -algorithm ED25519 -out "$HOME/.ssh/github/expose.pem"`.
+Create the private directory first and never overwrite an existing key.
 The public value is the base64 encoding of the raw 32-byte key, not PEM or a
 base64-encoded SPKI structure. Keep an encrypted offline backup. Never commit,
 print in CI, or attach the private key to a release.
 
-Protect release tags, restrict Actions secrets and publication access, and
-prefer protected GitHub environments with required approval for signing.
+Configure the `release` environment to accept only tags matching `v*.*.*`.
+Protect release tags, restrict Actions secrets and publication access, and add
+required approval for signing where available.
 A compromised authorized release job can still steal an exportable key.
 Public-key configuration changes are trust changes and require review.
 
-The release workflow checks that the private key matches the `release` pin
+Configure GitHub from the local files:
+
+```sh
+gh secret set RELEASE_SIGNING_PRIVATE_KEY --repo koltyakov/expose --env release \
+  < "$HOME/.ssh/github/expose.pem"
+gh variable set RELEASE_SIGNING_PUBLIC_KEYS --repo koltyakov/expose \
+  --body "$(cat "$HOME/.ssh/github/expose.json")"
+gh variable set RELEASE_SIGNING_KEY_ID --repo koltyakov/expose --body release-2026-11-17
+```
+
+Remove superseded signing secrets and variables after verifying the replacement.
+The release workflow checks that the private key matches the active public pin
 before invoking GoReleaser. Public keys are embedded in all six binaries and
 in the generated `install.sh` and `install.ps1` release assets. Signing checks
 the match again and verifies the result before writing the signature.
@@ -36,11 +57,11 @@ The workflow no longer needs cosign or `id-token: write`.
 
 ## Local tooling
 
-Public-key configuration is build-time only. Setting `EXPOSE_RELEASE_KEYS`
+Public-key configuration is build-time only. Setting `RELEASE_SIGNING_PUBLIC_KEYS`
 on an installed executable cannot change its trust.
 
 ```sh
-export EXPOSE_RELEASE_KEYS='{"release":"<base64 raw public key>"}'
+export RELEASE_SIGNING_PUBLIC_KEYS="$(cat "$HOME/.ssh/github/expose.json")"
 make build
 ```
 
@@ -52,9 +73,13 @@ periods, underscores, or hyphens.
 The build-only helper is not shipped as an `expose` subcommand:
 
 ```sh
-# Private key must already be in EXPOSE_RELEASE_PRIVATE_KEY.
+# Set the private key only in the signer's environment; never echo it.
+export RELEASE_SIGNING_PUBLIC_KEYS="$(cat "$HOME/.ssh/github/expose.json")"
+export RELEASE_SIGNING_KEY_ID=release-2026-11-17
+export RELEASE_SIGNING_PRIVATE_KEY="$(cat "$HOME/.ssh/github/expose.pem")"
 go run ./cmd/release-sign -mode check
 go run ./cmd/release-sign -mode sign -tag v1.2.3 -manifest dist/checksums.txt
+unset RELEASE_SIGNING_PRIVATE_KEY
 
 # Verification needs only a public keyring obtained through a trusted channel.
 go run ./cmd/release-sign -mode verify -tag v1.2.3 -manifest dist/checksums.txt
@@ -82,7 +107,7 @@ Missing dependencies or failed authentication stop installation.
   "version": 1,
   "repository": "koltyakov/expose",
   "tag": "v1.2.3",
-  "keyId": "release",
+  "keyId": "release-2026-11-17",
   "signature": "<base64 Ed25519 signature>"
 }
 ```
@@ -94,7 +119,7 @@ The signed message is the concatenation of this UTF-8 header and the exact
 expose-release-v1\n
 koltyakov/expose\n
 v1.2.3\n
-release\n
+release-2026-11-17\n
 ```
 
 Here `\n` denotes a single LF byte, not literal backslash text. Header fields
@@ -115,14 +140,15 @@ For planned rotation:
 1. Add key B under a new ID while retaining A. Publish a bridge release signed
    by A, with binaries that trust both.
 2. Upgrade installations to that bridge.
-3. Keep both IDs unchanged. Switch the signer's `-key-id` and the workflow's
-   configuration check to B's ID, update the private-key secret to B, and publish.
-4. Remove A after the transition. Do not leave a compromised key trusted.
+3. Keep both IDs unchanged. Switch the repository `RELEASE_SIGNING_KEY_ID`
+   variable to B's ID, update the environment private-key secret to B, and publish.
+4. Remove A from `RELEASE_SIGNING_PUBLIC_KEYS` after the transition.
+   Do not leave a compromised key trusted.
 
 Key IDs are signed and must remain stable throughout rotation. For
-example, retain `release` for A, add `next` for B, then sign with `-key-id next`
-in GoReleaser after the bridge. Update the workflow's configuration check to the
-same active ID. The default active ID is `release`; there is no runtime override.
+example, retain `release-2026-11-17` for A and add a new dated ID for B.
+The build-time tool defaults to `RELEASE_SIGNING_KEY_ID`; `-key-id` can explicitly
+select a different pinned ID. There is no hard-coded active ID or runtime override.
 Clients that missed the bridge require a trusted reinstall. Do not assume an
 old binary can learn a new public key from a release it cannot authenticate.
 

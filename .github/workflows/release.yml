@@ -88,10 +88,12 @@ jobs:
   goreleaser:
     needs: [verify, installers]
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: write
     env:
-      EXPOSE_RELEASE_KEYS: ${{ vars.EXPOSE_RELEASE_KEYS }}
+      RELEASE_SIGNING_PUBLIC_KEYS: ${{ vars.RELEASE_SIGNING_PUBLIC_KEYS }}
+      RELEASE_SIGNING_KEY_ID: ${{ vars.RELEASE_SIGNING_KEY_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7 # v7
@@ -109,7 +111,7 @@ jobs:
       - name: Verify release signing configuration
         run: go run ./cmd/release-sign -mode check
         env:
-          EXPOSE_RELEASE_PRIVATE_KEY: ${{ secrets.EXPOSE_RELEASE_PRIVATE_KEY }}
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7 # v7
@@ -119,4 +121,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPOSE_RELEASE_PRIVATE_KEY: ${{ secrets.EXPOSE_RELEASE_PRIVATE_KEY }}
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}

@@ -24,7 +24,7 @@ func main() {
 	manifest := flag.String("manifest", "checksums.txt", "checksum manifest path")
 	signature := flag.String("signature", "", "signature path, defaults to <manifest>.sig")
 	tag := flag.String("tag", "", "exact release tag")
-	keyID := flag.String("key-id", "release", "signing key ID")
+	keyID := flag.String("key-id", os.Getenv("RELEASE_SIGNING_KEY_ID"), "signing key ID, defaults to RELEASE_SIGNING_KEY_ID")
 	out := flag.String("out", "tmp/release-installers", "prepared installer directory")
 	flag.Parse()
 	if *signature == "" {
@@ -39,7 +39,7 @@ func main() {
 func signingKey(keys map[string]ed25519.PublicKey, id, raw string) (ed25519.PrivateKey, error) {
 	block, rest := pem.Decode([]byte(raw))
 	if block == nil || block.Type != "PRIVATE KEY" || len(bytes.TrimSpace(rest)) != 0 {
-		return nil, errors.New("EXPOSE_RELEASE_PRIVATE_KEY must be one PKCS#8 PEM private key")
+		return nil, errors.New("RELEASE_SIGNING_PRIVATE_KEY must be one PKCS#8 PEM private key")
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
@@ -69,13 +69,13 @@ func readLimited(path string, limit int64) ([]byte, error) {
 }
 
 func run(mode, manifestPath, signaturePath, tag, keyID, out string) error {
-	raw := os.Getenv("EXPOSE_RELEASE_KEYS")
+	raw := os.Getenv("RELEASE_SIGNING_PUBLIC_KEYS")
 	if mode == "ldflags" && raw == "" {
 		return nil // Ordinary local builds remain possible, but cannot update.
 	}
 	keys, err := releasesign.ParseKeys(raw)
 	if err != nil {
-		return fmt.Errorf("EXPOSE_RELEASE_KEYS: %w", err)
+		return fmt.Errorf("RELEASE_SIGNING_PUBLIC_KEYS: %w", err)
 	}
 	encoded := make(map[string]string, len(keys))
 	for id, key := range keys {
@@ -108,7 +108,7 @@ func run(mode, manifestPath, signaturePath, tag, keyID, out string) error {
 		}
 		return nil
 	case "check", "sign":
-		key, err := signingKey(keys, keyID, os.Getenv("EXPOSE_RELEASE_PRIVATE_KEY"))
+		key, err := signingKey(keys, keyID, os.Getenv("RELEASE_SIGNING_PRIVATE_KEY"))
 		if err != nil {
 			return err
 		}

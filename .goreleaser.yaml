@@ -22,7 +22,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/koltyakov/expose/internal/cli.Version={{.Version}} -X 'github.com/koltyakov/expose/internal/releasesign.KeysJSON={{ .Env.EXPOSE_RELEASE_KEYS }}'
+      - -s -w -X github.com/koltyakov/expose/internal/cli.Version={{.Version}} -X 'github.com/koltyakov/expose/internal/releasesign.KeysJSON={{ .Env.RELEASE_SIGNING_PUBLIC_KEYS }}'
 
 archives:
   - id: default
@@ -46,7 +46,7 @@ checksum:
   name_template: "checksums.txt"
 
 # Sign the final checksum bytes and bind them to this repository and exact tag.
-# Private key material is read only from EXPOSE_RELEASE_PRIVATE_KEY.
+# Private key material is read only from RELEASE_SIGNING_PRIVATE_KEY.
 signs:
   - id: checksums
     cmd: go

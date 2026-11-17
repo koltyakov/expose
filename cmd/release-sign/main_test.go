@@ -30,7 +30,7 @@ func configure(t *testing.T) ed25519.PrivateKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(map[string]string{"release": base64.StdEncoding.EncodeToString(pub)})
+	raw, err := json.Marshal(map[string]string{"release-2026-11-17": base64.StdEncoding.EncodeToString(pub)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,8 +38,9 @@ func configure(t *testing.T) ed25519.PrivateKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EXPOSE_RELEASE_KEYS", string(raw))
-	t.Setenv("EXPOSE_RELEASE_PRIVATE_KEY", string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})))
+	t.Setenv("RELEASE_SIGNING_PUBLIC_KEYS", string(raw))
+	t.Setenv("RELEASE_SIGNING_KEY_ID", "release-2026-11-17")
+	t.Setenv("RELEASE_SIGNING_PRIVATE_KEY", string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})))
 	return key
 }
 
@@ -53,32 +54,35 @@ func TestSigningTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, mode := range []string{"check", "sign", "verify", "prepare", "ldflags"} {
-		if err := run(mode, manifest, signature, "v1.2.3", "release", dir); err != nil {
+		if err := run(mode, manifest, signature, "v1.2.3", "release-2026-11-17", dir); err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
 	}
 	for _, name := range []string{"install.sh", "install.ps1"} {
 		body, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || bytes.Contains(body, []byte("EXPOSE_PINNED_RELEASE_KEYS")) ||
-			!bytes.Contains(body, []byte(os.Getenv("EXPOSE_RELEASE_KEYS"))) {
+			!bytes.Contains(body, []byte(os.Getenv("RELEASE_SIGNING_PUBLIC_KEYS"))) {
 			t.Fatalf("installer key pinning failed: %v", err)
 		}
-		if bytes.Contains(body, []byte(os.Getenv("EXPOSE_RELEASE_PRIVATE_KEY"))) {
+		if bytes.Contains(body, []byte(os.Getenv("RELEASE_SIGNING_PRIVATE_KEY"))) {
 			t.Fatal("private key leaked into installer")
 		}
 	}
-	if err := run("verify", manifest, signature, "v1.2.4", "release", dir); err == nil {
+	if err := run("verify", manifest, signature, "v1.2.4", "release-2026-11-17", dir); err == nil {
 		t.Fatal("verification accepted wrong tag")
 	}
 	if err := run("sign", manifest, signature, "v1.2.3", "unknown", dir); err == nil {
 		t.Fatal("signer accepted unpinned key")
 	}
-	t.Setenv("EXPOSE_RELEASE_PRIVATE_KEY", "")
-	if err := run("check", manifest, signature, "v1.2.3", "release", dir); err == nil {
+	if err := run("check", manifest, signature, "v1.2.3", "", dir); err == nil {
+		t.Fatal("accepted missing active key ID")
+	}
+	t.Setenv("RELEASE_SIGNING_PRIVATE_KEY", "")
+	if err := run("check", manifest, signature, "v1.2.3", "release-2026-11-17", dir); err == nil {
 		t.Fatal("accepted missing private key")
 	}
-	t.Setenv("EXPOSE_RELEASE_KEYS", "{}")
-	if err := run("prepare", manifest, signature, "v1.2.3", "release", dir); err == nil {
+	t.Setenv("RELEASE_SIGNING_PUBLIC_KEYS", "{}")
+	if err := run("prepare", manifest, signature, "v1.2.3", "release-2026-11-17", dir); err == nil {
 		t.Fatal("prepared installers without trust")
 	}
 }
@@ -134,7 +138,7 @@ func TestPreparedInstallers(t *testing.T) {
 					if scenario == "checksum mismatch" {
 						manifest = []byte(strings.Repeat("0", 64) + "  " + asset + "\n")
 					}
-					signature, err := releasesign.Sign("v1.2.3", "release", manifest, key)
+					signature, err := releasesign.Sign("v1.2.3", "release-2026-11-17", manifest, key)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -146,7 +150,7 @@ func TestPreparedInstallers(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						signature, err = releasesign.Sign("v1.2.3", "release", manifest, wrong)
+						signature, err = releasesign.Sign("v1.2.3", "release-2026-11-17", manifest, wrong)
 						if err != nil {
 							t.Fatal(err)
 						}

@@ -74,7 +74,7 @@ reject the update before downloading its archive. Automatic checks log the
 failure and keep the current version running.
 
 `EXPOSE_REQUIRE_SIGNATURE` is no longer used. Neither that variable nor runtime
-`EXPOSE_RELEASE_KEYS` can disable verification or replace an executable's pins.
+`RELEASE_SIGNING_PUBLIC_KEYS` can disable verification or replace an executable's pins.
 See [release signing](release-signing.md) for build configuration and migration.
 
 This works for `expose server`, `expose http`, and `expose static`. It is not supported by `expose up`.

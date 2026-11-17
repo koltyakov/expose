@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -125,7 +126,10 @@ func TestPreparedInstallers(t *testing.T) {
 			}
 			for _, scenario := range []string{"valid", "altered manifest", "wrong key", "missing signature", "invalid signature", "oversized signature", "wrong repository", "checksum mismatch"} {
 				t.Run(scenario, func(t *testing.T) {
-					dir := t.TempDir()
+					dir := filepath.Join(t.TempDir(), "installer fixtures")
+					if err := os.Mkdir(dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
 					if err := run("prepare", "", "", "", "", dir); err != nil {
 						t.Fatal(err)
 					}
@@ -218,6 +222,11 @@ cp "$EXPOSE_TEST_FIXTURES/${url##*/}" "$out"
 							t.Fatal(err)
 						}
 						cmd = exec.CommandContext(t.Context(), runner, "-NoProfile", "-NonInteractive", "-File", path)
+						if runtime.GOOS == "windows" {
+							// CI can launch Go from PowerShell 7. Let Windows
+							// PowerShell initialize its own compatible module paths.
+							cmd.Env = windowsPowerShellEnv(cmd.Environ())
+						}
 					}
 					output, err := cmd.CombinedOutput()
 					target := filepath.Join(dir, installed)
@@ -233,6 +242,9 @@ cp "$EXPOSE_TEST_FIXTURES/${url##*/}" "$out"
 						if err == nil {
 							t.Fatalf("installer accepted %s\n%s", scenario, output)
 						}
+						if scenario == "checksum mismatch" && !strings.Contains(strings.ToLower(string(output)), "checksum mismatch") {
+							t.Fatalf("expected checksum rejection, got:\n%s", output)
+						}
 						if _, err := os.Stat(target); !os.IsNotExist(err) {
 							t.Fatal("failed verification created an installation")
 						}
@@ -241,12 +253,41 @@ cp "$EXPOSE_TEST_FIXTURES/${url##*/}" "$out"
 					if err != nil {
 						t.Fatal(err)
 					}
-					if scenario != "valid" && scenario != "checksum mismatch" && bytes.Contains(requests, []byte(asset)) {
-						t.Fatal("archive downloaded before authentication")
+					wantRequests := []string{"https://github.com/koltyakov/expose/releases/latest/download/checksums.txt.sig"}
+					if scenario == "valid" || scenario == "altered manifest" || scenario == "wrong key" || scenario == "checksum mismatch" {
+						wantRequests = append(wantRequests, "https://github.com/koltyakov/expose/releases/download/v1.2.3/checksums.txt")
+					}
+					if scenario == "valid" || scenario == "checksum mismatch" {
+						wantRequests = append(wantRequests, "https://github.com/koltyakov/expose/releases/download/v1.2.3/"+asset)
+					}
+					if got := strings.Fields(string(requests)); !slices.Equal(got, wantRequests) {
+						t.Fatalf("download sequence = %v, want %v", got, wantRequests)
 					}
 				})
 			}
 		})
+	}
+}
+
+func windowsPowerShellEnv(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+		return strings.EqualFold(name, "PSModulePath")
+	})
+}
+
+func TestWindowsPowerShellEnv(t *testing.T) {
+	env := []string{
+		"PATH=tools", "PSModulePath=PowerShell7", "psmodulepath=other",
+		"PSExecutionPolicyPreference=RemoteSigned", "EXPOSE_TEST_FIXTURES=fixtures",
+	}
+	original := slices.Clone(env)
+	want := []string{"PATH=tools", "PSExecutionPolicyPreference=RemoteSigned", "EXPOSE_TEST_FIXTURES=fixtures"}
+	if got := windowsPowerShellEnv(env); !slices.Equal(got, want) {
+		t.Fatalf("environment = %v, want %v", got, want)
+	}
+	if !slices.Equal(env, original) {
+		t.Fatal("modified the caller's environment")
 	}
 }
 

@@ -8,7 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repo       = 'koltyakov/expose'
-$installDir = "$env:LOCALAPPDATA\Programs\expose"
+$installDir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'expose'
 $binary     = 'expose'
 # Filled by release-sign -mode prepare. Runtime environment keys are not trusted.
 $pinnedKeysJSON = 'EXPOSE_PINNED_RELEASE_KEYS'
@@ -114,9 +114,9 @@ $tmpDir  = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRan
 New-Item -ItemType Directory -Path $tmpDir | Out-Null
 
 try {
-  $archive   = "$tmpDir\$asset"
-  $checksums = "$tmpDir\checksums.txt"
-  $signature = "$tmpDir\checksums.txt.sig"
+  $archive   = Join-Path $tmpDir $asset
+  $checksums = Join-Path $tmpDir 'checksums.txt'
+  $signature = Join-Path $tmpDir 'checksums.txt.sig'
   Write-Host "Downloading $asset from $repo..."
   Invoke-Download -Url "$baseUrl/checksums.txt.sig" -Out $signature
   if ((Get-Item -LiteralPath $signature).Length -gt 4096) { throw 'Signature exceeds size limit' }
@@ -136,7 +136,7 @@ try {
   Test-Checksum -Archive $archive -AssetName $asset -ChecksumsFile $checksums
 
   Expand-Archive -LiteralPath $archive -DestinationPath $tmpDir -Force
-  $exeSrc = "$tmpDir\$binary.exe"
+  $exeSrc = Join-Path $tmpDir "$binary.exe"
   if (-not (Test-Path $exeSrc)) {
     Write-Error "$binary.exe not found in $asset"
     exit 1
@@ -145,9 +145,10 @@ try {
   if (-not (Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir | Out-Null
   }
-  Copy-Item -Path $exeSrc -Destination "$installDir\$binary.exe" -Force
+  $exeDest = Join-Path $installDir "$binary.exe"
+  Copy-Item -Path $exeSrc -Destination $exeDest -Force
 
-  Write-Host "Installed $binary to $installDir\$binary.exe"
+  Write-Host "Installed $binary to $exeDest"
 
   $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
   if ($userPath -notlike "*$installDir*") {

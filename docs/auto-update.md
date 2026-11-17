@@ -66,17 +66,16 @@ export EXPOSE_AUTOUPDATE=true
 
 Accepted values: `true`, `1`, `yes` (case-insensitive).
 
-For a fail-closed supply-chain policy, install `cosign` and also set:
+Every update requires `checksums.txt.sig`, an Ed25519 signature over the exact
+checksum manifest, repository, release tag, and key ID. The verifier uses public
+keys embedded at build time. It needs no external program or certificate.
+Missing signatures, unknown keys, altered metadata, and unconfigured builds
+reject the update before downloading its archive. Automatic checks log the
+failure and keep the current version running.
 
-```bash
-export EXPOSE_REQUIRE_SIGNATURE=true
-```
-
-With this setting, updates are rejected unless the release checksum manifest
-has a valid Sigstore bundle issued to this repository's tagged release
-workflow at the exact selected release tag. The update is rejected rather than
-falling back to checksum-only verification when `cosign` or the signature bundle
-is unavailable. Automatic checks log the failure and keep the current version running.
+`EXPOSE_REQUIRE_SIGNATURE` is no longer used. Neither that variable nor runtime
+`EXPOSE_RELEASE_KEYS` can disable verification or replace an executable's pins.
+See [release signing](release-signing.md) for build configuration and migration.
 
 This works for `expose server`, `expose http`, and `expose static`. It is not supported by `expose up`.
 

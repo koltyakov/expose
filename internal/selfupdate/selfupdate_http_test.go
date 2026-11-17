@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/expose/internal/releasesign"
 )
 
 func TestIsNewerExported(t *testing.T) {
@@ -293,7 +295,13 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 	assetBody := []byte("not an archive")
 	digest := sha256.Sum256(assetBody)
 	manifest := hex.EncodeToString(digest[:]) + "  " + assetName + "\n"
+	signature := testReleaseSignature(t, "v9.9.9", []byte(manifest))
+	originalKeys := releasesign.KeysJSON
 	downloadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt.sig") {
+			_, _ = w.Write(signature)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
 			_, _ = w.Write([]byte(manifest))
 			return
@@ -308,6 +316,7 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 		Assets: []Asset{
 			{Name: assetName, BrowserDownloadURL: downloadServer.URL + "/asset"},
 			{Name: checksumAssetName, BrowserDownloadURL: downloadServer.URL + "/checksums.txt"},
+			{Name: signatureAssetName, BrowserDownloadURL: downloadServer.URL + "/checksums.txt.sig"},
 		},
 	}
 	if _, err := Apply(context.Background(), rel); err == nil || !strings.Contains(err.Error(), "extract binary") {
@@ -329,7 +338,12 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 	}
 
 	tamperedManifest := strings.Repeat("0", 64) + "  " + assetName + "\n"
+	tamperedSignature := testReleaseSignature(t, "v9.9.9", []byte(tamperedManifest))
 	tamperedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt.sig") {
+			_, _ = w.Write(tamperedSignature)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
 			_, _ = w.Write([]byte(tamperedManifest))
 			return
@@ -343,12 +357,15 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 		Assets: []Asset{
 			{Name: assetName, BrowserDownloadURL: tamperedServer.URL + "/asset"},
 			{Name: checksumAssetName, BrowserDownloadURL: tamperedServer.URL + "/checksums.txt"},
+			{Name: signatureAssetName, BrowserDownloadURL: tamperedServer.URL + "/checksums.txt.sig"},
 		},
 	}
 	if _, err := Apply(context.Background(), tampered); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("Apply(tampered) error = %v, want checksum mismatch", err)
 	}
 	useDownloadServer(t, downloadServer)
+	// Restore the key pinned for the original server's valid signature.
+	releasesign.KeysJSON = originalKeys
 
 	releaseTag := "v1.2.3"
 	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +387,7 @@ func TestApplyAndCheckAndApplyErrorPaths(t *testing.T) {
 
 	releaseTag = "v9.9.9"
 	releaseServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9","assets":[{"name":"` + assetName + `","browser_download_url":"` + downloadServer.URL + `/asset"},{"name":"checksums.txt","browser_download_url":"` + downloadServer.URL + `/checksums.txt"}]}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9","assets":[{"name":"` + assetName + `","browser_download_url":"` + downloadServer.URL + `/asset"},{"name":"checksums.txt","browser_download_url":"` + downloadServer.URL + `/checksums.txt"},{"name":"checksums.txt.sig","browser_download_url":"` + downloadServer.URL + `/checksums.txt.sig"}]}`))
 	})
 	result, err = CheckAndApply(context.Background(), "1.0.0")
 	if err == nil || !strings.Contains(err.Error(), "extract binary") {

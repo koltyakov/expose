@@ -52,17 +52,19 @@ For transport mode details (`ws|quic`) and QUIC requirements, see [Client Config
 ### 1. Install
 
 Release binaries are published for macOS, Linux, and Windows on both `amd64` and `arm64`, including Windows on Arm.
+The installers require OpenSSL 3 or newer in PATH. Unix also requires `jq`.
+They always verify pinned Ed25519 release signatures before installing.
 
 macOS and Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.sh | sh
+curl -fsSL https://github.com/koltyakov/expose/releases/latest/download/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.ps1 | iex
+irm https://github.com/koltyakov/expose/releases/latest/download/install.ps1 | iex
 ```
 
 To uninstall, run the matching script:

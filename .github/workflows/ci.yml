@@ -45,6 +45,23 @@ jobs:
       - name: Run tests with race detector
         run: go test -race ./...
 
+  installers:
+    if: github.event_name != 'schedule'
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify prepared installers with real Ed25519 signatures
+        run: go test -v ./cmd/release-sign
+        env:
+          EXPOSE_TEST_REQUIRE_INSTALLERS: "1"
+
   lint:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04

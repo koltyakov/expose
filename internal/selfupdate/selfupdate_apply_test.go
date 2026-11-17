@@ -47,6 +47,8 @@ func TestApplyValidatesBeforeReplacing(t *testing.T) {
 				archive = makeZipArchive(t, "expose.exe", tt.binary)
 			}
 			sum := sha256.Sum256(archive)
+			manifest := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), asset))
+			signature := testReleaseSignature(t, "v9.9.9", manifest)
 			var mu sync.Mutex
 			var requests []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,17 +56,21 @@ func TestApplyValidatesBeforeReplacing(t *testing.T) {
 				requests = append(requests, r.URL.Path)
 				mu.Unlock()
 				if r.URL.Path == "/checksums.txt" {
-					_, _ = fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), asset)
+					_, _ = w.Write(manifest)
+					return
+				}
+				if r.URL.Path == "/checksums.txt.sig" {
+					_, _ = w.Write(signature)
 					return
 				}
 				_, _ = w.Write(archive)
 			}))
 			defer server.Close()
 			useDownloadServer(t, server)
-			t.Setenv(requireSignatureEnv, "false")
 			rel := &Release{TagName: "v9.9.9", Assets: []Asset{
 				{Name: asset, BrowserDownloadURL: server.URL + "/archive"},
 				{Name: checksumAssetName, BrowserDownloadURL: server.URL + "/checksums.txt"},
+				{Name: signatureAssetName, BrowserDownloadURL: server.URL + "/checksums.txt.sig"},
 			}}
 			result, err := applyAt(t.Context(), rel, installed)
 			want := "old"
@@ -82,7 +88,7 @@ func TestApplyValidatesBeforeReplacing(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if strings.Join(requests, ",") != "/checksums.txt,/archive" {
+			if strings.Join(requests, ",") != "/checksums.txt,/checksums.txt.sig,/archive" {
 				t.Fatalf("unexpected verification/download order: %v", requests)
 			}
 		})

@@ -67,7 +67,6 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_ROUTE_CACHE_TTL`         | `1m`          | Positive hostname route cache TTL before DB revalidation       |
 | -                         | `EXPOSE_WAF_COUNTER_RETENTION`   | `1h`          | Retention window for in-memory per-host WAF counters           |
 | -                         | `EXPOSE_AUTOUPDATE`              | `false`       | Enable automatic self-update (`true`/`1`/`yes`)                |
-| -                         | `EXPOSE_REQUIRE_SIGNATURE`       | `false`       | Require cosign verification for self-updates                   |
 
 ### Public request rejection diagnostics
 

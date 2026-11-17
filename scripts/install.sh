@@ -4,6 +4,8 @@ set -eu
 repo="koltyakov/expose"
 install_dir="$HOME/.local/bin"
 binary="expose"
+# Filled by release-sign -mode prepare. Never read trust keys from the environment.
+pinned_keys='EXPOSE_PINNED_RELEASE_KEYS'
 
 usage() {
   cat <<'EOF'
@@ -12,7 +14,7 @@ Install expose from GitHub Releases.
 Installs the latest release to $HOME/.local/bin.
 
 Examples:
-  curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.sh | sh
+  curl -fsSL https://github.com/koltyakov/expose/releases/latest/download/install.sh | sh
 EOF
 }
 
@@ -54,11 +56,11 @@ download() {
   url="$1"
   out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$out"
+    curl --proto '=https' --proto-redir '=https' -fsSL "$url" -o "$out"
     return
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -qO "$out" "$url"
+    wget --https-only -qO "$out" "$url"
     return
   fi
   echo "error: missing required command: curl or wget" >&2
@@ -100,28 +102,16 @@ verify_checksum() {
 
 verify_signature() {
   checksums_path="$1"
-  if ! command -v cosign >/dev/null 2>&1; then
-    case "${EXPOSE_REQUIRE_SIGNATURE:-false}" in
-      true | TRUE | 1 | yes | YES | on | ON)
-        echo "error: EXPOSE_REQUIRE_SIGNATURE=true but cosign is not installed" >&2
-        exit 1
-        ;;
-    esac
-    echo "warning: cosign not found; skipping signature verification" >&2
-    echo "warning: trusting checksums.txt from the same origin (checksum-only)" >&2
-    return 0
-  fi
-  bundle="$checksums_path.sigstore.json"
-  if ! download "$base_url/checksums.txt.sigstore.json" "$bundle"; then
-    echo "error: cosign is installed but the release signature bundle could not be downloaded" >&2
-    echo "error: refusing to downgrade to checksum-only verification" >&2
-    exit 1
-  fi
-  cosign verify-blob \
-    --bundle "$bundle" \
-    --certificate-identity-regexp "^https://github\.com/${repo}/\.github/workflows/release\.yml@refs/tags/.*$" \
-    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-    "$checksums_path"
+  [ "$(wc -c < "$checksums_path")" -le 1048576 ] || { echo "error: manifest too large" >&2; exit 1; }
+  public_key="$(printf '%s' "$pinned_keys" | jq -er --arg id "$key_id" '.[$id] | strings | select(test("^[A-Za-z0-9+/]{43}=$"))')"
+  printf '%s\n' '-----BEGIN PUBLIC KEY-----' "MCowBQYDK2VwAyEA$public_key" '-----END PUBLIC KEY-----' > "$tmp_dir/key.pem"
+  jq -jr '.signature' "$signature" | openssl base64 -d -A > "$tmp_dir/signature.bin"
+  [ "$(wc -c < "$tmp_dir/signature.bin")" -eq 64 ] || { echo "error: invalid signature" >&2; exit 1; }
+  {
+    printf 'expose-release-v1\n%s\n%s\n%s\n' "$repo" "$tag" "$key_id"
+    cat "$checksums_path"
+  } > "$tmp_dir/signed"
+  openssl pkeyutl -verify -pubin -inkey "$tmp_dir/key.pem" -rawin -in "$tmp_dir/signed" -sigfile "$tmp_dir/signature.bin"
   echo "Signature verified for checksums.txt"
 }
 
@@ -129,6 +119,17 @@ need_cmd tar
 need_cmd mktemp
 need_cmd install
 need_cmd awk
+need_cmd jq
+need_cmd openssl
+# LibreSSL and older OpenSSL do not implement this Ed25519 verification flow.
+case "$(openssl version)" in
+  "OpenSSL 3."* | "OpenSSL 4."*) ;;
+  *) echo "error: OpenSSL 3 or newer is required for Ed25519 verification" >&2; exit 1 ;;
+esac
+printf '%s' "$pinned_keys" | jq -e 'type == "object" and length > 0' >/dev/null || {
+  echo "error: use the prepared installer attached to a release" >&2
+  exit 1
+}
 
 os="$(asset_os)"
 arch="$(asset_arch)"
@@ -140,10 +141,25 @@ trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
 archive="$tmp_dir/$asset"
 checksums="$tmp_dir/checksums.txt"
+signature="$tmp_dir/checksums.txt.sig"
 echo "Downloading $asset from $repo..."
-download "$base_url/$asset" "$archive"
+# Resolve latest once through its signed envelope, then use only immutable tag URLs.
+download "$base_url/checksums.txt.sig" "$signature"
+[ "$(wc -c < "$signature")" -le 4096 ] || { echo "error: signature too large" >&2; exit 1; }
+jq -e --arg repo "$repo" '
+  type == "object" and
+  (keys == ["keyId", "repository", "signature", "tag", "version"]) and
+  .version == 1 and .repository == $repo and
+  (.tag | strings | test("^v[0-9][a-zA-Z0-9.+_-]{0,127}$")) and
+  (.keyId | strings | test("^[a-zA-Z0-9._-]{1,80}$")) and
+  (.signature | strings | test("^[A-Za-z0-9+/]{86}==$"))
+' "$signature" >/dev/null
+tag="$(jq -er '.tag' "$signature")"
+key_id="$(jq -er '.keyId' "$signature")"
+base_url="https://github.com/${repo}/releases/download/$tag"
 download "$base_url/checksums.txt" "$checksums"
 verify_signature "$checksums"
+download "$base_url/$asset" "$archive"
 verify_checksum "$archive" "$asset" "$checksums"
 
 tar -xzf "$archive" -C "$tmp_dir"

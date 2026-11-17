@@ -12,9 +12,11 @@ on:
         type: string
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   GORELEASER_VERSION: "v2.16.0"
@@ -65,9 +67,31 @@ jobs:
           version: ${{ env.GORELEASER_VERSION }}
           args: check
 
+  installers:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify prepared installers with real Ed25519 signatures
+        run: go test -v ./cmd/release-sign
+        env:
+          EXPOSE_TEST_REQUIRE_INSTALLERS: "1"
+
   goreleaser:
-    needs: verify
+    needs: [verify, installers]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      EXPOSE_RELEASE_KEYS: ${{ vars.EXPOSE_RELEASE_KEYS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7 # v7
@@ -82,8 +106,10 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2 # v4.1.2
+      - name: Verify release signing configuration
+        run: go run ./cmd/release-sign -mode check
+        env:
+          EXPOSE_RELEASE_PRIVATE_KEY: ${{ secrets.EXPOSE_RELEASE_PRIVATE_KEY }}
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7 # v7
@@ -93,4 +119,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCKER_CLI_EXPERIMENTAL: "enabled"
+          EXPOSE_RELEASE_PRIVATE_KEY: ${{ secrets.EXPOSE_RELEASE_PRIVATE_KEY }}

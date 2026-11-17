@@ -93,7 +93,6 @@ Environment Variables:
   EXPOSE_TUNNEL_RETENTION         Release offline tunnel hostnames after inactivity (default: 24h)
   EXPOSE_WAF_COUNTER_RETENTION    Retention window for in-memory WAF counters (default: 1h)
   EXPOSE_AUTOUPDATE       Enable automatic self-update (true|1|yes)
-  EXPOSE_REQUIRE_SIGNATURE  Require cosign verification for self-updates (true|1|yes)
   EXPOSE_TURN_ENABLE      Enable the public WebRTC TURN relay (default: false)
   EXPOSE_TURN_PUBLIC_IP   Public IPv4 advertised by the relay
   EXPOSE_TURN_SECRET      TURN REST shared secret, at least 32 characters

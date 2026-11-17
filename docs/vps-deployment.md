@@ -32,7 +32,7 @@ SSH into your VPS, create the service account and writable installation director
 sudo useradd -r -d /opt/expose -s /usr/sbin/nologin expose
 sudo install -d -o expose -g expose /opt/expose /opt/expose/.local/bin /opt/expose/cert
 sudo -u expose env HOME=/opt/expose sh -c \
-  'curl -fsSL https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.sh | sh'
+  'curl -fsSL https://github.com/koltyakov/expose/releases/latest/download/install.sh | sh'
 ```
 
 This installs the prebuilt release to `/opt/expose/.local/bin/expose`. To build from source instead, install **Go 1.26 or newer** and Git, then build entirely through paths writable by the service account:

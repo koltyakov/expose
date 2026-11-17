@@ -10,6 +10,8 @@ $ErrorActionPreference = 'Stop'
 $repo       = 'koltyakov/expose'
 $installDir = "$env:LOCALAPPDATA\Programs\expose"
 $binary     = 'expose'
+# Filled by release-sign -mode prepare. Runtime environment keys are not trusted.
+$pinnedKeysJSON = 'EXPOSE_PINNED_RELEASE_KEYS'
 
 function Show-Usage {
   Write-Host @"
@@ -18,7 +20,7 @@ Install expose from GitHub Releases.
 Installs the latest release to $installDir.
 
 Examples:
-  irm https://raw.githubusercontent.com/koltyakov/expose/main/scripts/install.ps1 | iex
+  irm https://github.com/koltyakov/expose/releases/latest/download/install.ps1 | iex
 "@
 }
 
@@ -67,39 +69,42 @@ function Test-Checksum {
   Write-Host "Checksum verified for $AssetName"
 }
 
-function Test-Truthy {
-  param([string]$Value)
-  if ([string]::IsNullOrWhiteSpace($Value)) {
-    return $false
-  }
-  return @('true', '1', 'yes', 'on') -contains $Value.Trim().ToLowerInvariant()
-}
-
 function Test-Signature {
-  param([string]$ChecksumsFile, [string]$BaseUrl)
-  $cosign = Get-Command cosign -ErrorAction SilentlyContinue
-  if (-not $cosign) {
-    if (Test-Truthy "$env:EXPOSE_REQUIRE_SIGNATURE") {
-      Write-Error 'EXPOSE_REQUIRE_SIGNATURE=true but cosign is not installed'
-      exit 1
-    }
-    Write-Warning 'cosign not found; skipping signature verification'
-    Write-Warning 'trusting checksums.txt from the same origin (checksum-only)'
-    return
+  param([string]$ChecksumsFile, $Envelope, [string]$Directory)
+  if ((Get-Item -LiteralPath $ChecksumsFile).Length -gt 1048576) {
+    throw 'Checksum manifest exceeds size limit'
   }
-
-  $bundle = "$ChecksumsFile.sigstore.json"
-  Invoke-Download -Url "$BaseUrl/checksums.txt.sigstore.json" -Out $bundle
-  & $cosign.Source verify-blob `
-    --bundle $bundle `
-    --certificate-identity-regexp '^https://github\.com/koltyakov/expose/\.github/workflows/release\.yml@refs/tags/.*$' `
-    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' `
-    $ChecksumsFile
+  $properties = @($pinnedKeys.PSObject.Properties | Where-Object { $_.Name -ceq $Envelope.keyId })
+  if ($properties.Count -ne 1 -or $properties[0].Value -cnotmatch '^[A-Za-z0-9+/]{43}=$') {
+    throw 'Unknown or invalid pinned release signing key'
+  }
+  $property = $properties[0]
+  $publicKey = [Convert]::FromBase64String($property.Value)
+  if ($publicKey.Length -ne 32) { throw 'Invalid Ed25519 public key' }
+  $keyPath = Join-Path $Directory 'key.pem'
+  [IO.File]::WriteAllText($keyPath, "-----BEGIN PUBLIC KEY-----`nMCowBQYDK2VwAyEA$($property.Value)`n-----END PUBLIC KEY-----`n", [Text.Encoding]::ASCII)
+  $sigPath = Join-Path $Directory 'signature.bin'
+  $sigBytes = [Convert]::FromBase64String($Envelope.signature)
+  if ($sigBytes.Length -ne 64) { throw 'Invalid Ed25519 signature' }
+  [IO.File]::WriteAllBytes($sigPath, $sigBytes)
+  $messagePath = Join-Path $Directory 'signed'
+  $header = [Text.Encoding]::UTF8.GetBytes("expose-release-v1`n$repo`n$($Envelope.tag)`n$($Envelope.keyId)`n")
+  [IO.File]::WriteAllBytes($messagePath, [byte[]]($header + [IO.File]::ReadAllBytes($ChecksumsFile)))
+  & $openssl.Source pkeyutl -verify -pubin -inkey $keyPath -rawin -in $messagePath -sigfile $sigPath
   if ($LASTEXITCODE -ne 0) {
-    Write-Error 'Signature verification failed for checksums.txt'
-    exit 1
+    throw 'Signature verification failed for checksums.txt'
   }
   Write-Host 'Signature verified for checksums.txt'
+}
+
+$openssl = Get-Command openssl -ErrorAction Stop
+$opensslVersion = & $openssl.Source version
+if ($LASTEXITCODE -ne 0 -or $opensslVersion -notmatch '^OpenSSL [34]\.') {
+  throw 'OpenSSL 3 or newer is required for Ed25519 verification'
+}
+$pinnedKeys = $pinnedKeysJSON | ConvertFrom-Json
+if (-not $pinnedKeys -or @($pinnedKeys.PSObject.Properties).Count -eq 0) {
+  throw 'Use the prepared installer attached to a release'
 }
 
 $arch    = Get-AssetArch
@@ -111,10 +116,23 @@ New-Item -ItemType Directory -Path $tmpDir | Out-Null
 try {
   $archive   = "$tmpDir\$asset"
   $checksums = "$tmpDir\checksums.txt"
+  $signature = "$tmpDir\checksums.txt.sig"
   Write-Host "Downloading $asset from $repo..."
-  Invoke-Download -Url "$baseUrl/$asset" -Out $archive
+  Invoke-Download -Url "$baseUrl/checksums.txt.sig" -Out $signature
+  if ((Get-Item -LiteralPath $signature).Length -gt 4096) { throw 'Signature exceeds size limit' }
+  $envelope = [IO.File]::ReadAllText($signature) | ConvertFrom-Json
+  $fields = @($envelope.PSObject.Properties.Name | Sort-Object)
+  if (($fields -join ',') -cne 'keyId,repository,signature,tag,version' -or
+      $envelope.version -ne 1 -or $envelope.repository -cne $repo -or
+      $envelope.tag -cnotmatch '^v[0-9][a-zA-Z0-9.+_-]{0,127}$' -or
+      $envelope.keyId -cnotmatch '^[a-zA-Z0-9._-]{1,80}$' -or
+      $envelope.signature -cnotmatch '^[A-Za-z0-9+/]{86}==$') {
+    throw 'Invalid release signature envelope'
+  }
+  $baseUrl = "https://github.com/$repo/releases/download/$($envelope.tag)"
   Invoke-Download -Url "$baseUrl/checksums.txt" -Out $checksums
-  Test-Signature -ChecksumsFile $checksums -BaseUrl $baseUrl
+  Test-Signature -ChecksumsFile $checksums -Envelope $envelope -Directory $tmpDir
+  Invoke-Download -Url "$baseUrl/$asset" -Out $archive
   Test-Checksum -Archive $archive -AssetName $asset -ChecksumsFile $checksums
 
   Expand-Archive -LiteralPath $archive -DestinationPath $tmpDir -Force

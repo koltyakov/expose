@@ -4,6 +4,7 @@ before:
   hooks:
     - go mod tidy
     - go test ./...
+    - go run ./cmd/release-sign -mode prepare
 
 builds:
   - id: expose
@@ -21,7 +22,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/koltyakov/expose/internal/cli.Version={{.Version}}
+      - -s -w -X github.com/koltyakov/expose/internal/cli.Version={{.Version}} -X 'github.com/koltyakov/expose/internal/releasesign.KeysJSON={{ .Env.EXPOSE_RELEASE_KEYS }}'
 
 archives:
   - id: default
@@ -44,19 +45,27 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
-# Keyless signing with cosign via GitHub Actions OIDC (requires id-token: write
-# in the release workflow). Signing checksums.txt authenticates every artifact
-# in the release, since it carries each archive's SHA-256 digest.
+# Sign the final checksum bytes and bind them to this repository and exact tag.
+# Private key material is read only from EXPOSE_RELEASE_PRIVATE_KEY.
 signs:
   - id: checksums
-    cmd: cosign
-    signature: "${artifact}.sigstore.json"
+    cmd: go
+    signature: "${artifact}.sig"
     args:
-      - sign-blob
-      - --bundle=${signature}
-      - --yes
-      - ${artifact}
+      - run
+      - ./cmd/release-sign
+      - -mode=sign
+      - -tag={{ .Tag }}
+      - -manifest=${artifact}
+      - -signature=${signature}
     artifacts: checksum
+
+release:
+  extra_files:
+    - glob: tmp/release-installers/install.sh
+    - glob: tmp/release-installers/install.ps1
+  draft: false
+  prerelease: auto
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
@@ -79,7 +88,3 @@ changelog:
       order: 1
     - title: Others
       order: 999
-
-release:
-  draft: false
-  prerelease: auto

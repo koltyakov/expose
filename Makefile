@@ -5,7 +5,7 @@ BIN_DIR := bin
 GO ?= go
 CGO_ENABLED ?= 0
 BUILD_LDFLAGS := -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
-BUILD_FLAGS := -trimpath -ldflags "$(BUILD_LDFLAGS)"
+BUILD_FLAGS := -trimpath -ldflags "$(BUILD_LDFLAGS) $$(go run ./cmd/release-sign -mode ldflags)"
 COVER_PROFILE ?= tmp/coverage.out
 COVER_HTML ?= tmp/coverage.html
 COVERAGE_MIN ?=50.0
@@ -15,7 +15,7 @@ include .env
 export
 endif
 
-.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race cov test-coverage test-cov-check bench bench-transport build build-all install uninstall release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
+.PHONY: help tidy deps deps-update fmt lint lint-hint lint-hint-all vet test test-race cov test-coverage test-cov-check bench bench-transport check-build-keys build build-linux build-all install uninstall release-check release-local ci run-server run-server-init run-client client-login apikey-create apikey-list apikey-revoke clean
 
 help:
 	@echo "Targets:"
@@ -134,15 +134,18 @@ bench:
 bench-transport:
 	go run ./cmd/benchmark
 
-build:
+check-build-keys:
+	@$(GO) run ./cmd/release-sign -mode ldflags >/dev/null
+
+build: check-build-keys
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP) ./cmd/expose
 
-build-linux:
+build-linux: check-build-keys
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP) ./cmd/expose
 
-build-all:
+build-all: check-build-keys
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-amd64 ./cmd/expose
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 $(GO) build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-arm64 ./cmd/expose

@@ -133,30 +133,32 @@ The server injects standard reverse-proxy headers (`X-Forwarded-For`, `X-Forward
 
 **Trust rule**: when expose sits behind a known reverse proxy or CDN, set `EXPOSE_TRUSTED_PROXY_CIDRS` to a comma-separated list of trusted proxy CIDRs (e.g. `10.0.0.0/8,203.0.113.10/32`). When the immediate peer matches a trusted CIDR, the client IP is derived from the rightmost XFF hop that is NOT in a trusted CIDR. The default is empty, which means no XFF hop is trusted and the forwarded client IP is always the connection's `RemoteAddr`.
 
-## Release Integrity
+## Release integrity
 
-Release artifacts are signed with [cosign](https://docs.sigstore.dev/) in **keyless mode**: the release workflow authenticates to Sigstore via GitHub Actions OIDC (`id-token: write`), so there are no long-lived signing keys to manage or leak. GoReleaser signs `checksums.txt`, producing one Sigstore bundle:
+GoReleaser signs the final `checksums.txt` bytes with a dedicated Ed25519 key,
+publishing `checksums.txt.sig`. The signature binds the manifest to
+`koltyakov/expose`, the exact release tag, and the signing key ID. Each archive
+remains protected by its SHA-256 digest in that authenticated manifest.
 
-- `checksums.txt.sigstore.json` - the signature, certificate, and verification material for `checksums.txt`
+Self-update always verifies with build-pinned public keys using Go's standard
+library. Missing or invalid signatures, unknown keys, and unconfigured trust
+fail closed before archive download. HTTPS and GitHub asset-host restrictions,
+archive integrity checks, executable validation, and replacement locks remain in place.
 
-Since `checksums.txt` carries the SHA-256 digest of every archive, verifying its signature authenticates all release artifacts at once.
+The release-attached Unix and PowerShell installers carry the same public pins
+and always verify before archive download or installation. They require OpenSSL
+3 or newer; Unix also requires `jq`. An unavailable verifier is an error, never
+a checksum-only fallback. Source installer files are templates, not ready-to-run installers.
 
-### Verifying a release manually
+This replaces Sigstore, not TLS certificates. There is no workflow-identity,
+transparency-log, or trusted signing-time proof. Protecting and recovering the
+long-lived release private key is now the maintainer's responsibility. Signatures
+do not prove a build is benign or provide complete replay/freeze protection.
+The downloaded bootstrap script still relies on HTTPS and GitHub, so independently
+review or obtain it through a trusted channel when first-install authenticity matters.
 
-```sh
-cosign verify-blob \
-  --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp "^https://github\.com/koltyakov/expose/\.github/workflows/release\.yml@refs/tags/.*$" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  checksums.txt
-```
-
-The certificate identity pins the signature to this repository's release workflow running from a version tag; the OIDC issuer pins it to GitHub Actions.
-
-### How each install path verifies
-
-- **Install scripts**: Unix and Windows verify `checksums.txt` with cosign when cosign is available. If signature assets cannot be downloaded while cosign is installed, installation fails closed. If cosign is absent, the scripts warn and fall back to checksum-only verification unless `EXPOSE_REQUIRE_SIGNATURE=true` is set.
-- **Built-in self-update** (`expose update`): always requires the SHA-256 checksum manifest and refuses non-HTTPS or non-GitHub asset URLs. Set `EXPOSE_REQUIRE_SIGNATURE=true` and install cosign to additionally require the Sigstore bundle; this mode fails closed if cosign, the bundle, or verification is unavailable.
+See [release signing](release-signing.md) for manual verification, GitHub
+configuration, key rotation, recovery, and the clean-cutover procedure.
 
 ## Recommendations for Operators
 

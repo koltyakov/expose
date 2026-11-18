@@ -1,9 +1,34 @@
 package server
 
 import (
+	"bytes"
 	"sync"
 	"testing"
+
+	"github.com/koltyakov/expose/internal/tunnelproto"
 )
+
+// A shared tunnel must be able to buffer one small event on each of 128
+// streams without exhausting the default 16 MiB response budget.
+func TestSmallStreamEventsShareResponseBudget(t *testing.T) {
+	var frame bytes.Buffer
+	if err := tunnelproto.WriteStreamBinaryFrameV2(&frame, tunnelproto.BinaryFrameRespBody, "id", 0, []byte("data: 1\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	budget := &byteBudget{limit: 16 << 20}
+	for range 128 {
+		var msg tunnelproto.Message
+		if err := tunnelproto.ReadStreamMessageV2(bytes.NewReader(frame.Bytes()), 1024, &msg); err != nil {
+			t.Fatal(err)
+		}
+		p := newPendingRequest()
+		p.sessionBudget = budget
+		defer p.discardBody()
+		if !p.sendBody(&session{}, msg.BodyChunk.Data, 0) {
+			t.Fatal("small event rejected by the tunnel byte budget")
+		}
+	}
+}
 
 func TestPendingResponseBudgetsCountCapacityAndRollback(t *testing.T) {
 	t.Parallel()

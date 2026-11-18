@@ -115,11 +115,15 @@ func openArchiveRoot(dir string) (*os.Root, error) {
 }
 
 func scanArchiveFiles(root *os.Root, warn func(string, error)) ([]string, int64, error) {
-	return scanPublicFiles(root, warn, math.MaxInt64)
+	var names []string
+	total, err := walkPublicFiles(root, warn, math.MaxInt64, func(name string, _ os.FileInfo) {
+		names = append(names, name)
+	})
+	return names, total, err
 }
 
-func scanPublicFiles(root *os.Root, warn func(string, error), maxBytes int64) ([]string, int64, error) {
-	var names []string
+func walkPublicFiles(root *os.Root, warn func(string, error), maxBytes int64, visit func(string, os.FileInfo)) (int64, error) {
+	var count int
 	var total int64
 	err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -154,21 +158,22 @@ func scanPublicFiles(root *os.Root, warn func(string, error), maxBytes int64) ([
 		if info.Size() > limit-total {
 			return fmt.Errorf("%w (%d bytes)", ErrSiteTooLarge, limit)
 		}
-		if len(names) >= MaxArchiveEntries {
+		if count >= MaxArchiveEntries {
 			return fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
 		}
 		total += info.Size()
-		names = append(names, name)
+		count++
+		visit(name, info)
 		return nil
 	})
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
 	index, err := root.Stat("index.html")
 	if err != nil || !index.Mode().IsRegular() {
-		return nil, 0, fmt.Errorf("publish requires a root index.html")
+		return 0, fmt.Errorf("publish requires a root index.html")
 	}
-	return names, total, nil
+	return total, nil
 }
 
 func archive(dir string, dst io.Writer, warn func(string, error), report func(ArchiveProgress), manifest []domain.PublishedFile, changed, ignoredEmpty map[string]bool) error {

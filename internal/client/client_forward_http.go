@@ -31,6 +31,14 @@ var (
 			return &b
 		},
 	}
+	responseSmallChunkPool = sync.Pool{New: func() any {
+		b := make([]byte, 4<<10)
+		return &b
+	}}
+	responseMediumChunkPool = sync.Pool{New: func() any {
+		b := make([]byte, 32<<10)
+		return &b
+	}}
 	responseStreamChunkPool = sync.Pool{
 		New: func() any {
 			b := make([]byte, streamingChunkSize)
@@ -295,7 +303,15 @@ func (c *Client) forwardAndSend(
 	// still arriving after inlineResponseWindow, or larger than
 	// streamingThreshold, is streamed as it arrives, so slow producers such as
 	// server-sent events and long polls are not held back.
-	pump := startResponseBodyPump(resp.Body, func(n int) {
+	if resp.Body == http.NoBody || req.Method == http.MethodHead || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
+		_ = writeMsg(tunnelproto.Message{Kind: tunnelproto.KindResponse, Response: &tunnelproto.HTTPResponse{
+			ID: req.ID, Status: resp.StatusCode, Headers: respHeaders,
+		}})
+		c.logForwardResult(req, resp.StatusCode, started)
+		return
+	}
+	events := isEventStream(resp)
+	pump := startResponseBodyPump(resp.Body, resp.ContentLength, events, func(n int) {
 		c.recordTraffic(traffic.DirectionOutbound, int64(n))
 	})
 	defer pump.close()
@@ -308,7 +324,7 @@ func (c *Client) forwardAndSend(
 		readErr  error
 	)
 	defer func() { head.release() }()
-	if !shouldStreamResponseImmediately(req.Method, resp) {
+	if resp.ContentLength <= streamingThreshold && !events {
 		window := timerpool.Acquire(inlineResponseWindow)
 		defer timerpool.Release(window)
 	collect:
@@ -445,12 +461,9 @@ func (c *Client) forwardAndSend(
 	c.logForwardResult(req, resp.StatusCode, started)
 }
 
-func shouldStreamResponseImmediately(method string, resp *http.Response) bool {
-	if method == http.MethodHead || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified || resp.Body == http.NoBody {
-		return false
-	}
+func isEventStream(resp *http.Response) bool {
 	contentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
-	return resp.ContentLength > streamingThreshold || strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
+	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 }
 
 // bodyRead is one read from a local response body. Its pooled buffer belongs
@@ -483,14 +496,20 @@ type responseBodyPump struct {
 	stop  chan struct{}
 }
 
-func startResponseBodyPump(body io.Reader, onRead func(int)) *responseBodyPump {
+func startResponseBodyPump(body io.Reader, length int64, events bool, onRead func(int)) *responseBodyPump {
 	p := &responseBodyPump{reads: make(chan bodyRead), stop: make(chan struct{})}
-	go p.run(body, onRead)
+	go p.run(body, length, events, onRead)
 	return p
 }
 
-func (p *responseBodyPump) run(body io.Reader, onRead func(int)) {
+func (p *responseBodyPump) run(body io.Reader, length int64, events bool, onRead func(int)) {
 	pool, size := &responseFirstChunkPool, streamingThreshold+1
+	switch {
+	case events || (length > 0 && length <= 4<<10):
+		pool, size = &responseSmallChunkPool, 4<<10
+	case length > 0 && length <= 32<<10:
+		pool, size = &responseMediumChunkPool, 32<<10
+	}
 	for {
 		ref := pool.Get().(*[]byte)
 		if cap(*ref) < size {
@@ -519,7 +538,7 @@ func (p *responseBodyPump) run(body io.Reader, onRead func(int)) {
 		if err != nil {
 			return
 		}
-		if n > 0 {
+		if n > 0 && (pool == &responseFirstChunkPool || (events && n == size)) {
 			pool, size = &responseStreamChunkPool, streamingChunkSize
 		}
 	}

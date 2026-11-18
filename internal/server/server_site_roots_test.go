@@ -100,8 +100,26 @@ func TestPublishedSiteRootsClosedBeforeRemoval(t *testing.T) {
 	wantOpen("after first serve", 1)
 
 	// Replacement closes the previous root before removing its directory.
+	srv.sitesMu.Lock()
+	releaseA := srv.pinSiteDir(dirOf(first))
+	releaseB := srv.pinSiteDir(dirOf(first))
+	srv.sitesMu.Unlock()
 	second := upload("domain=roots", "v1")
 	wantOpen("after replace", 0)
+	releaseA()
+	// A concurrent delta still needs the old revision, including after the
+	// orphan sweep. The old directory can legitimately have a very old mtime.
+	oldRevision := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(dirOf(first), oldRevision, oldRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.cleanupPublishedSites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dirOf(first), "index.html")); err != nil || string(b) != "v0" {
+		t.Fatalf("pinned revision lost: %q, %v", b, err)
+	}
+	releaseB()
 	assertRemoved("replace", first)
 	if w := get(second.Hostname); w.Code != http.StatusOK || w.Body.String() != "v1" {
 		t.Fatalf("serve after replace: %d %q", w.Code, w.Body.String())

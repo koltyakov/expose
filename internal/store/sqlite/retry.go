@@ -22,9 +22,8 @@ type storeWriteRequest struct {
 }
 
 type storeTouchRequest struct {
-	ctx      context.Context
-	domainID string
-	done     *storeWriteCompletion
+	ids  []string
+	done *storeWriteCompletion
 }
 
 type storeWriteCompletion struct {
@@ -112,7 +111,14 @@ func (s *Store) runWriterLoop() {
 	defer timer.Stop()
 	var flushC <-chan time.Time
 
-	pendingTouches := make(map[string][]*storeWriteCompletion)
+	pendingTouches := make(map[string]struct{})
+	var waiters []*storeWriteCompletion
+	addTouches := func(req storeTouchRequest) {
+		for _, id := range req.ids {
+			pendingTouches[id] = struct{}{}
+		}
+		waiters = append(waiters, req.done)
+	}
 
 	flushTouches := func() {
 		timer.Stop()
@@ -121,11 +127,11 @@ func (s *Store) runWriterLoop() {
 			return
 		}
 		err := s.flushTouchBatch(pendingTouches)
-		for _, waiters := range pendingTouches {
-			for _, done := range waiters {
-				done.ch <- err
-			}
+		for _, done := range waiters {
+			done.ch <- err
 		}
+		clear(waiters)
+		waiters = waiters[:0]
 		clear(pendingTouches)
 	}
 
@@ -133,7 +139,7 @@ func (s *Store) runWriterLoop() {
 		for {
 			select {
 			case req := <-s.touchRequests:
-				pendingTouches[req.domainID] = append(pendingTouches[req.domainID], req.done)
+				addTouches(req)
 			default:
 				return
 			}
@@ -169,7 +175,7 @@ func (s *Store) runWriterLoop() {
 				}
 			}
 		case req := <-s.touchRequests:
-			pendingTouches[req.domainID] = append(pendingTouches[req.domainID], req.done)
+			addTouches(req)
 			if len(pendingTouches) >= defaultTouchQueueSize/8 {
 				flushTouches()
 			} else if flushC == nil {
@@ -190,7 +196,7 @@ func (s *Store) runWriterLoop() {
 // flushTouchBatchTimeout bounds how long a single domain-touch flush may take.
 const flushTouchBatchTimeout = 5 * time.Second
 
-func (s *Store) flushTouchBatch(pending map[string][]*storeWriteCompletion) error {
+func (s *Store) flushTouchBatch(pending map[string]struct{}) error {
 	if len(pending) == 0 {
 		return nil
 	}

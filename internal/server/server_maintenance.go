@@ -30,17 +30,33 @@ func (s *Server) queueDomainTouch(domainID string) {
 }
 
 func (s *Server) runDomainTouchWorker(ctx context.Context) {
+	const batchSize = 128
+	batch := make([]string, 0, batchSize)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case domainID := <-s.domainTouches:
+			batch = append(batch[:0], domainID)
+		drain:
+			for len(batch) < batchSize {
+				select {
+				case id := <-s.domainTouches:
+					batch = append(batch, id)
+				default:
+					break drain
+				}
+			}
 			touchCtx, cancel := context.WithTimeout(ctx, domainTouchTimeout)
-			err := s.store.TouchDomain(touchCtx, domainID)
+			err := s.store.TouchDomains(touchCtx, batch)
 			cancel()
-			s.completeDomainTouch(domainID)
+			s.domainTouchMu.Lock()
+			for _, id := range batch {
+				delete(s.domainTouched, id)
+			}
+			s.domainTouchMu.Unlock()
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.log.Warn("failed to update domain last seen", "domain_id", domainID, "err", err)
+				s.log.Warn("failed to update domain last seen", "domains", len(batch), "err", err)
 			}
 		}
 	}

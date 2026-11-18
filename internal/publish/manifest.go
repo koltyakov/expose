@@ -23,11 +23,12 @@ func FileTotals(dir string) (int, int64, error) {
 		return 0, 0, err
 	}
 	defer func() { _ = root.Close() }()
-	names, total, err := scanPublicFiles(root, nil, 0)
+	count := 0
+	total, err := walkPublicFiles(root, nil, 0, func(string, os.FileInfo) { count++ })
 	if err != nil {
 		return 0, 0, err
 	}
-	return len(names), total, nil
+	return count, total, nil
 }
 
 // FileSnapshot records public file metadata for lightweight watch-mode polling.
@@ -38,20 +39,12 @@ func FileSnapshot(dir string) (map[string]os.FileInfo, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	names, _, err := scanArchiveFiles(root, nil)
+	files := make(map[string]os.FileInfo)
+	_, err = walkPublicFiles(root, nil, math.MaxInt64, func(name string, info os.FileInfo) {
+		files[name] = info
+	})
 	if err != nil {
 		return nil, err
-	}
-	files := make(map[string]os.FileInfo, len(names))
-	for _, name := range names {
-		info, err := root.Lstat(name)
-		if err != nil {
-			return nil, err
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("file changed during publish: %s", name)
-		}
-		files[name] = info
 	}
 	return files, nil
 }

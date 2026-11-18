@@ -108,7 +108,7 @@ func (s *stubServerStore) FindRouteByTunnelID(context.Context, string) (domain.T
 	return domain.TunnelRoute{}, nil
 }
 
-func (s *stubServerStore) TouchDomain(context.Context, string) error {
+func (s *stubServerStore) TouchDomains(context.Context, []string) error {
 	return nil
 }
 

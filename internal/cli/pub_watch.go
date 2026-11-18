@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/publish"
@@ -37,7 +38,7 @@ func (t pubWatchTiming) defaults() pubWatchTiming {
 		t.Retry = time.Second
 	}
 	if t.Verify <= 0 {
-		t.Verify = 30 * time.Second
+		t.Verify = 5 * time.Minute
 	}
 	return t
 }
@@ -245,6 +246,21 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 	}
 	poll := time.NewTicker(timing.Poll)
 	defer poll.Stop()
+	notifier := newPubWatchNotifier(ctx, opts)
+	var changes <-chan fsnotify.Event
+	var notifyErrors <-chan error
+	if notifier != nil {
+		changes, notifyErrors = notifier.Events, notifier.Errors
+	}
+	stopNotifications := func() {
+		if changes != nil {
+			changes, notifyErrors = nil, nil
+			_ = notifier.Close()
+		}
+	}
+	defer stopNotifications()
+	scanPending := true // include changes between the initial upload and watch setup
+	var nextScan time.Time
 	statsPoll := time.NewTicker(timing.Stats)
 	defer statsPoll.Stop()
 	observed := baseline
@@ -257,6 +273,18 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 		select {
 		case <-ctx.Done():
 			return nil
+		case e, ok := <-changes:
+			if !ok {
+				stopNotifications()
+				continue
+			}
+			changed, err := notifier.changed(e)
+			scanPending = scanPending || changed
+			if err != nil {
+				stopNotifications()
+			}
+		case <-notifyErrors:
+			stopNotifications()
 		case <-syncTicks:
 			status.SyncFrame = (status.SyncFrame + 1) % len(pubWatchSyncFrames)
 			if err := redraw(); err != nil {
@@ -267,6 +295,13 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				startStats()
 			}
 		case <-poll.C:
+			now := time.Now()
+			verify := !uploadBusy && opts.Staged == nil && !now.Before(nextVerify)
+			if changes != nil && !scanPending && !verify && now.Before(nextScan) {
+				continue
+			}
+			scanPending = false
+			nextScan = now.Add(10 * time.Second)
 			var snapshot map[string]os.FileInfo
 			var err error
 			// Queue staged object IDs while keeping the upload source immutable.
@@ -276,6 +311,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				snapshot, err = opts.watchSnapshot(ctx)
 			}
 			if err != nil {
+				scanPending = true
 				if !uploadBusy {
 					status.State = "Waiting for valid local files: " + err.Error()
 				}
@@ -305,11 +341,12 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				nextRetry, retryDelay = time.Time{}, timing.Retry
 			}
 			dirty := !samePubSnapshot(snapshot, baseline)
-			// Metadata polling stays cheap. A periodic content comparison catches
+			// A periodic content comparison catches
 			// same-size, same-timestamp saves, including coarse filesystem clocks.
 			// Staged sources already compare Git object identities.
-			verify := opts.Staged == nil && !time.Now().Before(nextVerify)
+			scanPending = dirty && !uploadBusy
 			if !uploadBusy && (dirty || verify) && (!dirty || time.Since(changedAt) >= timing.Debounce) && !time.Now().Before(nextRetry) {
+				scanPending = false
 				startUpload(snapshot)
 				if err := redraw(); err != nil {
 					return err
@@ -339,6 +376,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 					return err
 				}
 			case "publish":
+				scanPending = true
 				uploadBusy = false
 				status.Syncing = false
 				status.SyncPercent = -1

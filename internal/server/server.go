@@ -49,7 +49,7 @@ type tunnelConnector interface {
 type routeResolver interface {
 	FindRouteByHost(ctx context.Context, host string) (domain.TunnelRoute, error)
 	FindRouteByTunnelID(ctx context.Context, tunnelID string) (domain.TunnelRoute, error)
-	TouchDomain(ctx context.Context, domainID string) error
+	TouchDomains(ctx context.Context, domainIDs []string) error
 }
 
 type tunnelLimiter interface {
@@ -110,6 +110,7 @@ type Server struct {
 	domainTouched        map[string]struct{}
 	routeLifecycleMu     sync.Mutex
 	sitesMu              sync.RWMutex
+	siteDirPins          map[string]*siteDirPin // guarded by sitesMu
 	siteUploads          siteUploadLimiter
 	siteRoots            *publish.RootCache // closed under sitesMu before deleting a publication
 	siteHosts            sync.Map

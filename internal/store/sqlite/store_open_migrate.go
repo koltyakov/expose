@@ -339,6 +339,10 @@ BEGIN
 END;`)
 		return err
 	}},
+	{version: 14, name: "published_site_owner_source", apply: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE INDEX idx_published_sites_owner_source ON published_sites(api_key_id, source_id)`)
+		return err
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {

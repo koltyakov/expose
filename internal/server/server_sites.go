@@ -28,6 +28,8 @@ type siteStore interface {
 	ReplacePublishedSite(context.Context, domain.PublishedSite) error
 	FindPublishedSite(context.Context, string) (domain.PublishedSite, error)
 	ListPublishedSites(context.Context, string) ([]domain.PublishedSite, error)
+	OwnedPublishedSite(context.Context, string, string, string) (domain.PublishedSite, error)
+	PublishedSiteMatches(context.Context, string, string, string) ([]domain.PublishedSite, error)
 	DeletePublishedSite(context.Context, string, string) error
 }
 
@@ -107,41 +109,43 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	w = &publicationResponseWriter{ResponseWriter: w, release: release}
-	sites, err := st.ListPublishedSites(r.Context(), key)
-	if err != nil {
-		s.siteError(w, err)
-		return
-	}
 	if filesRequest {
-		s.writeSiteFiles(w, r, sites)
+		s.writeSiteFiles(w, r, st, key)
 		return
 	}
 	if r.Method == http.MethodGet && id == "" {
+		sites, err := st.ListPublishedSites(r.Context(), key)
+		if err != nil {
+			s.siteError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, sites)
 		return
 	}
 	hostname, _ := s.publishedHostname(id)
-	for _, site := range sites {
-		if site.ID != id && site.Hostname != hostname {
-			continue
-		}
-		switch r.Method {
-		case http.MethodGet:
-			if statsRequest {
-				s.writeSiteStats(w, r, site)
-			} else {
-				writeJSON(w, http.StatusOK, site)
-			}
-		case http.MethodDelete:
-			if err := s.deleteSite(r.Context(), st, site); err != nil {
-				s.siteError(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}
+	site, err := st.OwnedPublishedSite(r.Context(), key, id, hostname)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
 		return
 	}
-	http.NotFound(w, r)
+	if err != nil {
+		s.siteError(w, err)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if statsRequest {
+			s.writeSiteStats(w, r, site)
+		} else {
+			writeJSON(w, http.StatusOK, site)
+		}
+	case http.MethodDelete:
+		if err := s.deleteSite(r.Context(), st, site); err != nil {
+			s.siteError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore, key string) {
@@ -273,37 +277,67 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		expires := site.CreatedAt.Add(ttl)
 		site.ExpiresAt = &expires
 	}
+	selectorHost := host
+	if r.URL.Query().Get("domain") == "" {
+		selectorHost = ""
+	}
+	// Validate both before preparing the delta and at commit. A concurrent
+	// replace or delete can proceed while the pinned revision is being read.
+	lookup := func(w http.ResponseWriter) (*domain.PublishedSite, bool) {
+		matches, err := st.PublishedSiteMatches(r.Context(), key, selectorHost, sourceID)
+		if err != nil {
+			s.siteError(w, err)
+			return nil, false
+		}
+		previous, err := matchingPublishedSite(matches, host, sourceID, selectorHost != "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return nil, false
+		}
+		if expected := r.URL.Query().Get("site_id"); expected != "" && (previous == nil || previous.ID != expected) {
+			http.Error(w, "watched publication no longer exists", http.StatusNotFound)
+			return nil, false
+		}
+		if incremental && r.Header.Get("If-Match") != publishedSiteRevision(previous) {
+			http.Error(w, "publication changed since file listing; retry incremental publishing", http.StatusPreconditionFailed)
+			return nil, false
+		}
+		return previous, true
+	}
+	if incremental {
+		s.sitesMu.Lock()
+		prepUnlock := sync.OnceFunc(s.sitesMu.Unlock)
+		defer prepUnlock()
+		base, ok := lookup(&publicationResponseWriter{ResponseWriter: w, release: prepUnlock})
+		if !ok {
+			prepUnlock()
+			return
+		}
+		baseDir := ""
+		var unpin func()
+		if base != nil {
+			baseDir = filepath.Join(s.publishDir(), base.StorageID())
+			unpin = s.pinSiteDir(baseDir)
+		}
+		prepUnlock()
+		err := func() error {
+			if unpin != nil {
+				defer unpin()
+			}
+			return publish.CompleteDelta(baseDir, dir, manifest, maxBytes)
+		}()
+		if err != nil {
+			http.Error(w, "invalid incremental site: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	s.sitesMu.Lock()
 	release := sync.OnceFunc(s.sitesMu.Unlock)
 	defer release()
 	w = &publicationResponseWriter{ResponseWriter: w, release: release}
-	sites, err := st.ListPublishedSites(r.Context(), key)
-	if err != nil {
-		s.siteError(w, err)
+	previous, ok := lookup(w)
+	if !ok {
 		return
-	}
-	previous, err := matchingPublishedSite(sites, host, sourceID, r.URL.Query().Get("domain") != "")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	if expected := r.URL.Query().Get("site_id"); expected != "" && (previous == nil || previous.ID != expected) {
-		http.Error(w, "watched publication no longer exists", http.StatusNotFound)
-		return
-	}
-	if incremental {
-		if r.Header.Get("If-Match") != publishedSiteRevision(previous) {
-			http.Error(w, "publication changed since file listing; retry incremental publishing", http.StatusPreconditionFailed)
-			return
-		}
-		baseDir := ""
-		if previous != nil {
-			baseDir = filepath.Join(s.publishDir(), previous.StorageID())
-		}
-		if err := publish.CompleteDelta(baseDir, dir, manifest, maxBytes); err != nil {
-			http.Error(w, "invalid incremental site: "+err.Error(), http.StatusBadRequest)
-			return
-		}
 	}
 	if previous != nil {
 		site.ID = previous.ID
@@ -348,8 +382,10 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		previousDir := filepath.Join(s.publishDir(), previous.StorageID())
 		s.siteManifests.delete(previous.StorageID())
 		s.siteRoots.Close(previousDir)
-		if err := os.RemoveAll(previousDir); err != nil && s.log != nil {
-			s.log.Warn("remove replaced site files", "site", site.ID, "err", err)
+		if !s.deferPinnedRemoval(previousDir) {
+			// This revision has been unpublished; no new reader can acquire it.
+			release()
+			s.removeRetiredSiteDir(previousDir)
 		}
 	}
 	writeJSON(w, status, site)
@@ -392,7 +428,7 @@ func publishedSiteRevision(site *domain.PublishedSite) string {
 }
 
 // The caller holds sitesMu so the manifest and revision describe one snapshot.
-func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, sites []domain.PublishedSite) {
+func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, st siteStore, key string) {
 	sourceID, err := siteSourceID(r.URL.Query().Get("source_id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -408,6 +444,11 @@ func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, sites []
 		}
 	} else if sourceID == "" {
 		http.Error(w, "provide domain or source_id", http.StatusBadRequest)
+		return
+	}
+	sites, err := st.PublishedSiteMatches(r.Context(), key, host, sourceID)
+	if err != nil {
+		s.siteError(w, err)
 		return
 	}
 	site, err := matchingPublishedSite(sites, host, sourceID, label != "")
@@ -522,12 +563,15 @@ func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.Publi
 	dir := filepath.Join(s.publishDir(), site.StorageID())
 	s.siteRoots.Close(dir)
 	s.siteManifests.delete(site.StorageID())
-	if err := os.RemoveAll(dir); err != nil {
-		return err
+	if s.siteDirPins[dir] == nil {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
 	}
 	if err := st.DeletePublishedSite(ctx, site.APIKeyID, site.ID); err != nil {
 		return err
 	}
+	s.deferPinnedRemoval(dir)
 	s.siteHosts.Delete(site.Hostname)
 	s.siteLookups.invalidate(site.Hostname)
 	s.closeSitePresence(site.ID)
@@ -579,6 +623,9 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 			continue
 		}
 		dir := filepath.Join(s.publishDir(), entry.Name())
+		if s.siteDirPins[dir] != nil {
+			continue
+		}
 		s.siteRoots.Close(dir)
 		if err := os.RemoveAll(dir); err != nil {
 			return err

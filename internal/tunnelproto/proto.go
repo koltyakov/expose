@@ -383,20 +383,30 @@ const maxFramePrealloc = 1 << 20
 // plain allocation.
 const bodyChunkBufSize = 256*1024 + 1
 
-// bodyChunkPool recycles payload buffers for req_body/resp_body frames, the
-// dominant allocation on high-throughput transfers. Buffers are handed back by
-// the single consumer of each chunk via [ReleaseBodyChunk]; chunks that never
-// reach their consumer are simply collected by the GC.
-var bodyChunkPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, bodyChunkBufSize)
+// Size classes keep retained memory proportional to the decoded chunk.
+func newChunkPool(size int) *sync.Pool {
+	return &sync.Pool{New: func() any {
+		b := make([]byte, size)
 		return &b
-	},
+	}}
 }
+
+const smallChunkSize = 4 << 10
+const mediumChunkSize = 32 << 10
+
+var smallChunks = newChunkPool(smallChunkSize)
+var mediumChunks = newChunkPool(mediumChunkSize)
+var bodyChunkPool = newChunkPool(bodyChunkBufSize)
 
 func getBodyChunkBuf(n int) []byte {
 	if n <= 0 {
 		return nil
+	}
+	if n <= smallChunkSize {
+		return (*smallChunks.Get().(*[]byte))[:n]
+	}
+	if n <= mediumChunkSize {
+		return (*mediumChunks.Get().(*[]byte))[:n]
 	}
 	if n > bodyChunkBufSize {
 		return make([]byte, n)
@@ -409,11 +419,19 @@ func getBodyChunkBuf(n int) []byte {
 // out or copied); the slice must not be used afterwards. Slices that did not
 // come from the pool are ignored, so callers do not need to track provenance.
 func ReleaseBodyChunk(b []byte) {
-	if cap(b) != bodyChunkBufSize {
+	var pool *sync.Pool
+	switch cap(b) {
+	case smallChunkSize:
+		pool = smallChunks
+	case mediumChunkSize:
+		pool = mediumChunks
+	case bodyChunkBufSize:
+		pool = bodyChunkPool
+	default:
 		return
 	}
-	buf := b[:bodyChunkBufSize]
-	bodyChunkPool.Put(&buf)
+	buf := b[:cap(b)]
+	pool.Put(&buf)
 }
 
 // readFrameID reads the frame id section, keeping typical short ids off the

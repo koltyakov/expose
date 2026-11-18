@@ -53,8 +53,8 @@ func TestWritePumpPrioritizesControlWrites(t *testing.T) {
 		msg:  tunnelproto.Message{Kind: tunnelproto.KindPing},
 		done: acquireWriteCompletion(),
 	}
-	pump.low <- lowReq
-	pump.high <- highReq
+	pump.low <- &lowReq
+	pump.high <- &highReq
 
 	go func() {
 		err := <-lowReq.done.ch

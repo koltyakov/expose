@@ -29,7 +29,8 @@ type writeRequest struct {
 }
 
 type writeCompletion struct {
-	ch chan error
+	ch      chan error
+	request writeRequest // owned by the synchronous caller until completion
 }
 
 // complete delivers the write result to a waiting caller. Requests queued by
@@ -44,8 +45,8 @@ func (r writeRequest) complete(err error) {
 type WritePump struct {
 	writeFn     func(writeRequest) error
 	closeFn     func()
-	high        chan writeRequest
-	low         chan writeRequest
+	high        chan *writeRequest
+	low         chan *writeRequest
 	stop        chan struct{}
 	done        chan struct{}
 	closed      atomic.Bool
@@ -85,8 +86,8 @@ func NewWritePump(
 	p := &WritePump{
 		writeFn:     writeFn,
 		closeFn:     closeFn,
-		high:        make(chan writeRequest, highCap),
-		low:         make(chan writeRequest, lowCap),
+		high:        make(chan *writeRequest, highCap),
+		low:         make(chan *writeRequest, lowCap),
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
 		highTimeout: highTimeout,
@@ -130,7 +131,7 @@ func (p *WritePump) WriteJSONAsync(msg tunnelproto.Message) error {
 	}
 
 	select {
-	case p.high <- writeRequest{msg: msg}:
+	case p.high <- &writeRequest{msg: msg}:
 		return nil
 	default:
 		// Deliberately does not trigger backpressure teardown: a transiently
@@ -177,6 +178,7 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	}
 
 	target := p.low
+	req.done.request = req
 	wait := p.lowTimeout
 	if high {
 		target = p.high
@@ -184,7 +186,7 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	}
 
 	select {
-	case target <- req:
+	case target <- &req.done.request:
 		p.enqueueMu.RUnlock()
 		err := <-req.done.ch
 		releaseWriteCompletion(req.done)
@@ -196,7 +198,7 @@ func (p *WritePump) enqueue(req writeRequest, high bool) error {
 	defer timerpool.Release(timer)
 
 	select {
-	case target <- req:
+	case target <- &req.done.request:
 		p.enqueueMu.RUnlock()
 	case <-timer.C:
 		p.enqueueMu.RUnlock()
@@ -218,7 +220,7 @@ func (p *WritePump) run() {
 			p.failPending(ErrWritePumpClosed)
 			return
 		}
-		err := p.write(req)
+		err := p.write(*req)
 		req.complete(err)
 		if err != nil {
 			p.closed.Store(true)
@@ -240,7 +242,7 @@ func (p *WritePump) run() {
 // and strict priority would then starve data frames indefinitely.
 const maxControlBurst = 32
 
-func (p *WritePump) next() (writeRequest, bool) {
+func (p *WritePump) next() (*writeRequest, bool) {
 	if p.controlBurst < maxControlBurst {
 		select {
 		case req := <-p.high:
@@ -261,7 +263,7 @@ func (p *WritePump) next() (writeRequest, bool) {
 
 	select {
 	case <-p.stop:
-		return writeRequest{}, false
+		return nil, false
 	case req := <-p.high:
 		p.controlBurst++
 		return req, true
@@ -297,6 +299,7 @@ func releaseWriteCompletion(comp *writeCompletion) {
 		_ = staleErr // The caller has already handled the write result.
 	default:
 	}
+	comp.request = writeRequest{}
 	writeCompletionPool.Put(comp)
 }
 
@@ -317,7 +320,7 @@ func (p *WritePump) triggerBackpressure() {
 }
 
 func (p *WritePump) failPending(err error) {
-	failQueue := func(ch <-chan writeRequest) {
+	failQueue := func(ch <-chan *writeRequest) {
 		for {
 			select {
 			case req := <-ch:

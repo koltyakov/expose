@@ -4,11 +4,52 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
 )
+
+func TestTouchDomainsCoalescesAndThrottles(t *testing.T) {
+	st, err := openTestStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := t.Context()
+	key, err := st.CreateAPIKey(ctx, "owner", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for i := range 8 {
+		d, _, err := st.AllocateDomainAndTunnel(ctx, key.ID, "permanent", fmt.Sprintf("site%d", i), "example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, d.ID)
+	}
+	var first time.Time
+	for range 2 {
+		if err := st.TouchDomains(ctx, ids); err != nil {
+			t.Fatal(err)
+		}
+		var count, timestamps int
+		if err := st.db.QueryRow(`SELECT count(*), count(distinct last_seen_at) FROM domains`).Scan(&count, &timestamps); err != nil || count != len(ids) || timestamps != 1 {
+			t.Fatalf("batch timestamps: domains=%d distinct=%d err=%v", count, timestamps, err)
+		}
+		// A repeated visit within the minimum interval must not update SQLite.
+		var seen time.Time
+		if err := st.db.QueryRow(`SELECT last_seen_at FROM domains LIMIT 1`).Scan(&seen); err != nil {
+			t.Fatal(err)
+		}
+		if !first.IsZero() && !seen.Equal(first) {
+			t.Fatalf("repeated touch changed timestamp from %v to %v", first, seen)
+		}
+		first = seen
+	}
+}
 
 func TestTunnelExpiry(t *testing.T) {
 	for _, mode := range []string{"temporary", "permanent"} {

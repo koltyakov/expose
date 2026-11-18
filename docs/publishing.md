@@ -87,9 +87,9 @@ expose pub ./dist --domain=docs --watch --ttl=24h
 expose pub ./site --watch --staged
 ```
 
-Watch mode checks public file metadata every 250 ms and waits for 200 ms of quiet before comparing checksums and uploading changes. New files, edits, renames, and deletions are detected recursively. Blocked paths do not trigger uploads. A metadata-only change with identical contents does not upload or renew the TTL. The dashboard's New, Updates, and Deleted counts accumulate across successful uploads in the current watch session, including the initial publish. Failed attempts do not count. Creating and then deleting a file increments both New and Deleted.
+Watch mode uses filesystem notifications and waits for 200 ms of quiet before comparing checksums and uploading changes. It checks for missed events every 10 seconds and falls back to polling every 250 ms if notifications are unavailable. New files, edits, renames, and deletions are detected recursively. Blocked paths do not trigger uploads. A metadata-only change with identical contents does not upload or renew the TTL. The dashboard's New, Updates, and Deleted counts accumulate across successful uploads in the current watch session, including the initial publish. Failed attempts do not count. Creating and then deleting a file increments both New and Deleted.
 
-Every 30 seconds, folder watch mode also compares content checksums to catch edits with identical file metadata, such as same-size saves within one filesystem clock tick. Unchanged content does not upload or renew the TTL. Staged watch mode compares Git object identities instead.
+Every five minutes, folder watch mode also compares content checksums to catch edits with identical file metadata, such as same-size saves within one filesystem clock tick. Unchanged content does not upload or renew the TTL. Staged watch mode watches the Git index and compares object identities instead.
 
 New zero-byte files are ignored until they have content, including during the initial watch upload. Creating an empty file in an editor and then saving content counts as one new file, not a new file followed by an update. Already-published files can still be emptied or deleted. One-shot publishing includes empty files as usual.
 

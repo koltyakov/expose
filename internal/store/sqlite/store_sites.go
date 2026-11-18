@@ -92,7 +92,36 @@ func (s *Store) FindPublishedSite(ctx context.Context, host string) (domain.Publ
 // ListPublishedSites includes expired sites so maintenance can retry disk cleanup.
 // An empty key is reserved for server maintenance and lists all owners.
 func (s *Store) ListPublishedSites(ctx context.Context, key string) ([]domain.PublishedSite, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, api_key_id, hostname, created_at, expires_at, source_id, content_id, ws FROM published_sites WHERE (? = '' OR api_key_id = ?) ORDER BY created_at, id`, key, key)
+	if key == "" {
+		return s.querySites(ctx, ` ORDER BY created_at, id`)
+	}
+	return s.querySites(ctx, ` WHERE api_key_id = ? ORDER BY created_at, id`, key)
+}
+
+const selectSite = `SELECT id, api_key_id, hostname, created_at, expires_at, source_id, content_id, ws FROM published_sites`
+
+func (s *Store) OwnedPublishedSite(ctx context.Context, key, id, hostname string) (domain.PublishedSite, error) {
+	// Try the primary key first (the stats polling path), then the unique hostname.
+	site, err := scanSite(s.db.QueryRowContext(ctx, selectSite+` WHERE id = ? AND api_key_id = ?`, id, key))
+	if !errors.Is(err, sql.ErrNoRows) || hostname == "" {
+		return site, err
+	}
+	return scanSite(s.db.QueryRowContext(ctx, selectSite+` WHERE hostname = ? AND api_key_id = ?`, hostname, key))
+}
+
+func (s *Store) PublishedSiteMatches(ctx context.Context, key, host, source string) ([]domain.PublishedSite, error) {
+	if host != "" {
+		return s.querySites(ctx, ` WHERE hostname = ? AND api_key_id = ?`, host, key)
+	}
+	if source == "" {
+		return nil, nil
+	}
+	// Two matches suffice to report an ambiguous source.
+	return s.querySites(ctx, ` WHERE api_key_id = ? AND source_id = ? LIMIT 2`, key, source)
+}
+
+func (s *Store) querySites(ctx context.Context, suffix string, args ...any) ([]domain.PublishedSite, error) {
+	rows, err := s.db.QueryContext(ctx, selectSite+suffix, args...)
 	if err != nil {
 		return nil, err
 	}

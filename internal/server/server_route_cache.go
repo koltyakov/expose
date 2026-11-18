@@ -2,7 +2,6 @@ package server
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
@@ -19,9 +18,8 @@ type routeCache struct {
 	hostsByTunnel map[string]map[string]struct{}
 	ttl           time.Duration
 	maxEntries    int
-	// cachedNow is updated periodically to avoid calling time.Now() on every
-	// cache lookup in the hot path.
-	cachedNow atomic.Int64
+	// now overrides the clock in tests. Nil uses time.Now.
+	now func() time.Time
 }
 
 type routeCacheEntry struct {
@@ -66,32 +64,14 @@ func (c *routeCache) lookup(host string) (domain.TunnelRoute, bool, bool) {
 	return e.route, e.found, true
 }
 
-// nowNanos returns the cached monotonic timestamp if available, falling back to
-// a live time.Now() call. The cached value is updated every 100ms by
-// startClock, which is accurate enough for a 1-minute TTL.
+// nowNanos reads the clock directly. time.Now is a vDSO call costing tens of
+// nanoseconds; a cached clock needed a goroutine waking 10 times a second
+// even on an idle server.
 func (c *routeCache) nowNanos() int64 {
-	if v := c.cachedNow.Load(); v != 0 {
-		return v
+	if c.now != nil {
+		return c.now().UnixNano()
 	}
 	return time.Now().UnixNano()
-}
-
-// startClock begins a background goroutine that updates cachedNow every 100ms.
-// The goroutine exits when ctx is cancelled.
-func (c *routeCache) startClock(done <-chan struct{}) {
-	c.cachedNow.Store(time.Now().UnixNano())
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				c.cachedNow.Store(time.Now().UnixNano())
-			}
-		}
-	}()
 }
 
 func (c *routeCache) set(host string, route domain.TunnelRoute) {

@@ -268,7 +268,7 @@ func TestRouteCacheMissIndexSurvivesReplacementAndExpiry(t *testing.T) {
 		t.Fatal("explicit deletion left a stale miss index")
 	}
 	c.setMiss("cleanup-miss")
-	c.cachedNow.Store(time.Now().Add(time.Hour).UnixNano())
+	c.now = func() time.Time { return time.Now().Add(time.Hour) }
 	c.cleanup()
 	if len(c.misses) != 0 || c.size() != 0 {
 		t.Fatal("cleanup left stale entries")

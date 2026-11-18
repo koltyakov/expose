@@ -105,12 +105,18 @@ func (s *Store) withSerializedWrite(ctx context.Context, op func() error) error 
 func (s *Store) runWriterLoop() {
 	defer close(s.writerDone)
 
-	ticker := time.NewTicker(s.touchFlushInterval)
-	defer ticker.Stop()
+	// The flush timer is armed only while touches are pending, so an idle
+	// store does not wake every touchFlushInterval.
+	timer := time.NewTimer(s.touchFlushInterval)
+	timer.Stop()
+	defer timer.Stop()
+	var flushC <-chan time.Time
 
 	pendingTouches := make(map[string][]*storeWriteCompletion)
 
 	flushTouches := func() {
+		timer.Stop()
+		flushC = nil
 		if len(pendingTouches) == 0 {
 			return
 		}
@@ -166,8 +172,11 @@ func (s *Store) runWriterLoop() {
 			pendingTouches[req.domainID] = append(pendingTouches[req.domainID], req.done)
 			if len(pendingTouches) >= defaultTouchQueueSize/8 {
 				flushTouches()
+			} else if flushC == nil {
+				timer.Reset(s.touchFlushInterval)
+				flushC = timer.C
 			}
-		case <-ticker.C:
+		case <-flushC:
 			flushTouches()
 		case <-s.writerStop:
 			drainTouches()

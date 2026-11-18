@@ -59,11 +59,17 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 	s.disconnectWg.Add(1)
 	defer s.disconnectWg.Done()
 
-	ticker := time.NewTicker(disconnectFlushInterval)
-	defer ticker.Stop()
+	// The flush timer is armed only while a batch is pending, so an idle
+	// server does not wake every disconnectFlushInterval.
+	timer := time.NewTimer(disconnectFlushInterval)
+	timer.Stop()
+	defer timer.Stop()
+	var flushC <-chan time.Time
 
 	batch := make([]string, 0, disconnectBatchSize)
 	flush := func() {
+		timer.Stop()
+		flushC = nil
 		if len(batch) == 0 {
 			return
 		}
@@ -118,8 +124,12 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 			batch = append(batch, tunnelID)
 			if len(batch) >= disconnectBatchSize {
 				flush()
+			} else if flushC == nil {
+				timer.Reset(disconnectFlushInterval)
+				flushC = timer.C
 			}
-		case <-ticker.C:
+		case <-flushC:
+			flushC = nil
 			flush()
 		}
 	}

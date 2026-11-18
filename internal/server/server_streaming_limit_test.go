@@ -308,7 +308,7 @@ func TestPublicHTTPStreamedResponseSendsHeadersBeforeFirstChunk(t *testing.T) {
 	}
 
 	pending := <-pendingCh
-	if !pending.sendBody(sess, []byte("data: ready\n\n"), time.Second) {
+	if err := pending.sendBody([]byte("data: ready\n\n")); err != nil {
 		t.Fatal("body chunk was not accepted")
 	}
 	buf := make([]byte, len("data: ready\n\n"))

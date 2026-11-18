@@ -2124,12 +2124,14 @@ func TestWriteStreamedResponseBody(t *testing.T) {
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
 	pending := newPendingRequest()
-	respCh := pending.ensureBodyCh()
 
 	chunk1 := []byte("hello ")
 	chunk2 := []byte("world")
-	respCh <- chunk1
-	respCh <- chunk2
+	for _, chunk := range [][]byte{chunk1, chunk2} {
+		if err := pending.sendBody(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pending.finish()
 
 	w := httptest.NewRecorder()
@@ -2149,9 +2151,9 @@ func TestWriteStreamedResponseBodyAborted(t *testing.T) {
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 5 * time.Second}}
 	pending := newPendingRequest()
-	respCh := pending.ensureBodyCh()
-
-	respCh <- []byte("partial")
+	if err := pending.sendBody([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
 	pending.abort()
 
 	w := httptest.NewRecorder()
@@ -2170,9 +2172,9 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 
 	s := &Server{cfg: config.ServerConfig{RequestTimeout: 100 * time.Millisecond}}
 	pending := newPendingRequest()
-	respCh := pending.ensureBodyCh()
-
-	respCh <- []byte("partial")
+	if err := pending.sendBody([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2188,34 +2190,6 @@ func TestWriteStreamedResponseBodyTimeout(t *testing.T) {
 	}
 	if got := w.Body.String(); got != "partial" {
 		t.Fatalf("expected partial body %q, got %q", "partial", got)
-	}
-}
-
-func TestSessionStreamSend(t *testing.T) {
-	ch := make(chan []byte, 1)
-	sess := &session{pending: make(map[string]*pendingRequest)}
-	msg := []byte("hello")
-
-	if ok := sess.streamSend(ch, msg, 0); !ok {
-		t.Fatal("expected streamSend to succeed for buffered channel")
-	}
-	got := <-ch
-	if string(got) != "hello" {
-		t.Fatalf("expected body payload, got %q", string(got))
-	}
-}
-
-func TestSessionStreamSendTimeout(t *testing.T) {
-	ch := make(chan []byte)
-	sess := &session{pending: make(map[string]*pendingRequest)}
-
-	start := time.Now()
-	ok := sess.streamSend(ch, []byte("hello"), 15*time.Millisecond)
-	if ok {
-		t.Fatal("expected streamSend to fail on timeout")
-	}
-	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
-		t.Fatalf("expected streamSend to wait before timing out, elapsed=%s", elapsed)
 	}
 }
 

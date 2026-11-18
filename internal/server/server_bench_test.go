@@ -456,7 +456,7 @@ func runBenchmarkSessionReadLoop(sess *session) {
 				if err != nil {
 					continue
 				}
-				if !pending.sendBody(sess, payload, streamBodySendTimeout) {
+				if err := pending.sendBody(payload); err != nil {
 					tunnelproto.ReleaseBodyChunk(payload)
 					if pending, deleted := sess.pendingDelete(msg.BodyChunk.ID); deleted {
 						sess.releasePending()

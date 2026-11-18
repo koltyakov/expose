@@ -257,16 +257,18 @@ func TestDisconnectRevokedSessionsClosesCurrentTransport(t *testing.T) {
 	}
 }
 
-func TestPendingRequestsDoNotReuseBodyChannels(t *testing.T) {
+func TestPendingRequestsDoNotReuseBodyQueues(t *testing.T) {
 	t.Parallel()
 
 	req := newPendingRequest()
-	bodyCh := req.ensureBodyCh()
-	bodyCh <- []byte("chunk")
+	if err := req.sendBody([]byte("chunk")); err != nil {
+		t.Fatal(err)
+	}
+	req.discardBody()
 
 	req = newPendingRequest()
-	if req.bodyCh != nil {
-		t.Fatal("expected a fresh pending request without a body channel")
+	if req.bodyQueue != nil || req.bodyReady != nil {
+		t.Fatal("expected a fresh pending request without a body queue")
 	}
 }
 
@@ -274,13 +276,15 @@ func TestPendingRequestDiscardBodyDrainsBufferedChunks(t *testing.T) {
 	t.Parallel()
 
 	pending := newPendingRequest()
-	bodyCh := pending.ensureBodyCh()
-	bodyCh <- []byte("one")
-	bodyCh <- []byte("two")
+	for _, chunk := range []string{"one", "two"} {
+		if err := pending.sendBody([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pending.abort()
 	pending.discardBody()
 
-	if got := len(bodyCh); got != 0 {
+	if got := pending.bodyLen; got != 0 {
 		t.Fatalf("buffered body chunks after discard = %d, want 0", got)
 	}
 }

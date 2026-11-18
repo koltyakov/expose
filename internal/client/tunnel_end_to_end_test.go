@@ -33,6 +33,7 @@ import (
 type endToEndTunnel struct {
 	client *http.Client
 	url    string
+	server *server.Server
 }
 
 // This starts the production server, registration handler, tunnel runtime, WAF,
@@ -153,7 +154,7 @@ func newEndToEndProtectedTunnel(t testing.TB, transport string, upstreamHandler 
 	runtimeDone := make(chan struct{})
 	go func() { defer close(runtimeDone); _ = rt.run() }()
 	t.Cleanup(func() { rt.close(); <-runtimeDone })
-	h := &endToEndTunnel{client: publicClient, url: serverURL}
+	h := &endToEndTunnel{client: publicClient, url: serverURL, server: srv}
 	deadline = time.Now().Add(5 * time.Second)
 	for {
 		resp, err := h.get(t.Context(), "/ready")

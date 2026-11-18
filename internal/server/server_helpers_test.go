@@ -39,12 +39,14 @@ func TestPendingRequestLifecycle(t *testing.T) {
 		t.Fatalf("waitHeader() = %#v, %v", got, ok)
 	}
 
-	bodyCh := req.ensureBodyCh()
-	streamCh, doneCh := req.bodyStream()
-	if streamCh == nil {
-		t.Fatal("bodyStream() returned nil body channel")
+	defer req.discardBody()
+	ready, doneCh := req.bodyStream()
+	if ready == nil {
+		t.Fatal("bodyStream() returned nil notification channel")
 	}
-	bodyCh <- []byte("chunk")
+	if err := req.sendBody([]byte("chunk")); err != nil {
+		t.Fatal(err)
+	}
 	req.finish()
 
 	select {
@@ -363,15 +365,15 @@ func TestActiveTunnelTrackerLimitForBlankKeyAndError(t *testing.T) {
 	}
 }
 
-func TestPendingRequestAbortAndBodyChannelReuse(t *testing.T) {
+func TestPendingRequestAbortAndBodyNotificationReuse(t *testing.T) {
 	t.Parallel()
 
 	req := newPendingRequest()
 
-	bodyCh1 := req.ensureBodyCh()
-	bodyCh2 := req.ensureBodyCh()
-	if bodyCh1 != bodyCh2 {
-		t.Fatal("ensureBodyCh() should reuse the same channel")
+	ready1, _ := req.bodyStream()
+	ready2, _ := req.bodyStream()
+	if ready1 != ready2 {
+		t.Fatal("bodyStream() should reuse the same notification channel")
 	}
 
 	req.abort()

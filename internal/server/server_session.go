@@ -419,8 +419,11 @@ func (s *Server) readLoop(sess *session) {
 					tunnelproto.ReleaseBodyChunk(msg.BodyChunk.Data)
 					continue
 				}
-				if !pending.sendBody(sess, payload, streamBodySendTimeout) {
+				if err := pending.sendBody(payload); err != nil {
 					tunnelproto.ReleaseBodyChunk(payload)
+					if err != errResponseQueueBudgetExceeded {
+						continue // the public handler already closed this request
+					}
 					s.responseQueueRejects.Add(1)
 					s.log.Warn("stream consumer too slow, aborting",
 						"tunnel_id", sess.tunnelID, "req_id", msg.BodyChunk.ID)

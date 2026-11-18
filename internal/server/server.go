@@ -194,8 +194,6 @@ const (
 	defaultMaxPendingPerSession = 128
 	streamingThreshold          = 256 * 1024
 	streamingChunkSize          = 256 * 1024
-	streamingChanSize           = 16
-	streamBodySendTimeout       = 0
 	wsWriteTimeout              = 15 * time.Second
 	httpsReadTimeout            = 30 * time.Second
 	httpsWriteTimeout           = 60 * time.Second

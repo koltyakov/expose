@@ -2,23 +2,40 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
 type pendingRequest struct {
 	headerCh      chan *tunnelproto.HTTPResponse
-	bodyCh        chan []byte
 	doneCh        chan struct{}
 	aborted       atomic.Bool
 	sessionBudget *byteBudget
 	globalBudget  *byteBudget
 
-	bodyMu   sync.Mutex
-	doneOnce sync.Once
+	bodyMu    sync.Mutex
+	bodyReady chan struct{}
+	bodyQueue [][]byte
+	bodyHead  int
+	bodyLen   int
+	doneOnce  sync.Once
+}
+
+var (
+	errResponseClosed              = errors.New("response stream closed")
+	errResponseQueueBudgetExceeded = errors.New("response queue byte budget exceeded")
+)
+
+const initialResponseQueueSize = 16
+
+// Tiny JSON chunks must also reserve space for queue entries. Normal pooled
+// chunks are charged at retained capacity, as before. This minimum reservation
+// bounds descriptor growth; it is not an exact measurement of heap usage.
+func responseChunkReservation(chunk []byte) int64 {
+	return max(int64(cap(chunk)), 64)
 }
 
 // newPendingRequest allocates a pending request.
@@ -75,57 +92,92 @@ func (p *pendingRequest) deliverHeader(resp *tunnelproto.HTTPResponse) bool {
 	}
 }
 
-func (p *pendingRequest) ensureBodyCh() chan []byte {
-	if p == nil {
-		return nil
-	}
-	p.bodyMu.Lock()
-	defer p.bodyMu.Unlock()
-	if p.bodyCh == nil {
-		p.bodyCh = make(chan []byte, streamingChanSize)
-	}
-	return p.bodyCh
-}
-
-func (p *pendingRequest) bodyStream() (<-chan []byte, <-chan struct{}) {
+func (p *pendingRequest) bodyStream() (<-chan struct{}, <-chan struct{}) {
 	if p == nil {
 		return nil, nil
 	}
-	return p.ensureBodyCh(), p.doneCh
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
+	if p.bodyReady == nil {
+		p.bodyReady = make(chan struct{}, 1)
+	}
+	return p.bodyReady, p.doneCh
 }
 
-func (p *pendingRequest) sendBody(sess *session, payload []byte, wait time.Duration) bool {
-	if p == nil || sess == nil {
-		return false
+// sendBody takes ownership only on success. Admission never waits for a public
+// consumer: one delayed visitor must not block the shared tunnel reader.
+func (p *pendingRequest) sendBody(payload []byte) error {
+	if p == nil {
+		return errResponseClosed
 	}
 	p.bodyMu.Lock()
 	defer p.bodyMu.Unlock()
 	select {
 	case <-p.doneCh:
-		return false
+		return errResponseClosed
 	default:
 	}
-	if p.bodyCh == nil {
-		p.bodyCh = make(chan []byte, streamingChanSize)
+	if len(payload) == 0 {
+		tunnelproto.ReleaseBodyChunk(payload)
+		return nil
 	}
-	n := int64(cap(payload))
+	n := responseChunkReservation(payload)
 	if !p.sessionBudget.acquire(n) {
-		return false
+		return errResponseQueueBudgetExceeded
 	}
 	if !p.globalBudget.acquire(n) {
 		p.sessionBudget.release(n)
-		return false
+		return errResponseQueueBudgetExceeded
 	}
-	if !sess.streamSend(p.bodyCh, payload, wait) {
-		p.sessionBudget.release(n)
-		p.globalBudget.release(n)
-		return false
+	if p.bodyLen == len(p.bodyQueue) {
+		queue := make([][]byte, max(initialResponseQueueSize, 2*len(p.bodyQueue)))
+		first := min(p.bodyLen, len(p.bodyQueue)-p.bodyHead)
+		copy(queue, p.bodyQueue[p.bodyHead:p.bodyHead+first])
+		copy(queue[first:], p.bodyQueue[:p.bodyLen-first])
+		p.bodyQueue, p.bodyHead = queue, 0
 	}
-	return true
+	p.bodyQueue[(p.bodyHead+p.bodyLen)%len(p.bodyQueue)] = payload
+	p.bodyLen++
+	select {
+	case p.bodyReady <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// nextBodyChunk transfers ownership to the public writer, but leaves its byte
+// reservation charged until the write completes. Empty/terminal checks share
+// the enqueue lock so a clean end cannot overtake an accepted body chunk.
+func (p *pendingRequest) nextBodyChunk() (chunk []byte, done bool) {
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
+	if p.bodyLen > 0 {
+		return p.popBodyLocked(), false
+	}
+	select {
+	case <-p.doneCh:
+		return nil, true
+	default:
+		return nil, false
+	}
+}
+
+func (p *pendingRequest) popBodyLocked() []byte {
+	chunk := p.bodyQueue[p.bodyHead]
+	p.bodyQueue[p.bodyHead] = nil
+	p.bodyHead = (p.bodyHead + 1) % len(p.bodyQueue)
+	p.bodyLen--
+	if p.bodyLen == 0 {
+		p.bodyHead = 0
+		if len(p.bodyQueue) > initialResponseQueueSize {
+			p.bodyQueue = nil
+		}
+	}
+	return chunk
 }
 
 func (p *pendingRequest) releaseBodyChunk(chunk []byte) {
-	n := int64(cap(chunk))
+	n := responseChunkReservation(chunk)
 	p.sessionBudget.release(n)
 	p.globalBudget.release(n)
 	tunnelproto.ReleaseBodyChunk(chunk)
@@ -137,20 +189,18 @@ func (p *pendingRequest) discardBody() {
 	}
 	p.bodyMu.Lock()
 	defer p.bodyMu.Unlock()
-	for p.bodyCh != nil {
-		select {
-		case chunk := <-p.bodyCh:
-			p.releaseBodyChunk(chunk)
-		default:
-			return
-		}
+	for p.bodyLen > 0 {
+		p.releaseBodyChunk(p.popBodyLocked())
 	}
+	p.bodyQueue = nil
 }
 
 func (p *pendingRequest) finish() {
 	if p == nil {
 		return
 	}
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
 	p.doneOnce.Do(func() { close(p.doneCh) })
 }
 
@@ -158,8 +208,10 @@ func (p *pendingRequest) abort() {
 	if p == nil {
 		return
 	}
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
 	p.aborted.Store(true)
-	p.finish()
+	p.doneOnce.Do(func() { close(p.doneCh) })
 }
 
 // wasAborted reports whether the stream ended via abort rather than a clean

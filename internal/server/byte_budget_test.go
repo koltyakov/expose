@@ -24,7 +24,7 @@ func TestSmallStreamEventsShareResponseBudget(t *testing.T) {
 		p := newPendingRequest()
 		p.sessionBudget = budget
 		defer p.discardBody()
-		if !p.sendBody(&session{}, msg.BodyChunk.Data, 0) {
+		if err := p.sendBody(msg.BodyChunk.Data); err != nil {
 			t.Fatal("small event rejected by the tunnel byte budget")
 		}
 	}
@@ -32,61 +32,61 @@ func TestSmallStreamEventsShareResponseBudget(t *testing.T) {
 
 func TestPendingResponseBudgetsCountCapacityAndRollback(t *testing.T) {
 	t.Parallel()
-	global := &byteBudget{limit: 12}
-	sessionA := &byteBudget{limit: 8}
-	sessionB := &byteBudget{limit: 8}
+	global := &byteBudget{limit: 192}
+	sessionA := &byteBudget{limit: 128}
+	sessionB := &byteBudget{limit: 128}
 	first, second := newPendingRequest(), newPendingRequest()
 	first.sessionBudget, first.globalBudget = sessionA, global
 	second.sessionBudget, second.globalBudget = sessionB, global
 	defer first.discardBody()
 	defer second.discardBody()
-	sess := &session{}
-	chunk := make([]byte, 1, 8)
-	if !first.sendBody(sess, chunk, 0) {
+	chunk := make([]byte, 1, 128)
+	if err := first.sendBody(chunk); err != nil {
 		t.Fatal("first chunk should fit")
 	}
-	if global.used.Load() != 8 || sessionA.used.Load() != 8 {
+	if global.used.Load() != 128 || sessionA.used.Load() != 128 {
 		t.Fatal("budget counted payload length rather than retained capacity")
 	}
-	if first.sendBody(sess, []byte("x"), 0) {
+	if err := first.sendBody([]byte("x")); err != errResponseQueueBudgetExceeded {
 		t.Fatal("per-tunnel budget exceeded")
 	}
-	if second.sendBody(sess, chunk, 0) {
+	if err := second.sendBody(chunk); err != errResponseQueueBudgetExceeded {
 		t.Fatal("global budget exceeded")
 	}
-	if sessionB.used.Load() != 0 || global.used.Load() != 8 {
+	if sessionB.used.Load() != 0 || global.used.Load() != 128 {
 		t.Fatal("failed global admission retained a reservation")
 	}
 	first.abort()
 	first.discardBody()
-	if !second.sendBody(sess, chunk, 0) {
+	if err := second.sendBody(chunk); err != nil {
 		t.Fatal("aborted request did not release its budget")
 	}
-	body, _ := second.bodyStream()
-	second.releaseBodyChunk(<-body)
+	body, _ := second.nextBodyChunk()
+	second.releaseBodyChunk(body)
 	if global.used.Load() != 0 || sessionA.used.Load() != 0 || sessionB.used.Load() != 0 {
 		t.Fatal("consumed response retained a reservation")
 	}
-	if first.sendBody(sess, chunk, 0) {
+	if err := first.sendBody(chunk); err != errResponseClosed {
 		t.Fatal("closed request accepted another chunk")
 	}
 }
 
-func TestPendingResponseQueueOverflowReleasesReservation(t *testing.T) {
+func TestPendingResponseTinyChunksReserveQueueStorage(t *testing.T) {
 	t.Parallel()
-	budget := &byteBudget{limit: 64}
+	budget := &byteBudget{limit: 128}
 	p := newPendingRequest()
 	p.globalBudget = budget
-	p.bodyCh = make(chan []byte, 1)
 	defer p.discardBody()
-	if !p.sendBody(&session{}, []byte("one"), 0) {
-		t.Fatal("first send failed")
+	for range 2 {
+		if err := p.sendBody([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if p.sendBody(&session{}, []byte("two"), 0) {
-		t.Fatal("full queue accepted another chunk")
+	if err := p.sendBody([]byte("x")); err != errResponseQueueBudgetExceeded {
+		t.Fatal("tiny chunks evaded the queue byte budget")
 	}
-	if budget.used.Load() != 3 {
-		t.Fatalf("queue overflow retained bytes: %d", budget.used.Load())
+	if budget.used.Load() != 128 {
+		t.Fatalf("tiny chunk reservations = %d, want 128", budget.used.Load())
 	}
 	p.discardBody()
 	if budget.used.Load() != 0 {

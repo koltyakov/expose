@@ -2,9 +2,10 @@ package server
 
 import "sync/atomic"
 
-// byteBudget counts retained buffer capacity rather than payload length. Small
-// chunks can still own a full pooled buffer. A zero limit is unlimited for
-// manually constructed sessions; production limits are set before publishing.
+// byteBudget bounds retained response storage rather than payload length. Queue
+// admission reserves buffer capacity with a minimum charge for tiny entries.
+// A zero limit is unlimited for manually constructed sessions; production
+// limits are set before publishing.
 type byteBudget struct {
 	limit int64
 	used  atomic.Int64

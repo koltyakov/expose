@@ -168,63 +168,51 @@ func (s *Server) requestTimeoutMillis() int {
 	return int(timeout / time.Millisecond)
 }
 
-// writeStreamedResponseBody reads body chunks from the pending channel and
+// writeStreamedResponseBody reads body chunks from the pending queue and
 // writes them to the HTTP response writer, flushing after each chunk.
 // It returns true when the upstream stream completed normally; an
 // abort-terminated stream (client reported an upstream failure) returns
 // false so the caller can tear the public connection down rather than end
 // the truncated response as if it were complete.
 func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Request, pending *pendingRequest, chunkTimeout time.Duration) bool {
-	bodyCh, doneCh := pending.bodyStream()
+	bodyReady, doneCh := pending.bodyStream()
 	flusher, canFlush := w.(http.Flusher)
 	timer := timerpool.Acquire(chunkTimeout)
 	defer timerpool.Release(timer)
 
 	for {
 		select {
-		case chunk := <-bodyCh:
-			if chunk == nil {
-				continue
+		case <-r.Context().Done():
+			return false // client disconnected
+		default:
+		}
+		chunk, done := pending.nextBodyChunk()
+		if chunk != nil {
+			_, wErr := w.Write(chunk)
+			pending.releaseBodyChunk(chunk)
+			if wErr != nil {
+				return false
 			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			if canFlush {
+				flusher.Flush()
 			}
-			timer.Reset(chunkTimeout)
-			if len(chunk) > 0 {
-				_, wErr := w.Write(chunk)
-				pending.releaseBodyChunk(chunk)
-				if wErr != nil {
-					return false
-				}
-				if canFlush {
-					flusher.Flush()
-				}
-			} else {
-				pending.releaseBodyChunk(chunk)
+			continue
+		}
+		if done {
+			return !pending.wasAborted()
+		}
+		// Time out only while waiting for another upstream chunk. A slow
+		// public Write/Flush must not expire an already buffered clean end.
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
 			}
+		}
+		timer.Reset(chunkTimeout)
+		select {
+		case <-bodyReady:
 		case <-doneCh:
-			for {
-				select {
-				case chunk := <-bodyCh:
-					if len(chunk) == 0 {
-						pending.releaseBodyChunk(chunk)
-						continue
-					}
-					_, wErr := w.Write(chunk)
-					pending.releaseBodyChunk(chunk)
-					if wErr != nil {
-						return false
-					}
-					if canFlush {
-						flusher.Flush()
-					}
-				default:
-					return !pending.wasAborted()
-				}
-			}
 		case <-timer.C:
 			return false // chunk timeout
 		case <-r.Context().Done():
@@ -237,28 +225,6 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 func flushResponse(w http.ResponseWriter) {
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
-	}
-}
-
-// streamSend attempts to write msg to ch without blocking the read loop for
-// too long. Mirrors wsPendingSend but for HTTP body streaming channels.
-func (s *session) streamSend(ch chan []byte, payload []byte, wait time.Duration) bool {
-	// Fast path: non-blocking attempt.
-	select {
-	case ch <- payload:
-		return true
-	default:
-	}
-	if wait <= 0 {
-		return false
-	}
-	timer := timerpool.Acquire(wait)
-	defer timerpool.Release(timer)
-	select {
-	case ch <- payload:
-		return true
-	case <-timer.C:
-		return false
 	}
 }
 

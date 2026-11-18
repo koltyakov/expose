@@ -283,7 +283,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			if err != nil {
 				stopNotifications()
 			}
-		case <-notifyErrors:
+		case err := <-notifyErrors:
+			// Fall back to polling on any watcher error or channel closure.
+			_ = err
 			stopNotifications()
 		case <-syncTicks:
 			status.SyncFrame = (status.SyncFrame + 1) % len(pubWatchSyncFrames)

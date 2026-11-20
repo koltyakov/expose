@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,6 +67,7 @@ func connectPublishedSite(ctx context.Context, client *http.Client, baseURL, key
 	defer display.close()
 	encoder := json.NewEncoder(out)
 	delay := interval
+	pace := pubStatsPacer{base: interval, idle: 5 * interval}
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -86,12 +88,13 @@ func connectPublishedSite(ctx context.Context, client *http.Client, baseURL, key
 					return err
 				}
 			}
+			pace.reset()
 			delay = min(max(delay*2, time.Second), 10*time.Second)
 		} else {
 			// Pin the publication identity so a later hostname reuse cannot silently
 			// attach this dashboard to a different site.
 			target = stats.Site.ID
-			delay = interval
+			delay = pace.next(stats)
 			if jsonOutput {
 				err = encoder.Encode(stats)
 			} else {
@@ -109,6 +112,30 @@ func connectPublishedSite(ctx context.Context, client *http.Client, baseURL, key
 		case <-timer.C:
 		}
 	}
+}
+
+// pubStatsPacer polls at base while stats change and doubles the delay up to
+// idle while they repeat, so an idle dashboard stops refreshing every second.
+// Any change, including a new request, returns to base.
+type pubStatsPacer struct {
+	base, idle time.Duration
+	delay      time.Duration
+	last       []byte
+}
+
+func (p *pubStatsPacer) next(stats domain.PublishedSiteStats) time.Duration {
+	stats.CapturedAt = time.Time{} // the capture time always changes
+	current, err := json.Marshal(stats)
+	if err != nil || !bytes.Equal(current, p.last) || p.delay == 0 {
+		p.last, p.delay = current, p.base
+		return p.delay
+	}
+	p.delay = min(p.delay*2, max(p.idle, p.base))
+	return p.delay
+}
+
+func (p *pubStatsPacer) reset() {
+	p.last, p.delay = nil, 0
 }
 
 type pubStatsDisplay struct {

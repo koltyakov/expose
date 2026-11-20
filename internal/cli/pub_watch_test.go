@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,7 @@ type pubWatchTestServer struct {
 	revision, posts, commits, fetches, stats int
 	active, maxActive                        int
 	failCount, failStatus, statsStatus       int
+	fixedStats                               bool
 	block                                    <-chan struct{}
 	onPost                                   func(int)
 	finished                                 chan struct{}
@@ -100,7 +102,11 @@ func newPubWatchTestServer(t *testing.T, root string) (*pubWatchTestServer, *htt
 					w.WriteHeader(h.statsStatus)
 					return
 				}
-				_ = json.NewEncoder(w).Encode(domain.PublishedSiteStats{Site: h.site, CapturedAt: time.Now(), HTTPRequests: int64(h.stats), ResponseBytes: int64(h.stats * 1024)})
+				requests := int64(h.stats)
+				if h.fixedStats {
+					requests = 1
+				}
+				_ = json.NewEncoder(w).Encode(domain.PublishedSiteStats{Site: h.site, CapturedAt: time.Now(), HTTPRequests: requests, ResponseBytes: requests * 1024})
 			default:
 				t.Errorf("watch did not pin the stats identity: %s", r.URL.Path)
 				http.NotFound(w, r)
@@ -1113,5 +1119,50 @@ func TestPubWatchHumanOutputAndProgress(t *testing.T) {
 				t.Fatal("redirected watch output contains ANSI escapes")
 			}
 		})
+	}
+}
+
+func TestPubWatchBacksOffUnchangedStats(t *testing.T) {
+	root := t.TempDir()
+	writeIncrementalCLIFile(t, root, "index.html", "home")
+	h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
+	h.mu.Lock()
+	h.fixedStats = true
+	h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	timing := fastPubWatchTiming()
+	timing.StatsIdle = 100 * time.Millisecond
+	var output pubWatchTestOutput
+	if err := watchPublishedSite(ctx, client, opts, initial, snapshot, &output, false, true, timing); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// A fixed 10 ms poll would have made about 60 requests.
+	if h.stats < 3 || h.stats > 20 {
+		t.Fatalf("unchanged stats requested %d times", h.stats)
+	}
+}
+
+func TestPubStatsPacerBacksOffUntilChange(t *testing.T) {
+	p := pubStatsPacer{base: time.Second, idle: 5 * time.Second}
+	stats := domain.PublishedSiteStats{Site: domain.PublishedSite{ID: "site"}, HTTPRequests: 1, CapturedAt: time.Unix(1, 0)}
+	var delays []time.Duration
+	for i := range 5 {
+		stats.CapturedAt = time.Unix(int64(i+2), 0) // capture time alone is not a change
+		delays = append(delays, p.next(stats))
+	}
+	if want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 5 * time.Second, 5 * time.Second}; !slices.Equal(delays, want) {
+		t.Fatalf("delays = %v, want %v", delays, want)
+	}
+	stats.HTTPRequests++
+	if got := p.next(stats); got != time.Second {
+		t.Fatalf("changed stats waited %v", got)
+	}
+	p.next(stats)
+	p.reset()
+	if got := p.next(stats); got != time.Second {
+		t.Fatalf("reset pacer waited %v", got)
 	}
 }

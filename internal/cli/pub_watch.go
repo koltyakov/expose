@@ -22,6 +22,8 @@ import (
 
 type pubWatchTiming struct {
 	Poll, Debounce, Stats, Retry, Verify time.Duration
+	// StatsIdle caps the backoff for unchanged stats; Stats resumes on change.
+	StatsIdle time.Duration
 }
 
 func (t pubWatchTiming) defaults() pubWatchTiming {
@@ -33,6 +35,9 @@ func (t pubWatchTiming) defaults() pubWatchTiming {
 	}
 	if t.Stats <= 0 {
 		t.Stats = time.Second
+	}
+	if t.StatsIdle < t.Stats {
+		t.StatsIdle = 5 * t.Stats
 	}
 	if t.Retry <= 0 {
 		t.Retry = time.Second
@@ -256,16 +261,36 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 		if changes != nil {
 			changes, notifyErrors = nil, nil
 			_ = notifier.Close()
+			poll.Reset(timing.Poll) // polling is now the only change detector
 		}
 	}
 	defer stopNotifications()
 	scanPending := true // include changes between the initial upload and watch setup
 	var nextScan time.Time
-	statsPoll := time.NewTicker(timing.Stats)
+	// Stats are requested again only after each response, sooner while they change.
+	statsPoll := time.NewTimer(timing.Stats)
+	statsPoll.Stop()
 	defer statsPoll.Stop()
+	statsPace := pubStatsPacer{base: timing.Stats, idle: timing.StatsIdle}
 	observed := baseline
 	nextVerify := time.Now().Add(timing.Verify)
 	var changedAt, nextRetry time.Time
+	// With working notifications and nothing pending, sleep until the next
+	// fallback scan, verification or retry instead of every Poll interval.
+	// A notification restores the fast interval.
+	pollDelay := func(now time.Time) time.Duration {
+		if changes == nil || scanPending || uploadBusy {
+			return timing.Poll
+		}
+		wake := nextScan
+		if opts.Staged == nil && nextVerify.Before(wake) {
+			wake = nextVerify
+		}
+		if !nextRetry.IsZero() && nextRetry.Before(wake) {
+			wake = nextRetry
+		}
+		return max(timing.Poll, wake.Sub(now))
+	}
 	retryDelay := timing.Retry
 	scanError, uploadError := "", ""
 	startStats()
@@ -280,6 +305,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			}
 			changed, err := notifier.changed(e)
 			scanPending = scanPending || changed
+			if changed {
+				poll.Reset(timing.Poll)
+			}
 			if err != nil {
 				stopNotifications()
 			}
@@ -300,6 +328,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			now := time.Now()
 			verify := !uploadBusy && opts.Staged == nil && !now.Before(nextVerify)
 			if changes != nil && !scanPending && !verify && now.Before(nextScan) {
+				poll.Reset(pollDelay(now))
 				continue
 			}
 			scanPending = false
@@ -314,6 +343,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			}
 			if err != nil {
 				scanPending = true
+				poll.Reset(timing.Poll)
 				if !uploadBusy {
 					status.State = "Waiting for valid local files: " + err.Error()
 				}
@@ -347,9 +377,13 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			// same-size, same-timestamp saves, including coarse filesystem clocks.
 			// Staged sources already compare Git object identities.
 			scanPending = dirty && !uploadBusy
+			if scanPending {
+				poll.Reset(timing.Poll) // debounce or retry the pending change
+			}
 			if !uploadBusy && (dirty || verify) && (!dirty || time.Since(changedAt) >= timing.Debounce) && !time.Now().Before(nextRetry) {
 				scanPending = false
 				startUpload(snapshot)
+				poll.Reset(timing.Poll) // staged sources observe the index while uploading
 				if err := redraw(); err != nil {
 					return err
 				}
@@ -379,6 +413,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				}
 			case "publish":
 				scanPending = true
+				poll.Reset(timing.Poll)
 				uploadBusy = false
 				status.Syncing = false
 				status.SyncPercent = -1
@@ -418,6 +453,11 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				uploadError, nextRetry, retryDelay = "", time.Time{}, timing.Retry
 				status.State = "Watching for changes"
 				if event.result.Uploaded {
+					// New content changes the stats; show them promptly.
+					statsPace.reset()
+					if !statsBusy {
+						statsPoll.Reset(timing.Stats)
+					}
 					status.LastPublished = time.Now()
 					// Count committed changes for the whole watch session. Comparisons
 					// and failed uploads must not replace or inflate these totals.
@@ -441,6 +481,8 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			case "stats":
 				statsBusy = false
 				if event.err != nil {
+					statsPace.reset()
+					statsPoll.Reset(timing.Stats)
 					var httpErr pubStatsHTTPError
 					if errors.As(event.err, &httpErr) && httpErr.status < 500 && httpErr.status != http.StatusTooManyRequests {
 						status.StatsError = event.err.Error()
@@ -457,6 +499,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				}
 				status.StatsError = ""
 				lastStats, lastRoundTrip = &event.stats, event.roundTrip
+				statsPoll.Reset(statsPace.next(event.stats))
 				if jsonOutput {
 					if err := emit(pubWatchEvent{Type: "stats", Stats: lastStats}); err != nil {
 						return err

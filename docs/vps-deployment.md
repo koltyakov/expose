@@ -90,6 +90,15 @@ sudo ufw allow 443/udp
 # Or for cloud provider firewalls, add inbound rules for 80/tcp, 443/tcp, and 443/udp
 ```
 
+### Size UDP socket buffers
+
+QUIC and the optional [TURN relay](turn-relay.md) request larger UDP buffers than Linux's 208 KiB default, but an unprivileged service cannot exceed `net.core.rmem_max` and `net.core.wmem_max`. Small buffers drop bursts on one-vCPU servers, and every drop slows QUIC and relayed WebRTC transfers. The kernel allocates only queued datagrams, so raising the limits costs memory only under load:
+
+```bash
+printf 'net.core.rmem_max=8388608\nnet.core.wmem_max=8388608\n' | sudo tee /etc/sysctl.d/60-expose-udp.conf
+sudo sysctl --system
+```
+
 ## 5 - Create a systemd service
 
 ```bash

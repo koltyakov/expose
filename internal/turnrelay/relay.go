@@ -66,6 +66,7 @@ func start(cfg config.TURNConfig, tlsConfig *tls.Config, logger *slog.Logger, pe
 		if listenErr != nil {
 			return nil, fmt.Errorf("listen TURN UDP: %w", listenErr)
 		}
+		tuneUDPBuffers(conn, listenerSocketBuffer)
 		r.sockets = append(r.sockets, conn)
 		r.cfg.ListenUDP = conn.LocalAddr().String()
 		serverConfig.PacketConnConfigs = append(serverConfig.PacketConnConfigs, turn.PacketConnConfig{

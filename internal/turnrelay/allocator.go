@@ -54,6 +54,7 @@ func (g *relayGenerator) AllocatePacketConn(info turn.AllocateListenerConfig) (n
 		}
 		conn, err := net.ListenPacket("udp4", net.JoinHostPort(g.cfg.RelayAddress, strconv.Itoa(port)))
 		if err == nil {
+			tuneUDPBuffers(conn, relaySocketBuffer)
 			tracked := &relayPacketConn{PacketConn: conn, owner: g}
 			g.conns[tracked] = struct{}{}
 			return tracked, &net.UDPAddr{IP: net.ParseIP(g.cfg.PublicIP), Port: port}, nil

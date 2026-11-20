@@ -36,6 +36,8 @@ TLS is optional and uses Expose's existing HTTPS certificate provider. The publi
 
 Open these ports in the host firewall and cloud firewall. Behind NAT, forward listener and allocation ports without changing their numbers. `EXPOSE_TURN_PUBLIC_IP` must be the external IPv4, while `EXPOSE_TURN_RELAY_ADDRESS` selects the local interface for allocations.
 
+Expose requests 8 MiB buffers for the shared UDP listener and 4 MiB for each allocation. On Linux, raise `net.core.rmem_max` and `net.core.wmem_max` to at least 8 MiB as described in [UDP socket buffers](vps-deployment.md#size-udp-socket-buffers); otherwise the kernel clamps them to its 208 KiB default, and relayed WebRTC transfers lose throughput to dropped bursts.
+
 TURN-over-TLS is not HTTPS. It cannot pass through an HTTP reverse proxy, CDN proxy, or Expose HTTP tunnel. A network allowing only TCP 443 needs a dedicated public IP or a TCP-level router to reach a TURN TLS listener on 443. Expose does not multiplex HTTPS and TURN on one TCP listener. Do not assign TURN's UDP listener to the HTTP/3 listener's address either.
 
 ## Obtain temporary credentials

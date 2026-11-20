@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -591,6 +592,9 @@ func (r *trafficCountingReader) Read(p []byte) (int, error) {
 
 // logForwardResult logs the forwarded request result via display or logger.
 func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, started time.Time) {
+	if c.display == nil && !c.requestLogEnabled() {
+		return // skip sanitizing and formatting a record nobody keeps
+	}
 	method := config.SanitizeTerminalString(req.Method)
 	path := config.SanitizeTerminalString(req.Path)
 	query := strings.TrimSpace(req.Query)
@@ -600,7 +604,7 @@ func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, star
 	elapsed := time.Since(started)
 	if c.display != nil {
 		c.display.LogRequest(method, path, status, elapsed, req.Headers)
-	} else if c.log != nil {
+	} else {
 		logPath := config.SanitizeTerminalString(req.Path)
 		if query != "" {
 			logPath = logPath + "?" + config.RedactQueryValues(query)
@@ -612,4 +616,8 @@ func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, star
 			c.log.Info("forwarded request", "method", method, "path", logPath, "status", status, "duration", elapsed.String())
 		}
 	}
+}
+
+func (c *Client) requestLogEnabled() bool {
+	return c.log != nil && !c.cfg.OmitRequestLogs && c.log.Enabled(context.Background(), slog.LevelInfo)
 }

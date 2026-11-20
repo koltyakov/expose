@@ -65,6 +65,18 @@ The API also defaults to seven days and accepts a `retention` query parameter, f
 | -                | `EXPOSE_PPROF_ALLOW_REMOTE`      | Allow an unauthenticated pprof listener on a non-loopback address                     |
 | -                | `EXPOSE_AUTOUPDATE`              | Enable automatic self-update for `http` and `static` (`true`/`1`/`yes`)              |
 | `--log-level` (`http`) | `EXPOSE_LOG_LEVEL`         | Log level when output is not a terminal: `debug`, `info` (default), `warn`, `error`. Each forwarded request is an `info` line; `warn` keeps only problems |
+| `--log-requests` (`http`) | `EXPOSE_LOG_REQUESTS`   | Log each forwarded request when output is not a terminal (default: `true`). `false` keeps lifecycle lines such as `tunnel ready` |
+| `--json` (`http`) | `EXPOSE_LOG_FORMAT=json`        | Print one JSON object per log line instead of the terminal dashboard, even on a terminal |
+
+## Scripts, CI and AI agents
+
+When output is not a terminal, or with `--json`, the client prints log records instead of the dashboard. For a quiet, machine-readable stream that still reports the public URL, start the tunnel with:
+
+```bash
+expose http 3000 --json --log-requests=false
+```
+
+The first record is `tunnel ready` with `public_url`; later records report reconnects, warnings and errors. `EXPOSE_LOG_FORMAT=json` and `EXPOSE_LOG_REQUESTS=false` do the same for `static` and `up`. Use `expose list --json` to look up tunnels from another process.
 
 ## Command-Specific Flags
 

@@ -568,3 +568,30 @@ func TestParseClientFlagsLogLevel(t *testing.T) {
 		t.Fatalf("flag LogLevel = %q, %v; want error", cfg.LogLevel, err)
 	}
 }
+
+func TestParseClientFlagsAgentOutputOptions(t *testing.T) {
+	t.Setenv("EXPOSE_LOG_FORMAT", "")
+	t.Setenv("EXPOSE_LOG_REQUESTS", "")
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogFormat != "text" || cfg.OmitRequestLogs {
+		t.Fatalf("defaults: format=%q omit=%v", cfg.LogFormat, cfg.OmitRequestLogs)
+	}
+	if cfg, err = ParseClientFlags([]string{"--port", "8080", "--json", "--log-requests=false"}); err != nil || cfg.LogFormat != "json" || !cfg.OmitRequestLogs {
+		t.Fatalf("flags: format=%q omit=%v err=%v", cfg.LogFormat, cfg.OmitRequestLogs, err)
+	}
+	t.Setenv("EXPOSE_LOG_FORMAT", "JSON")
+	t.Setenv("EXPOSE_LOG_REQUESTS", "false")
+	if cfg, err = ParseClientFlags([]string{"--port", "8080"}); err != nil || cfg.LogFormat != "json" || !cfg.OmitRequestLogs {
+		t.Fatalf("env: format=%q omit=%v err=%v", cfg.LogFormat, cfg.OmitRequestLogs, err)
+	}
+	if cfg, err = ParseClientFlags([]string{"--port", "8080", "--json=false", "--log-requests"}); err != nil || cfg.LogFormat != "text" || cfg.OmitRequestLogs {
+		t.Fatalf("flags over env: format=%q omit=%v err=%v", cfg.LogFormat, cfg.OmitRequestLogs, err)
+	}
+	t.Setenv("EXPOSE_LOG_REQUESTS", "maybe")
+	if _, err := ParseClientFlags([]string{"--port", "8080"}); err == nil {
+		t.Fatal("expected invalid EXPOSE_LOG_REQUESTS error")
+	}
+}

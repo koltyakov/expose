@@ -41,6 +41,16 @@ func envOr(key, def string) string {
 	return config.EnvOrDefault(key, def)
 }
 
+// envRequestLogs reports EXPOSE_LOG_REQUESTS, which defaults to true.
+func envRequestLogs() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("EXPOSE_LOG_REQUESTS"))) {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
 func parseIntEnv(key string, def int) int {
 	return config.EnvIntOrDefault(key, def)
 }

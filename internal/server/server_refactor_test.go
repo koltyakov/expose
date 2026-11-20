@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ type stubServerStore struct {
 	setTunnelsDisconnectedFn func(context.Context, []string) error
 	findRouteByHostFn        func(context.Context, string) (domain.TunnelRoute, error)
 	revokedTunnelIDsFn       func(context.Context) ([]string, error)
+	purgeInactiveDomainsFn   func(context.Context, time.Time, int) ([]domain.Domain, error)
 }
 
 func (s *stubServerStore) ResetConnectedTunnels(context.Context) (int64, error) {
@@ -112,7 +115,10 @@ func (s *stubServerStore) TouchDomains(context.Context, []string) error {
 	return nil
 }
 
-func (s *stubServerStore) PurgeInactiveTunnelDomains(context.Context, time.Time, int) ([]domain.Domain, error) {
+func (s *stubServerStore) PurgeInactiveTunnelDomains(ctx context.Context, olderThan time.Time, limit int) ([]domain.Domain, error) {
+	if s.purgeInactiveDomainsFn != nil {
+		return s.purgeInactiveDomainsFn(ctx, olderThan, limit)
+	}
 	return nil, nil
 }
 
@@ -378,5 +384,42 @@ func TestDisconnectWorkerRecordsDrainedDisconnectsAfterShutdown(t *testing.T) {
 		}
 	default:
 		t.Fatal("queued disconnect was not recorded during shutdown drain")
+	}
+}
+
+func TestCleanupStaleTunnelResourcesDrainsFullBatches(t *testing.T) {
+	t.Parallel()
+
+	sizes := []int{staleDomainPurgeBatch, staleDomainPurgeBatch, 37, staleDomainPurgeBatch}
+	calls := 0
+	store := &stubServerStore{
+		purgeInactiveDomainsFn: func(_ context.Context, _ time.Time, limit int) ([]domain.Domain, error) {
+			if limit != staleDomainPurgeBatch {
+				t.Errorf("limit = %d", limit)
+			}
+			out := make([]domain.Domain, sizes[calls])
+			for i := range out {
+				out[i] = domain.Domain{ID: fmt.Sprintf("d-%d-%d", calls, i), Hostname: fmt.Sprintf("h%d-%d.example.com", calls, i)}
+			}
+			calls++
+			return out, nil
+		},
+		findRouteByHostFn: func(context.Context, string) (domain.TunnelRoute, error) {
+			return domain.TunnelRoute{}, sql.ErrNoRows
+		},
+	}
+	var logs strings.Builder
+	srv := &Server{
+		store:      store,
+		log:        slog.New(slog.NewTextHandler(&logs, nil)),
+		liveRoutes: newLiveRouteIndex(),
+		cfg:        config.ServerConfig{CertCacheDir: t.TempDir()},
+	}
+	srv.cleanupStaleTunnelResources(context.Background())
+	if calls != 3 {
+		t.Fatalf("purge calls = %d, want 3 (stop after the first partial batch)", calls)
+	}
+	if !strings.Contains(logs.String(), "domains=237") || strings.Count(logs.String(), "stale tunnel domains cleaned") != 1 {
+		t.Fatalf("expected one summary for 237 domains: %s", logs.String())
 	}
 }

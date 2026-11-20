@@ -204,11 +204,33 @@ func (s *Server) expireStaleSessions(ctx context.Context) {
 	}
 }
 
+// staleDomainPurgeBatch and staleDomainPurgeMaxBatches bound one cleanup
+// pass. A full batch means more may be waiting, so the pass continues (up to
+// the cap) instead of releasing only one batch per janitor tick, which left a
+// burst of 1000 expired temporary hostnames reserved for over an hour. The
+// time budget keeps one pass from monopolizing the database on a slow host.
+const (
+	staleDomainPurgeBatch      = 100
+	staleDomainPurgeMaxBatches = 20
+	staleDomainPurgeBudget     = 2 * time.Second
+)
+
 func (s *Server) cleanupStaleTunnelResources(ctx context.Context) {
-	purgedDomains, err := s.store.PurgeInactiveTunnelDomains(ctx, time.Now().Add(-s.tunnelRetention()), 100)
-	if err != nil {
-		s.log.Error("tunnel domain cleanup failed", "err", err)
-	} else if len(purgedDomains) > 0 {
+	started := time.Now()
+	cutoff := started.Add(-s.tunnelRetention())
+	var domains, removedFiles, failedFiles int
+	for range staleDomainPurgeMaxBatches {
+		if ctx.Err() != nil || time.Since(started) > staleDomainPurgeBudget {
+			break
+		}
+		purgedDomains, err := s.store.PurgeInactiveTunnelDomains(ctx, cutoff, staleDomainPurgeBatch)
+		if err != nil {
+			s.log.Error("tunnel domain cleanup failed", "err", err)
+			break
+		}
+		if len(purgedDomains) == 0 {
+			break
+		}
 		// Unpublish each route, then prune every certificate in a single
 		// directory scan. The per-host helper does its own ReadDir, which made
 		// this loop O(hosts x cache entries).
@@ -224,11 +246,19 @@ func (s *Server) cleanupStaleTunnelResources(ctx context.Context) {
 			}
 		}
 
-		removedFiles, failedFiles, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
+		removed, failed, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
 		if err != nil {
 			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
 		}
-		s.log.Info("stale tunnel domains cleaned", "domains", len(purgedDomains), "cert_files", removedFiles, "cert_failures", failedFiles)
+		domains += len(purgedDomains)
+		removedFiles += removed
+		failedFiles += failed
+		if len(purgedDomains) < staleDomainPurgeBatch {
+			break
+		}
+	}
+	if domains > 0 {
+		s.log.Info("stale tunnel domains cleaned", "domains", domains, "cert_files", removedFiles, "cert_failures", failedFiles)
 	}
 
 	now := time.Now().UTC()

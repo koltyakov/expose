@@ -16,6 +16,7 @@ Usage:
   expose http <port> --domain=myapp     Expose with a named subdomain
                                         --protect enables form protection, --protect=basic opts into Basic Auth
                                         --protect=upstream-basic delegates form credentials to your app's Basic Auth
+                                        --json --log-requests=false: quiet JSON lines for scripts and agents
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
   expose pub <dir>                     Upload and host a static site on the server
@@ -81,6 +82,8 @@ Environment Variables:
 	  EXPOSE_DB_MAX_IDLE_CONNS  SQLite max idle connections (default: 10)
 	  EXPOSE_ACCESS_COOKIE_SECRET  Secret used to sign protected-route access cookies
 	  EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
+	  EXPOSE_LOG_FORMAT       Log format: text|json (default: text; json also replaces the client dashboard)
+	  EXPOSE_LOG_REQUESTS     Client: log each forwarded request when not on a terminal (default: true)
 	  EXPOSE_WAF_ENABLE       Enable the built-in WAF (default: true)
   EXPOSE_WAF_AUDIT_ONLY   Run WAF in dry-run mode without blocking (default: false)
   EXPOSE_WAF_BODY_INSPECT_LIMIT  Public request-body bytes inspected by the WAF (default: 16384, 0 disables)

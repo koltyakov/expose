@@ -38,8 +38,15 @@ type ClientConfig struct {
 	PprofListen           string
 	// LogLevel filters non-interactive client logs (debug|info|warn|error).
 	// Per-request lines are info, so warn keeps only problems.
-	LogLevel       string
-	WAFIgnorePaths []string
+	LogLevel string
+	// LogFormat is "text" (logfmt) or "json" (one object per line). JSON also
+	// replaces the interactive terminal dashboard.
+	LogFormat string
+	// OmitRequestLogs drops the per-request "forwarded request" lines from
+	// non-interactive output while keeping lifecycle records such as
+	// "tunnel ready". The zero value keeps request lines.
+	OmitRequestLogs bool
+	WAFIgnorePaths  []string
 }
 
 // ServerConfig holds all settings required by the expose HTTPS server.
@@ -62,6 +69,7 @@ type ServerConfig struct {
 	TLSCertFile                     string
 	TLSKeyFile                      string
 	LogLevel                        string
+	LogFormat                       string
 	RequestTimeout                  time.Duration
 	MaxBodyBytes                    int64 // WebSocket frame sizing only; HTTP body streams have no total-size cap.
 	ConnectTokenTTL                 time.Duration
@@ -145,11 +153,15 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		MaxConcurrentForwards: envInt("EXPOSE_MAX_CONCURRENT_FORWARDS", 128, &envErrs),
 		PprofListen:           strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
 		LogLevel:              EnvOrDefault("EXPOSE_LOG_LEVEL", "info"),
+		LogFormat:             EnvOrDefault("EXPOSE_LOG_FORMAT", "text"),
+		OmitRequestLogs:       !envBool("EXPOSE_LOG_REQUESTS", true, &envErrs),
 		WAFIgnorePaths:        splitCommaSeparated(EnvOrDefault("EXPOSE_WAF_IGNORE_PATHS", "")),
 	}
 	if err := errors.Join(envErrs...); err != nil {
 		return cfg, err
 	}
+	logRequests := !cfg.OmitRequestLogs
+	jsonOutput := strings.EqualFold(strings.TrimSpace(cfg.LogFormat), "json")
 
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	fs.StringVar(&cfg.Profile, "profile", "", "Saved login profile (default when omitted)")
@@ -161,8 +173,15 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Non-interactive log level: debug|info|warn|error")
+	fs.BoolVar(&logRequests, "log-requests", logRequests, "Log each forwarded request when output is not a terminal")
+	fs.BoolVar(&jsonOutput, "json", jsonOutput, "Print JSON log lines instead of the terminal dashboard")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
+	}
+	cfg.OmitRequestLogs = !logRequests
+	cfg.LogFormat = "text"
+	if jsonOutput {
+		cfg.LogFormat = "json"
 	}
 
 	cfg.Name = strings.TrimSpace(cfg.Name)
@@ -264,6 +283,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		TLSCertFile:                     EnvOrDefault("EXPOSE_TLS_CERT_FILE", ""),
 		TLSKeyFile:                      EnvOrDefault("EXPOSE_TLS_KEY_FILE", ""),
 		LogLevel:                        EnvOrDefault("EXPOSE_LOG_LEVEL", "info"),
+		LogFormat:                       EnvOrDefault("EXPOSE_LOG_FORMAT", "text"),
 		RequestTimeout:                  envDuration("EXPOSE_REQUEST_TIMEOUT", 30*time.Second, &envErrs),
 		HTTPSWriteTimeout:               envDuration("EXPOSE_HTTPS_WRITE_TIMEOUT", 60*time.Second, &envErrs),
 		MaxBodyBytes:                    10 * 1024 * 1024,

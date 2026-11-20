@@ -3,12 +3,14 @@ package server
 import (
 	"bytes"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/koltyakov/expose/internal/config"
 
@@ -56,6 +58,13 @@ func TestStaticCertificateSupportsHostAndSelection(t *testing.T) {
 	}
 	if _, err := srv.selectCertificate(&autocert.Manager{}, nil, tlsModeWildcard)(&tls.ClientHelloInfo{}); err == nil {
 		t.Fatal("expected wildcard mode without SNI host to fail")
+	}
+	wildcard := srv.selectCertificate(nil, nil, tlsModeWildcard)
+	if _, err := wildcard(&tls.ClientHelloInfo{ServerName: "198.51.100.7"}); err == nil || !isLikelyScannerTLSReason(err.Error()) {
+		t.Fatalf("off-domain SNI error = %v, want scanner classification", err)
+	}
+	if _, err := wildcard(&tls.ClientHelloInfo{ServerName: "a.b.localhost"}); err == nil || isLikelyScannerTLSReason(err.Error()) {
+		t.Fatalf("uncovered host under the base domain = %v, want a reported misconfiguration", err)
 	}
 }
 
@@ -119,5 +128,61 @@ func TestHTTPSErrorLogWriter(t *testing.T) {
 
 	if writer.logTLSHandshakeLine("not a handshake line") {
 		t.Fatal("expected unrelated line to be ignored")
+	}
+}
+
+func TestRepeatLimiterSuppressesWithinWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(0, 0)
+	l := repeatLimiter{window: time.Minute, now: func() time.Time { return now }}
+	if ok, n := l.allow("a"); !ok || n != 0 {
+		t.Fatalf("first = %v, %d", ok, n)
+	}
+	for range 3 {
+		if ok, _ := l.allow("a"); ok {
+			t.Fatal("repeat inside window was allowed")
+		}
+	}
+	if ok, _ := l.allow("b"); !ok {
+		t.Fatal("distinct key was suppressed")
+	}
+	now = now.Add(time.Minute)
+	if ok, n := l.allow("a"); !ok || n != 3 {
+		t.Fatalf("after window = %v, %d; want true, 3", ok, n)
+	}
+	for i := range maxRepeatKeys * 2 {
+		l.allow(fmt.Sprintf("flood-%d", i))
+	}
+	if len(l.entries) > maxRepeatKeys {
+		t.Fatalf("limiter grew to %d keys", len(l.entries))
+	}
+}
+
+func TestHTTPSErrorLogWriterQuietsScannerNoise(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	writer := newHTTPSErrorLogWriter(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), false)
+	for _, line := range []string{
+		`http: TLS handshake error from 192.0.2.1:1: wildcard TLS: host not allowed "192.0.2.10"`,
+		"http: TLS handshake error from 192.0.2.1:1: tls: no key exchanges supported by both client and server",
+		"http: TLS handshake error from 192.0.2.1:1: tls: peer doesn't support any of the certificate's signature algorithms",
+		"http: TLS handshake error from 192.0.2.1:1: remote error: tls: unexpected message",
+		"http: TLS handshake error from 192.0.2.1:1: unexpected EOF",
+		"http2: server: error reading preface from client 192.0.2.1:1: read tcp 192.0.2.2:443->192.0.2.1:1: read: connection reset by peer",
+	} {
+		_, _ = writer.Write([]byte(line))
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("scanner noise logged at warn: %s", buf.String())
+	}
+
+	nested := `http: TLS handshake error from 192.0.2.1:1: wildcard TLS certificate does not cover host "a.b.example.com"`
+	for range 5 {
+		_, _ = writer.Write([]byte(nested))
+	}
+	if got := strings.Count(buf.String(), "tls handshake failed"); got != 1 {
+		t.Fatalf("repeated misconfiguration warning logged %d times, want 1: %s", got, buf.String())
 	}
 }

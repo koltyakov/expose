@@ -47,6 +47,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	fs.StringVar(&transport, "transport", transport, "Tunnel transport: ws|quic")
+	output := registerClientOutputFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "http command error:", err)
 		return 2
@@ -86,6 +87,7 @@ func runHTTP(ctx context.Context, args []string) int {
 	if strings.TrimSpace(protectMode) != "" {
 		clientArgs = append(clientArgs, "--protect", protectMode)
 	}
+	clientArgs = append(clientArgs, output.args()...)
 	return runClient(ctx, clientArgs)
 }
 
@@ -119,6 +121,7 @@ func runStatic(ctx context.Context, args []string) int {
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	fs.StringVar(&transport, "transport", transport, "Tunnel transport: ws|quic")
 	fs.Var(&allowPatterns, "allow", "Allow blocked static paths matching a glob pattern (repeatable, e.g. .well-known/**)")
+	output := registerClientOutputFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "static command error:", err)
 		return 2
@@ -140,6 +143,7 @@ func runStatic(ctx context.Context, args []string) int {
 
 	cfg := newStaticClientConfig(serverURL, apiKey, transport, name, protectMode)
 	cfg.Profile = profile
+	output.apply(&cfg)
 	cfg.WAFIgnorePaths = commaSeparatedValues(envOr("EXPOSE_WAF_IGNORE_PATHS", ""))
 	cfg.Name = config.NormalizeTunnelSubdomain(cfg.Name)
 	cfg.User = strings.TrimSpace(cfg.User)
@@ -225,7 +229,6 @@ func newStaticClientConfig(serverURL, apiKey, transport, name, protectMode strin
 		PingInterval:          defaultClientPingInterval,
 		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 128),
 		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
-		LogLevel:              strings.ToLower(strings.TrimSpace(envOr("EXPOSE_LOG_LEVEL", "info"))),
 	}
 }
 
@@ -330,7 +333,7 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 	c := client.New(cfg, nil) // logger set below
 	c.SetVersion(Version)
 
-	if isInteractiveOutput() {
+	if isInteractiveOutput() && ilog.NormalizeFormat(cfg.LogFormat) != ilog.FormatJSON {
 		display = client.NewDisplay(true)
 		cleaned := false
 		displayCleanup = func() {
@@ -345,7 +348,7 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 		c.SetTrafficSink(display)
 		logger = ilog.NewStderr("warn")
 	} else {
-		logger = ilog.New(cfg.LogLevel)
+		logger = ilog.NewFormat(cfg.LogLevel, cfg.LogFormat)
 	}
 	c.SetLogger(logger)
 	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "client"); err != nil {
@@ -546,4 +549,38 @@ func normalizeServerURL(raw string) (string, error) {
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	return u.String(), nil
+}
+
+// clientOutputFlags are the log options shared by `http` and `static`. Their
+// defaults come from EXPOSE_LOG_LEVEL, EXPOSE_LOG_REQUESTS and
+// EXPOSE_LOG_FORMAT, so flags only override the environment.
+type clientOutputFlags struct {
+	level    string
+	requests bool
+	json     bool
+}
+
+func registerClientOutputFlags(fs *flag.FlagSet) *clientOutputFlags {
+	o := &clientOutputFlags{
+		level:    envOr("EXPOSE_LOG_LEVEL", "info"),
+		requests: envRequestLogs(),
+		json:     ilog.NormalizeFormat(envOr("EXPOSE_LOG_FORMAT", "")) == ilog.FormatJSON,
+	}
+	fs.StringVar(&o.level, "log-level", o.level, "Log level when output is not a terminal: debug|info|warn|error")
+	fs.BoolVar(&o.requests, "log-requests", o.requests, "Log each forwarded request when output is not a terminal")
+	fs.BoolVar(&o.json, "json", o.json, "Print JSON log lines instead of the terminal dashboard")
+	return o
+}
+
+func (o *clientOutputFlags) args() []string {
+	return []string{"--log-level", o.level, "--log-requests=" + strconv.FormatBool(o.requests), "--json=" + strconv.FormatBool(o.json)}
+}
+
+func (o *clientOutputFlags) apply(cfg *config.ClientConfig) {
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(o.level))
+	cfg.OmitRequestLogs = !o.requests
+	cfg.LogFormat = ilog.FormatText
+	if o.json {
+		cfg.LogFormat = ilog.FormatJSON
+	}
 }

@@ -143,7 +143,7 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 
 	hostRoutes := make(map[string][]upLocalRoute, len(hostTunnels))
 	for _, sub := range subdomains {
-		baseLog := ilog.New(envOr("EXPOSE_LOG_LEVEL", "info")).With("group", sub)
+		baseLog := upLogger().With("group", sub)
 		routes := make([]upLocalRoute, 0, len(hostTunnels[sub]))
 		for _, tunnel := range hostTunnels[sub] {
 			route, _, err := prepareUpLocalRoute(runCtx, configDir, tunnel, !cfg.Access.Protect, baseLog.With("route", tunnel.Name))
@@ -157,14 +157,15 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 		hostRoutes[sub] = routes
 	}
 
-	interactiveDashboard := isInteractiveOutput()
+	jsonLogs := ilog.NormalizeFormat(envOr("EXPOSE_LOG_FORMAT", "text")) == ilog.FormatJSON
+	interactiveDashboard := isInteractiveOutput() && !jsonLogs
 	var ui *upDashboard
 	if interactiveDashboard {
 		ui = newUpDashboard(path, Version)
 		ui.InitGroups(subdomains, hostRoutes, cfg.Access.Protect)
 		ui.Start(runCtx)
 		defer ui.Cleanup()
-	} else {
+	} else if !jsonLogs {
 		_, _ = fmt.Fprintf(os.Stdout, "Expose Up (%s)\n", path)
 		printUpRouteSummary(os.Stdout, cfg)
 	}
@@ -184,7 +185,7 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 			baseLog = ui.Logger(sub)
 			ui.SetGroupStatus(sub, "starting", "starting local router")
 		} else {
-			baseLog = ilog.New(envOr("EXPOSE_LOG_LEVEL", "info")).With("group", sub)
+			baseLog = upLogger().With("group", sub)
 		}
 		router, routerPort, err := startUpLocalRouter(runCtx, hostRoutes[sub], baseLog)
 		if err != nil {
@@ -208,6 +209,10 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 		clientCfg.ProtectMode = cfg.Access.Mode
 		clientCfg.User = cfg.Access.User
 		clientCfg.Password = cfg.Access.Password
+		if ui != nil {
+			// The dashboard is fed by request records.
+			clientCfg.OmitRequestLogs = false
+		}
 
 		c := client.New(clientCfg, nil)
 		c.SetVersion(Version)
@@ -629,4 +634,10 @@ func validateUpSubdomainWizard(v string) error {
 func validateUpServerURLWizard(v string) error {
 	_, err := normalizeServerURL(v)
 	return err
+}
+
+// upLogger builds a non-interactive logger honoring EXPOSE_LOG_LEVEL and
+// EXPOSE_LOG_FORMAT.
+func upLogger() *slog.Logger {
+	return ilog.NewFormat(envOr("EXPOSE_LOG_LEVEL", "info"), envOr("EXPOSE_LOG_FORMAT", "text"))
 }

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -101,6 +102,11 @@ func (s *Server) selectCertificate(manager *autocert.Manager, staticCert *static
 			if host == "" {
 				return nil, errors.New("wildcard TLS mode requires SNI host")
 			}
+			if base := normalizeHost(s.cfg.BaseDomain); base != "" && host != base && !strings.HasSuffix(host, "."+base) {
+				// IP literals and foreign names come from scanners, not from a
+				// misconfigured tunnel, so they are classified as noise.
+				return nil, fmt.Errorf("wildcard TLS: host not allowed %q", host)
+			}
 			return nil, fmt.Errorf("wildcard TLS certificate does not cover host %q", host)
 		}
 		if manager == nil {
@@ -146,10 +152,65 @@ type httpsServerErrorLogWriter struct {
 	log                  *slog.Logger
 	dynamicACME          bool
 	provisioningHintOnce sync.Once
+	repeats              repeatLimiter
 }
 
 func newHTTPSErrorLogWriter(logger *slog.Logger, dynamicACME bool) *httpsServerErrorLogWriter {
-	return &httpsServerErrorLogWriter{log: logger, dynamicACME: dynamicACME}
+	return &httpsServerErrorLogWriter{log: logger, dynamicACME: dynamicACME, repeats: repeatLimiter{window: tlsWarnRepeatWindow}}
+}
+
+// tlsWarnRepeatWindow bounds how often one TLS failure reason is logged at
+// warn level. Bots repeat the same failing handshake for hours; the first
+// occurrence carries the signal and later ones are only counted.
+const tlsWarnRepeatWindow = 10 * time.Minute
+
+// repeatLimiter reports, per key, whether a record should be logged now and
+// how many matching records were suppressed since the last one.
+type repeatLimiter struct {
+	window time.Duration
+	now    func() time.Time
+
+	mu      sync.Mutex
+	entries map[string]repeatEntry
+}
+
+type repeatEntry struct {
+	last       time.Time
+	suppressed int
+}
+
+// maxRepeatKeys bounds the limiter's memory; attacker-chosen reasons (such as
+// SNI names) cannot grow it without limit.
+const maxRepeatKeys = 256
+
+func (l *repeatLimiter) allow(key string) (bool, int) {
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.entries == nil {
+		l.entries = make(map[string]repeatEntry)
+	}
+	entry, ok := l.entries[key]
+	if ok && now.Sub(entry.last) < l.window {
+		entry.suppressed++
+		l.entries[key] = entry
+		return false, 0
+	}
+	if !ok && len(l.entries) >= maxRepeatKeys {
+		for k, e := range l.entries {
+			if now.Sub(e.last) >= l.window {
+				delete(l.entries, k)
+			}
+		}
+		if len(l.entries) >= maxRepeatKeys {
+			return false, 0
+		}
+	}
+	l.entries[key] = repeatEntry{last: now}
+	return true, entry.suppressed
 }
 
 func (w *httpsServerErrorLogWriter) Write(p []byte) (n int, err error) {
@@ -158,6 +219,10 @@ func (w *httpsServerErrorLogWriter) Write(p []byte) (n int, err error) {
 		return len(p), nil
 	}
 	if w.logTLSHandshakeLine(line) {
+		return len(p), nil
+	}
+	if isRoutineHTTPSServerError(line) {
+		w.log.Debug("https server error", "err", line)
 		return len(p), nil
 	}
 	w.log.Warn("https server error", "err", line)
@@ -191,8 +256,24 @@ func (w *httpsServerErrorLogWriter) logTLSHandshakeLine(line string) bool {
 		w.log.Info("tls handshake retried during certificate provisioning", "remote_addr", strings.TrimSpace(addr), "reason", reason)
 		return true
 	}
-	w.log.Warn("tls handshake failed", "remote_addr", strings.TrimSpace(addr), "reason", reason)
+	if ok, suppressed := w.repeats.allow(reason); ok {
+		if suppressed > 0 {
+			w.log.Warn("tls handshake failed", "remote_addr", strings.TrimSpace(addr), "reason", reason, "repeats_suppressed", suppressed)
+		} else {
+			w.log.Warn("tls handshake failed", "remote_addr", strings.TrimSpace(addr), "reason", reason)
+		}
+	} else {
+		w.log.Debug("tls handshake failed", "remote_addr", strings.TrimSpace(addr), "reason", reason)
+	}
 	return true
+}
+
+// isRoutineHTTPSServerError matches peers abandoning a connection before
+// sending a request, which net/http reports but which needs no action.
+func isRoutineHTTPSServerError(line string) bool {
+	line = strings.ToLower(line)
+	return strings.Contains(line, "error reading preface from client") &&
+		(strings.Contains(line, "connection reset by peer") || strings.Contains(line, "eof") || strings.Contains(line, "i/o timeout"))
 }
 
 func isLikelyTLSProvisioningReason(reason string) bool {
@@ -221,7 +302,11 @@ func isLikelyScannerTLSReason(reason string) bool {
 		strings.Contains(reason, "connection reset by peer") ||
 		strings.Contains(reason, "i/o timeout") ||
 		strings.Contains(reason, "first record does not look like a tls handshake") ||
-		strings.Contains(reason, "http request to an https server")
+		strings.Contains(reason, "http request to an https server") ||
+		strings.Contains(reason, "no key exchanges supported") ||
+		strings.Contains(reason, "signature algorithms") ||
+		strings.Contains(reason, "tls: unexpected message") ||
+		reason == "unexpected eof"
 }
 
 func (s *Server) wildcardSetupGuide(defaultCertFile, defaultKeyFile string) string {

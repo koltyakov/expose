@@ -12,6 +12,7 @@ func TestEnsureVPrefix(t *testing.T) {
 		{input: "", want: ""},
 		{input: "v1.2.3", want: "v1.2.3"},
 		{input: "1.2.3", want: "v1.2.3"},
+		{input: "dev", want: "dev"},
 	}
 
 	for _, tt := range tests {

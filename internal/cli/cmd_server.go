@@ -33,7 +33,7 @@ func runServer(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "server config error:", err)
 		return 2
 	}
-	logger := ilog.New(cfg.LogLevel)
+	logger := ilog.NewFormat(cfg.LogLevel, cfg.LogFormat)
 
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
 	autoUpdate := autoUpdateActive(logger)

@@ -30,7 +30,7 @@ func TestNewLoggerAppliesLevelFiltering(t *testing.T) {
 		}
 	}()
 
-	logger := newLogger(file, "warn")
+	logger := newLogger(file, "warn", FormatText)
 	logger.Debug("debug message")
 	logger.Info("info message")
 	logger.Warn("warn message")
@@ -69,7 +69,7 @@ func TestNewLoggerDefaultsToInfoLevel(t *testing.T) {
 		}
 	}()
 
-	logger := newLogger(file, "invalid")
+	logger := newLogger(file, "invalid", FormatText)
 	logger.Log(context.TODO(), slog.LevelInfo, "info message")
 	logger.Debug("debug message")
 
@@ -86,5 +86,18 @@ func TestNewLoggerDefaultsToInfoLevel(t *testing.T) {
 	}
 	if strings.Contains(output, "debug message") {
 		t.Fatalf("output unexpectedly contains debug message: %q", output)
+	}
+}
+
+func TestNewLoggerJSONFormat(t *testing.T) {
+	t.Parallel()
+
+	var buf strings.Builder
+	newLogger(&buf, "info", " JSON ").Info("tunnel ready", "public_url", "https://demo.example.com")
+	if got := buf.String(); !strings.HasPrefix(got, "{") || !strings.Contains(got, `"public_url":"https://demo.example.com"`) {
+		t.Fatalf("JSON record = %q", got)
+	}
+	if NormalizeFormat("yaml") != FormatText {
+		t.Fatal("unknown format did not fall back to text")
 	}
 }

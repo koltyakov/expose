@@ -48,6 +48,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | `--api-key-pepper`        | `EXPOSE_API_KEY_PEPPER`          | random, persisted | Explicit pepper for API key hashing                         |
 | `--access-cookie-secret`  | `EXPOSE_ACCESS_COOKIE_SECRET`    | random, persisted | Secret used to sign protected-route access cookies          |
 | `--log-level`             | `EXPOSE_LOG_LEVEL`               | `info`        | Log verbosity: `debug`, `info`, `warn`, `error`                |
+| -                         | `EXPOSE_LOG_FORMAT`              | `text`        | Log record format: `text` (logfmt) or `json` (one object per line) |
 | `--tunnel-retention`      | `EXPOSE_TUNNEL_RETENTION`        | `24h`         | Inactivity period before releasing offline tunnel hostnames |
 | `--public-http3`          | `EXPOSE_PUBLIC_HTTP3`            | `false`       | Advertise HTTP/3 to browsers with `Alt-Svc` (public UDP must use the same port as TCP) |
 | -                         | `EXPOSE_WAF_ENABLE`              | `true`        | Enable/disable the Web Application Firewall                    |

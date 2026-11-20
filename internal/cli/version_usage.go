@@ -40,15 +40,16 @@ Usage:
   expose server                         Start tunnel server
   expose server --turn                  Also run a public WebRTC TURN relay (requires TURN env settings)
   expose server init                    Guided server setup + .env write
+  expose server version                 Print the running server's version
   expose apikey create --name NAME      Create a new API key
   expose apikey list                    List all API keys
   expose apikey revoke --id=ID          Revoke an API key
   expose update                         Update to the latest release
-  expose version                        Print version
+  expose version                        Print the local binary's version
   expose help                           Show this help
 
 Client profiles:
-  Add --profile NAME to login, http, static, tunnel, list, pub, up, or soak.
+  Add --profile NAME to login, http, static, tunnel, list, pub, up, soak, or server version.
   Omit it to keep using the existing default login and credential precedence.
   An explicit profile overrides environment/project credentials, except for --server/--api-key flags.
   Example: expose http 3000 --profile work

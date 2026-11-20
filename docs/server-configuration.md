@@ -245,9 +245,11 @@ Protected routes in `form` mode issue a signed edge-session cookie after a succe
 
 The server exposes `GET /_expose/healthz` which returns `200 OK`. This endpoint is exempt from WAF inspection and is useful for load balancer or uptime monitoring probes.
 
+To check the running build, use [`expose server version`](client-configuration.md#check-the-server-version). It calls `GET /_expose/v1/version` with an expose API key in the `Authorization: Bearer KEY` header. The response is JSON, for example `{"version":"v0.28.2"}`.
+
 ### Service API namespace and upgrades
 
-Expose reserves `/_expose/v1` and its descendants for tunnel registration, WebSocket and HTTP/3 connections, and publication management. Health probes use `/_expose/healthz`. Published-site presence continues to use `/_expose/presence` and `/_expose/presence.js`.
+Expose reserves `/_expose/v1` and its descendants for service APIs, including tunnel registration, WebSocket and HTTP/3 connections, publication management, and version lookups. Health probes use `/_expose/healthz`. Published-site presence continues to use `/_expose/presence` and `/_expose/presence.js`.
 
 Application paths such as `/v1/*` and `/healthz` reach the tunnel or published site and receive normal WAF inspection. There are no legacy service aliases on these paths.
 

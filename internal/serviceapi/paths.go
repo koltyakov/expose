@@ -7,6 +7,7 @@ const (
 	Prefix          = "/_expose"
 	V1              = Prefix + "/v1"
 	Health          = Prefix + "/healthz"
+	Version         = V1 + "/version"
 	Sites           = V1 + "/sites"
 	Exposures       = V1 + "/exposures"
 	TURNCredentials = V1 + "/turn/credentials"
@@ -15,6 +16,11 @@ const (
 	ConnectH3       = V1 + "/tunnels/connect-h3"
 	ConnectH3Stream = ConnectH3 + "/stream"
 )
+
+// VersionResponse contains the running server's build version.
+type VersionResponse struct {
+	Version string `json:"version"`
+}
 
 // IsServicePath excludes browser presence endpoints, which belong to each site.
 func IsServicePath(path string) bool {

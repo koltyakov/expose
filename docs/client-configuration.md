@@ -14,9 +14,20 @@ Complete reference for all client flags, environment variables, and credential m
 | `expose auth curl --url <url>`       | Authenticate curl against an access-form route    |
 | `expose login`                      | Save server URL and API key                       |
 | `expose list`                       | List your tunnels and published sites            |
+| `expose server version`             | Print the running server's version                |
+| `expose version`                    | Print the local binary's version                  |
 | `expose up`                         | Start routes from `expose.yml`                    |
 | `expose up init`                    | Create `expose.yml` via wizard                    |
 | `expose update`                     | Update to the latest release                      |
+
+## Check the server version
+
+```bash
+expose server version
+expose server version --profile work
+```
+
+The command uses your saved login or the usual `--server` and `--api-key` overrides. It prints the running server's build version on one line and does not open a tunnel. If the server does not support version lookups yet, update it first. `expose version` still prints the local binary's version without contacting a server.
 
 ## List tunnels and published sites
 
@@ -196,7 +207,7 @@ expose pub list --profile work
 expose pub connect ./dist --profile work
 ```
 
-`--profile` is supported by `login`, `http`, `static`, `tunnel`, `client`, `list`, all `pub` actions, `up`, and `soak`. Place it after the command, or after the action for commands such as `pub list` and `client login`. It selects a profile for that invocation only, so you can use different servers in separate terminals at the same time.
+`--profile` is supported by `login`, `http`, `static`, `tunnel`, `client`, `list`, all `pub` actions, `up`, `soak`, and `server version`. Place it after the command, or after the action for commands such as `pub list` and `server version`. It selects a profile for that invocation only, so you can use different servers in separate terminals at the same time.
 
 Without `--profile`, existing clients behave exactly as before. The original `~/.expose/settings.json` remains the default login, with no migration needed. `--profile default` explicitly selects that saved login ahead of environment/project credentials.
 

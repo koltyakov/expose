@@ -23,6 +23,8 @@ func runServer(ctx context.Context, args []string) int {
 			return runAPIKeyAdmin(ctx, args[1:])
 		case "init":
 			return runServerInit(ctx, args[1:])
+		case "version":
+			return runServerVersion(ctx, args[1:])
 		}
 	}
 

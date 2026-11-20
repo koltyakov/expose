@@ -312,6 +312,7 @@ func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) htt
 
 func (s *Server) httpHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc(serviceapi.Version, s.handleVersion)
 	mux.HandleFunc(serviceapi.Exposures, s.handleExposures)
 	mux.HandleFunc(serviceapi.TURNCredentials, s.handleTURNCredentials)
 	mux.HandleFunc(serviceapi.Sites, s.handleSites)

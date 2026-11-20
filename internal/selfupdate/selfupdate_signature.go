@@ -11,6 +11,14 @@ import (
 
 const signatureAssetName = releasesign.AssetName
 
+// Supported reports whether this executable can authenticate releases. Builds
+// without pinned release keys can never apply an update, so callers should
+// skip update checks rather than repeat requests that are bound to fail.
+func Supported() error {
+	_, err := releasesign.ParseKeys(releasesign.KeysJSON)
+	return err
+}
+
 // Authentication is mandatory. Environment variables cannot disable it or
 // replace the keys embedded in the executable.
 func verifyReleaseSignature(ctx context.Context, rel *Release, manifest []byte) error {

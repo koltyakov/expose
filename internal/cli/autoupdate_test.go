@@ -116,3 +116,23 @@ func TestIsAutoUpdateEnabled_Unset(t *testing.T) {
 		t.Error("isAutoUpdateEnabled() should be false when EXPOSE_AUTOUPDATE is empty")
 	}
 }
+
+func TestAutoUpdateActiveRequiresPinnedReleaseKeys(t *testing.T) {
+	original := autoUpdateSupported
+	t.Cleanup(func() { autoUpdateSupported = original })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Setenv("EXPOSE_AUTOUPDATE", "true")
+	autoUpdateSupported = func() error { return errors.New("no pinned release keys configured") }
+	if autoUpdateActive(logger) {
+		t.Fatal("auto-update active for a build that cannot verify releases")
+	}
+	autoUpdateSupported = func() error { return nil }
+	if !autoUpdateActive(logger) {
+		t.Fatal("auto-update inactive for a verifiable build")
+	}
+	t.Setenv("EXPOSE_AUTOUPDATE", "false")
+	if autoUpdateActive(logger) {
+		t.Fatal("auto-update active while disabled")
+	}
+}

@@ -143,7 +143,7 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 
 	hostRoutes := make(map[string][]upLocalRoute, len(hostTunnels))
 	for _, sub := range subdomains {
-		baseLog := ilog.New("info").With("group", sub)
+		baseLog := ilog.New(envOr("EXPOSE_LOG_LEVEL", "info")).With("group", sub)
 		routes := make([]upLocalRoute, 0, len(hostTunnels[sub]))
 		for _, tunnel := range hostTunnels[sub] {
 			route, _, err := prepareUpLocalRoute(runCtx, configDir, tunnel, !cfg.Access.Protect, baseLog.With("route", tunnel.Name))
@@ -184,7 +184,7 @@ func runUpFromFileWithProfile(ctx context.Context, path, profile string) int {
 			baseLog = ui.Logger(sub)
 			ui.SetGroupStatus(sub, "starting", "starting local router")
 		} else {
-			baseLog = ilog.New("info").With("group", sub)
+			baseLog = ilog.New(envOr("EXPOSE_LOG_LEVEL", "info")).With("group", sub)
 		}
 		router, routerPort, err := startUpLocalRouter(runCtx, hostRoutes[sub], baseLog)
 		if err != nil {

@@ -168,8 +168,14 @@ func (s *Server) requestTimeoutMillis() int {
 	return int(timeout / time.Millisecond)
 }
 
+// maxUnflushedStreamBytes bounds how much already-queued response data is
+// written before a flush. Chunks that are queued together are flushed together
+// (one TLS record and syscall instead of one per chunk), while a producer that
+// stays ahead of the public client still reaches it in bounded batches.
+const maxUnflushedStreamBytes = 64 << 10
+
 // writeStreamedResponseBody reads body chunks from the pending queue and
-// writes them to the HTTP response writer, flushing after each chunk.
+// writes them to the HTTP response writer, flushing whenever the queue drains.
 // It returns true when the upstream stream completed normally; an
 // abort-terminated stream (client reported an upstream failure) returns
 // false so the caller can tear the public connection down rather than end
@@ -179,6 +185,7 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 	flusher, canFlush := w.(http.Flusher)
 	timer := timerpool.Acquire(chunkTimeout)
 	defer timerpool.Release(timer)
+	unflushed := 0
 
 	for {
 		select {
@@ -188,13 +195,15 @@ func (s *Server) writeStreamedResponseBody(w http.ResponseWriter, r *http.Reques
 		}
 		chunk, done := pending.nextBodyChunk()
 		if chunk != nil {
-			_, wErr := w.Write(chunk)
+			n, wErr := w.Write(chunk)
 			pending.releaseBodyChunk(chunk)
 			if wErr != nil {
 				return false
 			}
-			if canFlush {
+			unflushed += n
+			if canFlush && (unflushed >= maxUnflushedStreamBytes || !pending.hasQueuedBody()) {
 				flusher.Flush()
+				unflushed = 0
 			}
 			continue
 		}

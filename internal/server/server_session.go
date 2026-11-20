@@ -382,9 +382,17 @@ func (s *Server) readLoop(sess *session) {
 	for {
 		var msg tunnelproto.Message
 		if err := sess.transport.ReadMessage(&msg); err != nil {
-			if sess.transportName == "ws" && websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-				s.log.Warn("tunnel read error", "tunnel_id", sess.tunnelID, "transport", sess.transportName, "err", err)
-				return
+			if sess.transportName == "ws" {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+					s.log.Warn("tunnel read error", "tunnel_id", sess.tunnelID, "transport", sess.transportName, "err", err)
+					return
+				}
+				if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+					// A client exiting or dropping its connection is routine;
+					// "tunnel disconnected" already records it.
+					s.log.Debug("tunnel connection closed", "tunnel_id", sess.tunnelID, "err", err)
+					return
+				}
 			}
 			if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				s.log.Warn("tunnel read error", "tunnel_id", sess.tunnelID, "err", err)
@@ -749,7 +757,12 @@ func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent
 	}
 	// Query strings may carry tokens; log the path only.
 	uriPath, _, _ := strings.Cut(audit.event.RequestURI, "?")
-	s.log.Warn("waf audit: request blocked",
+	msg := "waf audit: request blocked"
+	if s.cfg.WAFAuditOnly {
+		msg = "waf audit: request matched"
+	}
+	// This is the only record per match: the middleware defers to OnBlock.
+	s.log.Warn(msg,
 		"rule", audit.event.Rule,
 		"tunnel_id", tunnelID,
 		"domain", domainName,

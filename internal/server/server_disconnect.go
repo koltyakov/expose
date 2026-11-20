@@ -66,6 +66,12 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 	defer timer.Stop()
 	var flushC <-chan time.Time
 
+	// ctx only signals shutdown. Store writes use storeCtx so the final drain,
+	// which runs after cancellation, can still record disconnects; during that
+	// drain storeCtx carries one overall deadline so a stalled database cannot
+	// hold shutdown for a timeout per tunnel.
+	storeCtx := context.WithoutCancel(ctx)
+
 	batch := make([]string, 0, disconnectBatchSize)
 	flush := func() {
 		timer.Stop()
@@ -90,13 +96,13 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 			return
 		}
 
-		disconnectCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
+		disconnectCtx, cancel := context.WithTimeout(storeCtx, disconnectTimeout)
 		err := s.store.SetTunnelsDisconnected(disconnectCtx, candidates)
 		cancel()
 		if err != nil {
 			s.log.Error("failed to mark tunnel batch disconnected", "count", len(candidates), "err", err)
 			for _, tunnelID := range candidates {
-				s.markTunnelDisconnectedNowLocked(ctx, tunnelID)
+				s.markTunnelDisconnectedNowLocked(storeCtx, tunnelID)
 			}
 		}
 		s.completeDisconnectBatch(toFlush)
@@ -106,6 +112,9 @@ func (s *Server) runDisconnectWorker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			drainCtx, cancelDrain := context.WithTimeout(storeCtx, disconnectTimeout)
+			defer cancelDrain()
+			storeCtx = drainCtx
 			drain := true
 			for drain {
 				select {

@@ -36,7 +36,8 @@ func runServer(ctx context.Context, args []string) int {
 	logger := ilog.New(cfg.LogLevel)
 
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
-	if isAutoUpdateEnabled() {
+	autoUpdate := autoUpdateActive(logger)
+	if autoUpdate {
 		if autoUpdateOnStart(ctx, Version, logger) {
 			return restartProcess(logger)
 		}
@@ -75,7 +76,7 @@ func runServer(ctx context.Context, args []string) int {
 
 	var needsRestart atomic.Bool
 	s := server.New(cfg, store, logger, Version)
-	if isAutoUpdateEnabled() {
+	if autoUpdate {
 		go startAutoUpdateLoop(serverCtx, Version, logger, s.UpdateChecks(), func() {
 			needsRestart.Store(true)
 			serverCancel()

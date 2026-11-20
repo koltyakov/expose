@@ -36,7 +36,10 @@ type ClientConfig struct {
 	PingInterval          time.Duration
 	MaxConcurrentForwards int
 	PprofListen           string
-	WAFIgnorePaths        []string
+	// LogLevel filters non-interactive client logs (debug|info|warn|error).
+	// Per-request lines are info, so warn keeps only problems.
+	LogLevel       string
+	WAFIgnorePaths []string
 }
 
 // ServerConfig holds all settings required by the expose HTTPS server.
@@ -141,6 +144,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		PingInterval:          defaultClientPingInterval,
 		MaxConcurrentForwards: envInt("EXPOSE_MAX_CONCURRENT_FORWARDS", 128, &envErrs),
 		PprofListen:           strings.TrimSpace(EnvOrDefault("EXPOSE_PPROF_LISTEN", "")),
+		LogLevel:              EnvOrDefault("EXPOSE_LOG_LEVEL", "info"),
 		WAFIgnorePaths:        splitCommaSeparated(EnvOrDefault("EXPOSE_WAF_IGNORE_PATHS", "")),
 	}
 	if err := errors.Join(envErrs...); err != nil {
@@ -156,6 +160,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs.IntVar(&cfg.LocalPort, "port", cfg.LocalPort, "Local upstream port on 127.0.0.1")
 	fs.StringVar(&cfg.Name, "domain", cfg.Name, "Requested tunnel subdomain (e.g. myapp)")
 	fs.StringVar(&cfg.PprofListen, "pprof-listen", cfg.PprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
+	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Non-interactive log level: debug|info|warn|error")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -166,6 +171,9 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	cfg.User = trimOrDefault(cfg.User, "admin")
 	cfg.Password = strings.TrimSpace(cfg.Password)
 	cfg.PprofListen = strings.TrimSpace(cfg.PprofListen)
+	// Unknown levels fall back to info, matching the server, so a shared .env
+	// cannot stop the client from starting.
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 	mode, err := access.NormalizeMode(cfg.ProtectMode)
 	if err != nil {
 		return cfg, err

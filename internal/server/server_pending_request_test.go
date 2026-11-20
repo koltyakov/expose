@@ -251,3 +251,78 @@ func TestPendingResponseAbortReleasesOnlyQueuedChunks(t *testing.T) {
 		})
 	}
 }
+
+type flushCountingRecorder struct {
+	*httptest.ResponseRecorder
+	flushes int
+}
+
+func (r *flushCountingRecorder) Flush() { r.flushes++ }
+
+func TestStreamedResponseFlushesQueuedChunksTogether(t *testing.T) {
+	t.Parallel()
+	pending := newPendingRequest()
+	pending.globalBudget = &byteBudget{limit: 1 << 20}
+	for i := range 5 {
+		if err := pending.sendBody(fmt.Appendf(make([]byte, 0, 64), "chunk-%d;", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending.finish()
+
+	rec := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	srv := &Server{}
+	if !srv.writeStreamedResponseBody(rec, httptest.NewRequest(http.MethodGet, "/", nil), pending, time.Second) {
+		t.Fatal("clean stream reported failure")
+	}
+	if got, want := rec.Body.String(), "chunk-0;chunk-1;chunk-2;chunk-3;chunk-4;"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	if rec.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1 for chunks queued together", rec.flushes)
+	}
+	if used := pending.globalBudget.used.Load(); used != 0 {
+		t.Fatalf("budget still holds %d bytes", used)
+	}
+}
+
+func TestStreamedResponseFlushesEachChunkThatArrivesAlone(t *testing.T) {
+	t.Parallel()
+	pending := newPendingRequest()
+	pending.globalBudget = &byteBudget{limit: 1 << 20}
+	rec := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	flushed := make(chan int, 4)
+	writer := &notifyingFlushRecorder{flushCountingRecorder: rec, flushed: flushed}
+	done := make(chan bool, 1)
+	go func() {
+		done <- (&Server{}).writeStreamedResponseBody(writer, httptest.NewRequest(http.MethodGet, "/", nil), pending, time.Second)
+	}()
+	for i := range 3 {
+		if err := pending.sendBody(fmt.Appendf(make([]byte, 0, 64), "event-%d;", i)); err != nil {
+			t.Fatal(err)
+		}
+		// Each event must reach the public client before the next one exists.
+		select {
+		case n := <-flushed:
+			if n != i+1 {
+				t.Fatalf("flush count = %d, want %d", n, i+1)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("event %d was not flushed", i)
+		}
+	}
+	pending.finish()
+	if !<-done {
+		t.Fatal("clean stream reported failure")
+	}
+}
+
+type notifyingFlushRecorder struct {
+	*flushCountingRecorder
+	flushed chan int
+}
+
+func (r *notifyingFlushRecorder) Flush() {
+	r.flushes++
+	r.flushed <- r.flushes
+}

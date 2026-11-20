@@ -50,7 +50,9 @@ type Config struct {
 	// nil, the middleware falls back to its standalone header-based resolver.
 	ClientAddr func(*http.Request) string
 	// OnBlock is called (if non-nil) every time the WAF blocks (or would
-	// block, in audit mode) a request.
+	// block, in audit mode) a request. A non-nil OnBlock owns logging: the
+	// middleware then emits no log record of its own, so each match is
+	// recorded once.
 	OnBlock func(BlockEvent)
 }
 
@@ -115,22 +117,20 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 				host := normalizeHost(r.Host)
 				userAgent := r.UserAgent()
 
-				logLevel := slog.LevelWarn
-				logMsg := "waf blocked request"
-				if fw.auditOnly {
-					logMsg = "waf matched request (audit)"
-				}
-
 				requestURI := redactedRequestURI(r)
-				fw.log.Log(r.Context(), logLevel, logMsg,
-					"rule", ruleName,
-					"method", r.Method,
-					"uri", requestURI,
-					"remote", clientIP,
-					"ua", userAgent,
-				)
-
-				if fw.onBlock != nil {
+				if fw.onBlock == nil {
+					logMsg := "waf blocked request"
+					if fw.auditOnly {
+						logMsg = "waf matched request (audit)"
+					}
+					fw.log.Log(r.Context(), slog.LevelWarn, logMsg,
+						"rule", ruleName,
+						"method", r.Method,
+						"uri", requestURI,
+						"remote", clientIP,
+						"ua", userAgent,
+					)
+				} else {
 					fw.onBlock(BlockEvent{
 						Host:       host,
 						Rule:       ruleName,

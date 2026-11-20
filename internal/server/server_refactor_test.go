@@ -342,3 +342,41 @@ func TestImmediateDisconnectDoesNotOverwriteReconnect(t *testing.T) {
 		t.Fatalf("disconnect writes = %d, want 1 for inactive tunnel", calls)
 	}
 }
+
+func TestDisconnectWorkerRecordsDrainedDisconnectsAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	recorded := make(chan error, 1)
+	store := &stubServerStore{
+		setTunnelsDisconnectedFn: func(ctx context.Context, tunnelIDs []string) error {
+			if len(tunnelIDs) != 1 || tunnelIDs[0] != "tun_shutdown" {
+				t.Errorf("unexpected tunnel IDs %v", tunnelIDs)
+			}
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("drain write has no deadline")
+			}
+			recorded <- ctx.Err()
+			return ctx.Err()
+		},
+	}
+	srv := &Server{
+		store:         store,
+		log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		activeTunnels: newActiveTunnelTracker(),
+		disconnects:   make(chan string, 1),
+	}
+	// Shutdown cancels the worker while a disconnect is still queued.
+	srv.queueTunnelDisconnect("tun_shutdown")
+	cancel()
+	srv.runDisconnectWorker(ctx)
+
+	select {
+	case err := <-recorded:
+		if err != nil {
+			t.Fatalf("drained disconnect used a canceled context: %v", err)
+		}
+	default:
+		t.Fatal("queued disconnect was not recorded during shutdown drain")
+	}
+}

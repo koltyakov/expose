@@ -140,3 +140,12 @@ func TestApplyInvalidSignatureDoesNotDownloadArchiveOrReplace(t *testing.T) {
 		})
 	}
 }
+
+func TestSupportedRequiresPinnedReleaseKeys(t *testing.T) {
+	original := releasesign.KeysJSON
+	t.Cleanup(func() { releasesign.KeysJSON = original })
+	releasesign.KeysJSON = "{}"
+	if err := Supported(); err == nil {
+		t.Fatal("Supported() = nil without pinned keys")
+	}
+}

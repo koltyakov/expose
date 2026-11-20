@@ -4,6 +4,7 @@ package log
 import (
 	"log/slog"
 	"os"
+	"strings"
 )
 
 // New creates a [slog.Logger] that writes to stdout at the given level
@@ -20,7 +21,7 @@ func NewStderr(level string) *slog.Logger {
 
 func newLogger(w *os.File, level string) *slog.Logger {
 	lvl := slog.LevelInfo
-	switch level {
+	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "debug":
 		lvl = slog.LevelDebug
 	case "warn":

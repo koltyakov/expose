@@ -162,6 +162,14 @@ func (p *pendingRequest) nextBodyChunk() (chunk []byte, done bool) {
 	}
 }
 
+// hasQueuedBody reports whether accepted body chunks are waiting for the
+// public writer.
+func (p *pendingRequest) hasQueuedBody() bool {
+	p.bodyMu.Lock()
+	defer p.bodyMu.Unlock()
+	return p.bodyLen > 0
+}
+
 func (p *pendingRequest) popBodyLocked() []byte {
 	chunk := p.bodyQueue[p.bodyHead]
 	p.bodyQueue[p.bodyHead] = nil

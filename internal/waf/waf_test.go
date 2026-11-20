@@ -842,3 +842,26 @@ func BenchmarkWAFMaliciousRequestDiscardLogger(b *testing.B) {
 		handler.ServeHTTP(rr, r)
 	}
 }
+
+func TestWAFLogsEachBlockOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, withHook := range []bool{false, true} {
+		var logs bytes.Buffer
+		events := 0
+		cfg := Config{Enabled: true}
+		if withHook {
+			cfg.OnBlock = func(BlockEvent) { events++ }
+		}
+		handler := NewMiddleware(cfg, slog.New(slog.NewTextHandler(&logs, nil)))(dummyHandler)
+		assertBlocked(t, handler, httptest.NewRequest(http.MethodGet, "/.env", nil))
+
+		lines := strings.Count(logs.String(), "\n")
+		switch {
+		case withHook && (events != 1 || lines != 0):
+			t.Fatalf("with OnBlock: events=%d log lines=%d, want 1 event and no middleware log", events, lines)
+		case !withHook && lines != 1:
+			t.Fatalf("without OnBlock: log lines=%d, want 1: %q", lines, logs.String())
+		}
+	}
+}

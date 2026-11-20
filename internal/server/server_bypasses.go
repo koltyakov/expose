@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -66,6 +67,14 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+					// The public client went away; nothing is wrong upstream
+					// and nobody is left to read a 502.
+					if s.log != nil {
+						s.log.Debug("local service request canceled by client", "host", normalizeHost(r.Host))
+					}
+					return
+				}
 				if s.log != nil {
 					s.log.Warn("local service proxy failed", "host", normalizeHost(r.Host), "err", err)
 				}

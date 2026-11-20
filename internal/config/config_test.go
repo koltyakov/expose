@@ -550,3 +550,21 @@ func TestParseServerFlagsPublicHTTP3IsOptIn(t *testing.T) {
 		t.Fatal("expected the flag to override the environment")
 	}
 }
+
+func TestParseClientFlagsLogLevel(t *testing.T) {
+	t.Setenv("EXPOSE_LOG_LEVEL", "")
+	cfg, err := ParseClientFlags([]string{"--port", "8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("default LogLevel = %q, want info", cfg.LogLevel)
+	}
+	t.Setenv("EXPOSE_LOG_LEVEL", " WARN ")
+	if cfg, err = ParseClientFlags([]string{"--port", "8080"}); err != nil || cfg.LogLevel != "warn" {
+		t.Fatalf("env LogLevel = %q, %v; want warn", cfg.LogLevel, err)
+	}
+	if cfg, err = ParseClientFlags([]string{"--port", "8080", "--log-level", "error"}); err != nil || cfg.LogLevel != "error" {
+		t.Fatalf("flag LogLevel = %q, %v; want error", cfg.LogLevel, err)
+	}
+}

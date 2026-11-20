@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -298,4 +300,44 @@ func TestBypassUnavailableAndOverloaded(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable || route.pending.Load() != 1 {
 		t.Fatalf("overloaded upstream: %d pending=%d", w.Code, route.pending.Load())
 	}
+}
+
+func TestBypassClientCancellationIsNotAnUpstreamFailure(t *testing.T) {
+	started := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	srv, st := newIncrementalTestServer(t)
+	var logs strings.Builder
+	srv.log = slog.New(slog.NewTextHandler(&syncWriter{w: &logs}, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	srv.cfg.Bypasses = []config.ServerBypass{{Subdomain: "app", Port: bypassTestPort(t, upstream)}}
+	srv.initBypasses(st)
+	handler := srv.httpHandler()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil).WithContext(ctx))
+	if w.Code == http.StatusBadGateway || strings.Contains(w.Body.String(), "upstream unavailable") {
+		t.Fatalf("canceled request answered as upstream failure: %d %q", w.Code, w.Body.String())
+	}
+	if strings.Contains(logs.String(), "local service proxy failed") {
+		t.Fatalf("client cancellation logged as proxy failure: %s", logs.String())
+	}
+}
+
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }

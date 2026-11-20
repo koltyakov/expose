@@ -225,6 +225,7 @@ func newStaticClientConfig(serverURL, apiKey, transport, name, protectMode strin
 		PingInterval:          defaultClientPingInterval,
 		MaxConcurrentForwards: parseIntEnv("EXPOSE_MAX_CONCURRENT_FORWARDS", 128),
 		PprofListen:           strings.TrimSpace(envOr("EXPOSE_PPROF_LISTEN", "")),
+		LogLevel:              strings.ToLower(strings.TrimSpace(envOr("EXPOSE_LOG_LEVEL", "info"))),
 	}
 }
 
@@ -344,7 +345,7 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 		c.SetTrafficSink(display)
 		logger = ilog.NewStderr("warn")
 	} else {
-		logger = ilog.New("info")
+		logger = ilog.New(cfg.LogLevel)
 	}
 	c.SetLogger(logger)
 	if err := debughttp.StartPprofServer(ctx, cfg.PprofListen, logger, "client"); err != nil {
@@ -353,7 +354,7 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 	}
 
 	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
-	if isAutoUpdateEnabled() {
+	if autoUpdateActive(logger) {
 		if autoUpdateOnStart(ctx, Version, logger) {
 			displayCleanup()
 			return restartProcess(logger)

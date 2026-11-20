@@ -15,12 +15,27 @@ import (
 const autoUpdateCheckInterval = 30 * time.Minute
 
 var autoUpdateCheckAndApply = selfupdate.CheckAndApply
+var autoUpdateSupported = selfupdate.Supported
 
 // isAutoUpdateEnabled reports whether the EXPOSE_AUTOUPDATE environment
 // variable is set to a truthy value (true, 1, yes).
 func isAutoUpdateEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("EXPOSE_AUTOUPDATE")))
 	return v == "true" || v == "1" || v == "yes"
+}
+
+// autoUpdateActive reports whether EXPOSE_AUTOUPDATE is enabled and this
+// build can verify release signatures. Builds without pinned release keys are
+// reported once instead of failing every periodic check.
+func autoUpdateActive(logger *slog.Logger) bool {
+	if !isAutoUpdateEnabled() {
+		return false
+	}
+	if err := autoUpdateSupported(); err != nil {
+		logger.Warn("auto-update: disabled; this build cannot verify release signatures", "err", err)
+		return false
+	}
+	return true
 }
 
 // autoUpdateOnStart performs a single update check. If a newer release is

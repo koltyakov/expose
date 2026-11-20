@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
@@ -279,5 +280,31 @@ func TestConcurrentStreamBurstsCompleteWithoutQueueRejections(t *testing.T) {
 	case msg := <-writer.async:
 		t.Fatalf("unexpected cancellation of an in-budget response: %s", msg.Kind)
 	default:
+	}
+}
+
+type closingRegressionTransport struct{ err error }
+
+func (t closingRegressionTransport) ReadMessage(*tunnelproto.Message) error { return t.err }
+func (closingRegressionTransport) SetReadLimit(int64)                       {}
+func (closingRegressionTransport) Close() error                             { return nil }
+
+func TestRoutineWebSocketTunnelCloseIsNotLoggedAsReadError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		warn bool
+	}{
+		{&websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "unexpected EOF"}, false},
+		{&websocket.CloseError{Code: websocket.CloseNormalClosure}, false},
+		{&websocket.CloseError{Code: websocket.CloseGoingAway}, false},
+		{&websocket.CloseError{Code: websocket.CloseProtocolError}, true},
+	} {
+		var logs strings.Builder
+		srv := New(config.ServerConfig{}, nil, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})), "test")
+		sess := &session{tunnelID: "ws-close", transportName: "ws", transport: closingRegressionTransport{tc.err}, writer: &blockedRegressionSessionWriter{}}
+		srv.readLoop(sess)
+		if got := strings.Contains(logs.String(), "tunnel read error"); got != tc.warn {
+			t.Fatalf("close %v: warned=%v, want %v; logs=%q", tc.err, got, tc.warn, logs.String())
+		}
 	}
 }

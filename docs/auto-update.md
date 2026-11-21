@@ -100,6 +100,8 @@ expose update
 
 This shows the current and available versions, prompts for confirmation (in interactive terminals), then downloads and replaces the binary.
 
+`expose update --check` only reports whether a release is available and exits `10` when one is, so scripts can branch on it without applying anything. `expose update --yes` skips the confirmation prompt. Unknown flags and arguments, including `--help`, never start an update.
+
 ## Hotkey Update (Client)
 
 While the client dashboard is running, press **Ctrl+U** to trigger an immediate update check and apply. The dashboard shows update availability:

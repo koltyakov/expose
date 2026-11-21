@@ -865,3 +865,27 @@ func TestWAFLogsEachBlockOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalDevelopmentReferrersAreNotSSRF(t *testing.T) {
+	handler := newTestMiddleware(t)
+	for _, origin := range []string{"http://localhost:3000", "http://127.0.0.1:5173", "http://[::1]:8080", "http://0.0.0.0:4200/app?x=1"} {
+		for _, name := range []string{"Origin", "Referer"} {
+			r := httptest.NewRequest(http.MethodPost, "/api/items", nil)
+			r.Header.Set(name, origin)
+			assertAllowed(t, handler, r)
+		}
+	}
+	// Other headers, and other rules on referrers, still apply.
+	r := httptest.NewRequest(http.MethodGet, "/api/fetch", nil)
+	r.Header.Set("X-Callback-Url", "http://127.0.0.1:8080/admin")
+	assertBlocked(t, handler, r)
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Referer", "http://169.254.169.254/latest/meta-data/")
+	assertBlocked(t, handler, r)
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Origin", "file:///etc/passwd")
+	assertBlocked(t, handler, r)
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Referer", "https://example.com/?q=<script>alert(1)</script>")
+	assertBlocked(t, handler, r)
+}

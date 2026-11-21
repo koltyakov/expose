@@ -45,7 +45,7 @@ func runAPIKeyCreate(ctx context.Context, args []string) int {
 	fs.StringVar(&pepper, "api-key-pepper", envOr("EXPOSE_API_KEY_PEPPER", ""), "hash pepper override")
 	fs.IntVar(&tunnelLimit, "tunnel-limit", defaultTunnelLimit, "max active tunnels for this key (-1 = unlimited)")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return flagParseExitCode(err, "")
 	}
 
 	store, code := openSQLiteStoreOrExit(dbPath)
@@ -83,7 +83,7 @@ func runAPIKeyList(ctx context.Context, args []string) int {
 	var dbPath string
 	fs.StringVar(&dbPath, "db", defaultDBPath(), "sqlite db path")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return flagParseExitCode(err, "")
 	}
 
 	store, code := openSQLiteStoreOrExit(dbPath)
@@ -113,7 +113,7 @@ func runAPIKeyRevoke(ctx context.Context, args []string) int {
 	fs.StringVar(&dbPath, "db", defaultDBPath(), "sqlite db path")
 	fs.StringVar(&id, "id", "", "key id")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return flagParseExitCode(err, "")
 	}
 	if id == "" {
 		fmt.Fprintln(os.Stderr, "missing --id")
@@ -158,7 +158,7 @@ func runAPIKeySetLimit(ctx context.Context, args []string) int {
 	fs.StringVar(&id, "id", "", "key id")
 	fs.IntVar(&tunnelLimit, "tunnel-limit", -1, "max active tunnels for this key (-1 = unlimited)")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return flagParseExitCode(err, "")
 	}
 	if id == "" {
 		fmt.Fprintln(os.Stderr, "missing --id")

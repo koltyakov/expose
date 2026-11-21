@@ -20,8 +20,17 @@ func writePublishedSiteResult(out io.Writer, site domain.PublishedSite, color bo
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s %s\n\n", style.Style(termui.Bold+termui.Green, "Published"), style.Style(termui.Bold, subdomain))
-	fmt.Fprintf(&b, "  %s%s\n", style.Style(termui.Dim, fmt.Sprintf("%-12s", "Public URL")), style.Style(termui.Bold+termui.Cyan, "https://"+hostname))
+	fmt.Fprintf(&b, "  %s%s\n", style.Style(termui.Dim, fmt.Sprintf("%-12s", "Public URL")), style.Style(termui.Bold+termui.Cyan, config.SanitizeTerminalString(publishedSiteURL(site))))
 	fmt.Fprintf(&b, "  %s%s\n\n", style.Style(termui.Dim, fmt.Sprintf("%-12s", "Expires")), expiry)
 	_, err := io.WriteString(out, b.String())
 	return err
+}
+
+// publishedSiteURL prefers the server-provided URL, which keeps non-default
+// ports; older servers only return the hostname.
+func publishedSiteURL(site domain.PublishedSite) string {
+	if site.URL != "" {
+		return site.URL
+	}
+	return "https://" + site.Hostname
 }

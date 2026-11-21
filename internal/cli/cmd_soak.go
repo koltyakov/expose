@@ -121,8 +121,7 @@ func runSoak(ctx context.Context, args []string) int {
 	fs.StringVar(&prefix, "prefix", prefix, "Subdomain prefix for temporary soak tunnels")
 	fs.StringVar(&pprofListen, "pprof-listen", pprofListen, "Optional pprof listen address (e.g. 127.0.0.1:6060)")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "soak command error:", err)
-		return 2
+		return flagParseExitCode(err, "soak command error:")
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "usage: expose soak --port 3000 [--count 100 --duration 10m]")

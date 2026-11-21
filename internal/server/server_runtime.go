@@ -119,11 +119,12 @@ func (s *Server) Run(ctx context.Context) error {
 	h3TLSConfig.MinVersion = tls.VersionTLS13
 	_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 	h3Server := &http3.Server{
-		Addr:        s.cfg.ListenHTTPS,
-		Handler:     handler,
-		TLSConfig:   h3TLSConfig,
-		QUICConfig:  netutil.TunnelQUICConfig(0),
-		IdleTimeout: durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
+		Addr:           s.cfg.ListenHTTPS,
+		Handler:        handler,
+		TLSConfig:      h3TLSConfig,
+		QUICConfig:     netutil.TunnelQUICConfig(0),
+		IdleTimeout:    durationOr(s.cfg.HTTPSIdleTimeout, httpsIdleTimeout),
+		MaxHeaderBytes: httpsMaxHeaderBytes,
 		ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
 			return context.WithValue(ctx, http3ConnContextKey{}, c)
 		},
@@ -199,8 +200,11 @@ func (s *Server) authorizeACMEHost(ctx context.Context, host string) error {
 		}
 		return nil
 	}
-	if st, ok := s.store.(siteStore); ok {
-		if _, err := st.FindPublishedSite(ctx, host); err == nil {
+	// autocert consults HostPolicy on every handshake, before its own cache.
+	// siteHosts is the in-memory index of published hosts, so only those
+	// reach the (cached) site lookup; tunnel and scanner SNIs skip it.
+	if _, published := s.siteHosts.Load(host); published {
+		if _, err := s.lookupPublishedSiteShared(ctx, host); err == nil {
 			if !s.allowACMEIssuance(host) {
 				return errors.New("certificate issuance rate limit exceeded")
 			}
@@ -335,6 +339,7 @@ func (s *Server) httpHandler() http.Handler {
 			BodyInspectLimit:     s.cfg.WAFBodyInspectLimit,
 			MaxURILength:         s.cfg.WAFMaxURILength,
 			MaxHeaderCount:       s.cfg.WAFMaxHeaderCount,
+			MaxHeaderBytes:       s.cfg.WAFMaxHeaderBytes,
 			ShouldInspectBody:    shouldInspectWAFBody,
 			ShouldIgnorePathRule: s.shouldIgnoreWAFPathRule,
 			ClientAddr:           s.clientIP,

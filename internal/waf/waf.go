@@ -40,6 +40,10 @@ type Config struct {
 	// MaxHeaderCount overrides the default maximum number of non-exempt
 	// headers (64). Requests exceeding this count are blocked.
 	MaxHeaderCount int
+	// MaxHeaderBytes overrides the default budget (32 KiB) for the total
+	// bytes of non-exempt header values scanned by rules. Larger requests
+	// are blocked as headers-too-large before any pattern runs.
+	MaxHeaderBytes int
 	// ShouldInspectBody allows callers to opt specific requests out of body
 	// inspection while still evaluating path, query, header, and UA rules.
 	ShouldInspectBody func(*http.Request) bool
@@ -64,6 +68,7 @@ type firewall struct {
 	bodyLimit     int64
 	maxURI        int
 	maxHeaders    int
+	maxHdrBytes   int
 	bodyGuard     func(*http.Request) bool
 	pathRuleGuard func(*http.Request, string) bool
 	clientAddr    func(*http.Request) string
@@ -98,6 +103,7 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 			bodyLimit:     cfg.BodyInspectLimit,
 			maxURI:        intOr(cfg.MaxURILength, maxURILength),
 			maxHeaders:    intOr(cfg.MaxHeaderCount, maxHeaderCount),
+			maxHdrBytes:   intOr(cfg.MaxHeaderBytes, maxHeaderBytes),
 			bodyGuard:     cfg.ShouldInspectBody,
 			pathRuleGuard: cfg.ShouldIgnorePathRule,
 			clientAddr:    cfg.ClientAddr,

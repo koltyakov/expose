@@ -56,6 +56,7 @@ Every setting can be provided as a CLI flag or environment variable. Environment
 | -                         | `EXPOSE_WAF_BODY_INSPECT_LIMIT`  | `16384`       | Max public request-body bytes the WAF inspects (`0` disables)  |
 | -                         | `EXPOSE_WAF_MAX_URI_LENGTH`      | `8192`        | Maximum request URI length before the WAF blocks it             |
 | -                         | `EXPOSE_WAF_MAX_HEADER_COUNT`    | `64`          | Maximum non-exempt header-value count before the WAF blocks it  |
+| -                         | `EXPOSE_WAF_MAX_HEADER_BYTES`    | `32768`       | Maximum total non-exempt header-value bytes the WAF scans before blocking the request (`headers-too-large`). Public listeners reject headers over 64 KiB first |
 | -                         | `EXPOSE_MAX_PENDING_PER_TUNNEL`  | `128`         | Max in-flight public HTTP requests per active tunnel           |
 | `--max-queued-response-bytes` | `EXPOSE_MAX_QUEUED_RESPONSE_BYTES` | `134217728` | Global retained HTTP body queue capacity for multiplexed tunnels, 128 MiB |
 | `--max-queued-response-bytes-per-tunnel` | `EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL` | `16777216` | Per-tunnel retained HTTP body queue capacity, 16 MiB |
@@ -175,6 +176,7 @@ EXPOSE_WAF_AUDIT_ONLY=false
 EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
 EXPOSE_WAF_MAX_URI_LENGTH=8192
 EXPOSE_WAF_MAX_HEADER_COUNT=64
+EXPOSE_WAF_MAX_HEADER_BYTES=32768
 EXPOSE_PUBLIC_RATE_LIMIT_RPS=0
 EXPOSE_PUBLIC_RATE_LIMIT_BURST=0
 EXPOSE_ACME_ISSUE_RATE_PER_HOUR=10

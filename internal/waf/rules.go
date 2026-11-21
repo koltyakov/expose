@@ -115,6 +115,9 @@ type rule struct {
 	// TestRuleTriggerGroupsCoverEveryAlternative proves each group list
 	// against the compiled pattern.
 	triggerGroups [][]string
+	// skipReferrers excludes Origin and Referer header values, which carry
+	// the requesting page's URL rather than attacker-supplied targets.
+	skipReferrers bool
 	// asciiMatcher, when set, decides ASCII inputs in place of pattern and
 	// receives the ASCII-lowercased value. It must report exactly what
 	// pattern reports for every ASCII input; pattern still decides the rest.
@@ -271,11 +274,15 @@ func builtinRules() []rule {
 		{
 			name:     "xss",
 			triggers: []string{"<", "javascript", "on", "document", "alert", "confirm", "prompt", "eval"},
-			// Bare "on" occurs in ordinary words ("Version" in Safari's UA);
-			// the handler branch also needs '=', and the call and property
+			// Bare "on" occurs in ordinary words ("Version" in Safari's UA,
+			// "session=" in nearly every cookie); the handler branch needs a
+			// separator before "on" and '=', and the call and property
 			// branches need their punctuation.
 			triggerGroups: [][]string{
-				{"<"}, {"javascript", ":"}, {"on", "="}, {"document", "."},
+				{"<"}, {"javascript", ":"},
+				{" on", "="}, {"\ton", "="}, {"\non", "="}, {"\fon", "="}, {"\ron", "="},
+				{"\"on", "="}, {"'on", "="}, {"/on", "="}, {"`on", "="},
+				{"document", "."},
 				{"alert", "("}, {"confirm", "("}, {"prompt", "("}, {"eval", "("},
 			},
 			targets: targetPath | targetQuery | targetHeaders | targetBody,
@@ -415,7 +422,7 @@ func builtinRules() []rule {
 		},
 		{
 			name:     "ssrf",
-			triggers: []string{"169.254.169.254", "metadata.google.internal", "100.100.100.200", "http", "file://", "gopher://"},
+			triggers: []string{"169.254.169.254", "metadata.google.internal", "100.100.100.200", "file://", "gopher://"},
 			targets:  targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
@@ -423,13 +430,24 @@ func builtinRules() []rule {
 					`169\.254\.169\.254` +
 					`|metadata\.google\.internal` +
 					`|100\.100\.100\.200` + // Alibaba metadata
-					// Internal network ranges in URL context
-					`|(?:https?://)(?:127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\])` +
 					// file:// and gopher:// schemes
 					`|\bfile://` +
 					`|\bgopher://` +
 					`)`,
 			),
+		},
+		{
+			// Loopback URLs are split from the rule above so Origin and
+			// Referer can skip only this branch: a local front end on
+			// http://localhost:3000 calling a tunnel is the normal case, while
+			// metadata and file:// targets stay blocked in every header.
+			name: "ssrf",
+			// "://host" rather than "http": every Referer and Origin carries
+			// "http", which sent ordinary browser requests to the regex.
+			triggers:      []string{"://127.0.0.1", "://0.0.0.0", "://localhost", "://[::1]"},
+			targets:       targetQuery | targetHeaders | targetBody,
+			skipReferrers: true,
+			pattern:       regexp.MustCompile(`(?i)(?:https?://)(?:127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\])`),
 		},
 		{
 			name:     "xxe",

@@ -130,8 +130,11 @@ func (s *Server) runSitePresence(conn *websocket.Conn, site domain.PublishedSite
 		case <-ticker.C:
 			// Recheck ownership, expiry and opt-in after each interval, including
 			// revoked API keys and publications replaced while this tab was open.
+			// The lookup cache is invalidated on republish and cleared by the
+			// heartbeat sweep, so revocations still close sockets promptly
+			// without one store query per open socket per tick.
 			ctx, cancel := context.WithTimeout(s.serverContext(), 5*time.Second)
-			current, err := s.store.(siteStore).FindPublishedSite(ctx, site.Hostname)
+			current, err := s.lookupPublishedSiteShared(ctx, site.Hostname)
 			cancel()
 			if err != nil || current.ID != site.ID || !current.WS {
 				return

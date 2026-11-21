@@ -20,6 +20,9 @@ import (
 
 // ClientConfig holds all settings required by the tunnel client.
 type ClientConfig struct {
+	// ReadyTimeout, when positive, makes the client exit with an error if no
+	// tunnel becomes ready within this long after start. Zero retries forever.
+	ReadyTimeout          time.Duration
 	Profile               string
 	ServerURL             string
 	APIKey                string
@@ -82,6 +85,7 @@ type ServerConfig struct {
 	WAFBodyInspectLimit             int64
 	WAFMaxURILength                 int
 	WAFMaxHeaderCount               int
+	WAFMaxHeaderBytes               int
 	MaxPendingPerTunnel             int
 	MaxQueuedResponseBytes          int64
 	MaxQueuedResponseBytesPerTunnel int64
@@ -156,6 +160,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 		LogFormat:             EnvOrDefault("EXPOSE_LOG_FORMAT", "text"),
 		OmitRequestLogs:       !envBool("EXPOSE_LOG_REQUESTS", true, &envErrs),
 		WAFIgnorePaths:        splitCommaSeparated(EnvOrDefault("EXPOSE_WAF_IGNORE_PATHS", "")),
+		ReadyTimeout:          envDuration("EXPOSE_READY_TIMEOUT", 0, &envErrs),
 	}
 	if err := errors.Join(envErrs...); err != nil {
 		return cfg, err
@@ -175,6 +180,7 @@ func ParseClientFlags(args []string) (ClientConfig, error) {
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Non-interactive log level: debug|info|warn|error")
 	fs.BoolVar(&logRequests, "log-requests", logRequests, "Log each forwarded request when output is not a terminal")
 	fs.BoolVar(&jsonOutput, "json", jsonOutput, "Print JSON log lines instead of the terminal dashboard")
+	fs.DurationVar(&cfg.ReadyTimeout, "ready-timeout", cfg.ReadyTimeout, "Exit with an error if no tunnel is ready within this duration (0 retries forever)")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -297,6 +303,7 @@ func ParseServerFlags(args []string) (ServerConfig, error) {
 		WAFBodyInspectLimit:             envInt64("EXPOSE_WAF_BODY_INSPECT_LIMIT", 16*1024, &envErrs),
 		WAFMaxURILength:                 envInt("EXPOSE_WAF_MAX_URI_LENGTH", 0, &envErrs),
 		WAFMaxHeaderCount:               envInt("EXPOSE_WAF_MAX_HEADER_COUNT", 0, &envErrs),
+		WAFMaxHeaderBytes:               envInt("EXPOSE_WAF_MAX_HEADER_BYTES", 0, &envErrs),
 		MaxPendingPerTunnel:             envInt("EXPOSE_MAX_PENDING_PER_TUNNEL", 128, &envErrs),
 		MaxQueuedResponseBytes:          envInt64("EXPOSE_MAX_QUEUED_RESPONSE_BYTES", DefaultMaxQueuedResponseBytes, &envErrs),
 		MaxQueuedResponseBytesPerTunnel: envInt64("EXPOSE_MAX_QUEUED_RESPONSE_BYTES_PER_TUNNEL", DefaultMaxQueuedResponseBytesPerTunnel, &envErrs),

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sync"
 	"time"
 
@@ -22,6 +24,31 @@ type siteLookupCache struct {
 	// before one cannot cache its stale result afterwards.
 	gen     uint64
 	entries map[string]domain.PublishedSite
+	// misses records hosts still in siteHosts whose site the store no longer
+	// serves (owner key revoked, or expired before cleanup). Only siteHosts
+	// members are looked up, so this is bounded by the number of sites.
+	misses map[string]struct{}
+}
+
+// missing reports whether host was recently confirmed absent.
+func (c *siteLookupCache) missing(host string) bool {
+	c.mu.RLock()
+	_, ok := c.misses[host]
+	c.mu.RUnlock()
+	return ok
+}
+
+// putMiss caches an absent host unless the cache was invalidated since gen.
+func (c *siteLookupCache) putMiss(host string, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen {
+		return
+	}
+	if c.misses == nil {
+		c.misses = make(map[string]struct{})
+	}
+	c.misses[host] = struct{}{}
 }
 
 // get returns the cached site for host unless it has expired by now.
@@ -61,6 +88,7 @@ func (c *siteLookupCache) invalidate(host string) {
 	defer c.mu.Unlock()
 	c.gen++
 	delete(c.entries, host)
+	delete(c.misses, host)
 }
 
 // clear forgets every host, so the next request for each rereads the store.
@@ -69,6 +97,7 @@ func (c *siteLookupCache) clear() {
 	defer c.mu.Unlock()
 	c.gen++
 	c.entries = nil
+	c.misses = nil
 }
 
 // lookupPublishedSite resolves host through the lookup cache, falling back to
@@ -78,10 +107,27 @@ func (s *Server) lookupPublishedSite(ctx context.Context, st siteStore, host str
 	if site, ok := s.siteLookups.get(host, time.Now()); ok {
 		return site, nil
 	}
+	if s.siteLookups.missing(host) {
+		return domain.PublishedSite{}, sql.ErrNoRows
+	}
 	gen := s.siteLookups.generation()
 	site, err := st.FindPublishedSite(ctx, host)
 	if err == nil {
 		s.siteLookups.put(host, site, gen)
+	} else if errors.Is(err, sql.ErrNoRows) {
+		s.siteLookups.putMiss(host, gen)
 	}
 	return site, err
+}
+
+// lookupPublishedSiteShared is lookupPublishedSite for callers that do not
+// already hold sitesMu.
+func (s *Server) lookupPublishedSiteShared(ctx context.Context, host string) (domain.PublishedSite, error) {
+	st, ok := s.store.(siteStore)
+	if !ok {
+		return domain.PublishedSite{}, sql.ErrNoRows
+	}
+	s.sitesMu.RLock()
+	defer s.sitesMu.RUnlock()
+	return s.lookupPublishedSite(ctx, st, host)
 }

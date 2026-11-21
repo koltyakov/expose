@@ -16,7 +16,7 @@ Usage:
   expose http <port> --domain=myapp     Expose with a named subdomain
                                         --protect enables form protection, --protect=basic opts into Basic Auth
                                         --protect=upstream-basic delegates form credentials to your app's Basic Auth
-                                        --json --log-requests=false: quiet JSON lines for scripts and agents
+                                        --json --log-requests=false --ready-timeout=30s: quiet JSON lines for scripts and agents
   expose static [dir]                   Expose a static directory (stable default subdomain)
                                         --folders enables listings, --spa enables root index fallback
   expose pub <dir>                     Upload and host a static site on the server
@@ -44,7 +44,7 @@ Usage:
   expose apikey create --name NAME      Create a new API key
   expose apikey list                    List all API keys
   expose apikey revoke --id=ID          Revoke an API key
-  expose update                         Update to the latest release
+  expose update                         Update to the latest release (--check, --yes)
   expose version                        Print the local binary's version
   expose help                           Show this help
 
@@ -73,19 +73,19 @@ Environment Variables:
   EXPOSE_MAX_CONCURRENT_FORWARDS  Per-client local forward concurrency (default: 128)
   EXPOSE_WAF_IGNORE_PATHS  Comma-separated URL prefixes ignored by the WAF sensitive-file rule
   EXPOSE_TLS_MODE         TLS mode: auto|dynamic|wildcard (default: auto)
-	  EXPOSE_PUBLISH_DIR      Published site storage directory (default: <db path>.sites)
-	  EXPOSE_PUBLISH_MAX_BYTES  Maximum extracted bytes per published site (default: 10485760)
-	  EXPOSE_PUBLISH_UPLOAD_IDLE_TIMEOUT  Site upload read inactivity timeout (default: 30s)
-	  EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS  Active site uploads globally (default: 8)
-	  EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS_PER_KEY  Active site uploads per API key (default: 2)
-	  EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
-	  EXPOSE_DB_MAX_OPEN_CONNS  SQLite max open connections (default: 10)
-	  EXPOSE_DB_MAX_IDLE_CONNS  SQLite max idle connections (default: 10)
-	  EXPOSE_ACCESS_COOKIE_SECRET  Secret used to sign protected-route access cookies
-	  EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
-	  EXPOSE_LOG_FORMAT       Log format: text|json (default: text; json also replaces the client dashboard)
-	  EXPOSE_LOG_REQUESTS     Client: log each forwarded request when not on a terminal (default: true)
-	  EXPOSE_WAF_ENABLE       Enable the built-in WAF (default: true)
+  EXPOSE_PUBLISH_DIR      Published site storage directory (default: <db path>.sites)
+  EXPOSE_PUBLISH_MAX_BYTES  Maximum extracted bytes per published site (default: 10485760)
+  EXPOSE_PUBLISH_UPLOAD_IDLE_TIMEOUT  Site upload read inactivity timeout (default: 30s)
+  EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS  Active site uploads globally (default: 8)
+  EXPOSE_PUBLISH_MAX_CONCURRENT_UPLOADS_PER_KEY  Active site uploads per API key (default: 2)
+  EXPOSE_DB_PATH          SQLite database path (default: ./expose.db)
+  EXPOSE_DB_MAX_OPEN_CONNS  SQLite max open connections (default: 10)
+  EXPOSE_DB_MAX_IDLE_CONNS  SQLite max idle connections (default: 10)
+  EXPOSE_ACCESS_COOKIE_SECRET  Secret used to sign protected-route access cookies
+  EXPOSE_LOG_LEVEL        Log level: debug|info|warn|error (default: info)
+  EXPOSE_LOG_FORMAT       Log format: text|json (default: text; json also replaces the client dashboard)
+  EXPOSE_LOG_REQUESTS     Client: log each forwarded request when not on a terminal (default: true)
+  EXPOSE_WAF_ENABLE       Enable the built-in WAF (default: true)
   EXPOSE_WAF_AUDIT_ONLY   Run WAF in dry-run mode without blocking (default: false)
   EXPOSE_WAF_BODY_INSPECT_LIMIT  Public request-body bytes inspected by the WAF (default: 16384, 0 disables)
   EXPOSE_MAX_PENDING_PER_TUNNEL   Per-tunnel in-flight request cap on the server (default: 128)

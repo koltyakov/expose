@@ -4,17 +4,23 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
+
+// bypassFailureLogWindow is how long an identical local-service failure is
+// logged once at WARN; repeats inside it go to DEBUG and are counted.
+const bypassFailureLogWindow = time.Minute
 
 type serverBypass struct {
 	config.ServerBypass
@@ -76,7 +82,14 @@ func (s *Server) initBypasses(store *sqlite.Store) {
 					return
 				}
 				if s.log != nil {
-					s.log.Warn("local service proxy failed", "host", normalizeHost(r.Host), "err", err)
+					host := normalizeHost(r.Host)
+					if ok, suppressed := s.bypassFailureLogs.allow(host + "\x00" + bypassFailureClass(err)); !ok {
+						s.log.Debug("local service proxy failed", "host", host, "err", err)
+					} else if suppressed > 0 {
+						s.log.Warn("local service proxy failed", "host", host, "err", err, "repeats_suppressed", suppressed)
+					} else {
+						s.log.Warn("local service proxy failed", "host", host, "err", err)
+					}
 				}
 				http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			},
@@ -177,4 +190,22 @@ func (s *Server) serveBypass(w http.ResponseWriter, r *http.Request, host string
 		panic(http.ErrAbortHandler)
 	}
 	return true
+}
+
+// bypassFailureClass groups proxy errors for log collapsing. Raw messages
+// carry ephemeral ports, so keying on them would never repeat.
+func bypassFailureClass(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "reset"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "eof"
+	default:
+		return "other"
+	}
 }

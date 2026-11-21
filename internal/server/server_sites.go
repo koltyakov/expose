@@ -119,6 +119,9 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			s.siteError(w, err)
 			return
 		}
+		for i := range sites {
+			sites[i] = withSiteURL(r, sites[i])
+		}
 		writeJSON(w, http.StatusOK, sites)
 		return
 	}
@@ -137,7 +140,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		if statsRequest {
 			s.writeSiteStats(w, r, site)
 		} else {
-			writeJSON(w, http.StatusOK, site)
+			writeJSON(w, http.StatusOK, withSiteURL(r, site))
 		}
 	case http.MethodDelete:
 		if err := s.deleteSite(r.Context(), st, site); err != nil {
@@ -388,7 +391,18 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 			s.removeRetiredSiteDir(previousDir)
 		}
 	}
-	writeJSON(w, status, site)
+	writeJSON(w, status, withSiteURL(r, site))
+}
+
+// withSiteURL sets the public URL clients should print, keeping the port the
+// API was reached on when it is not the HTTPS default.
+func withSiteURL(r *http.Request, site domain.PublishedSite) domain.PublishedSite {
+	host := site.Hostname
+	if port := authorityPort(r.Host); port != "" && port != "443" {
+		host = net.JoinHostPort(host, port)
+	}
+	site.URL = "https://" + host
+	return site
 }
 
 func siteSourceID(raw string) (string, error) {

@@ -71,6 +71,9 @@ func referenceCheck(fw *firewall, r *http.Request) (bool, string) {
 	if view.tooManyHdrs {
 		return true, "too-many-headers"
 	}
+	if view.headersTooBig {
+		return true, "headers-too-large"
+	}
 	var overflow bool
 	view.bodyValues, overflow = collectBodyValues(r, fw.bodyLimit, fw.bodyGuard)
 	if overflow {
@@ -201,4 +204,36 @@ func TestWAFRulePriorityWithBody(t *testing.T) {
 			t.Fatalf("matched = %v/%q, want %q", got, rule, tt.want)
 		}
 	}
+}
+
+func TestHeaderBytesBudget(t *testing.T) {
+	t.Parallel()
+	handler := newTestMiddleware(t)
+	at := httptest.NewRequest(http.MethodGet, "/", nil)
+	at.Header.Set("Cookie", strings.Repeat("a", maxHeaderBytes))
+	assertAllowed(t, handler, at)
+
+	over := httptest.NewRequest(http.MethodGet, "/", nil)
+	over.Header.Set("Cookie", strings.Repeat("a", maxHeaderBytes/2))
+	over.Header.Set("X-Extra", strings.Repeat("b", maxHeaderBytes/2+1))
+	if matched, rule := newRequestViewLimitsRule(over); !matched || rule != "headers-too-large" {
+		t.Fatalf("over budget: matched=%v rule=%q, want headers-too-large", matched, rule)
+	}
+	assertBlocked(t, handler, over)
+	if view := newRequestView(over, maxURILength, maxHeaderCount); !view.headersTooBig || len(view.headerValues) != 0 {
+		t.Fatal("header budget rejection prepared scan inputs")
+	}
+
+	// Exempt headers are not scanned, so they do not spend the budget.
+	exempt := httptest.NewRequest(http.MethodGet, "/", nil)
+	exempt.Header.Set("Authorization", "Bearer "+strings.Repeat("c", 2*maxHeaderBytes))
+	assertAllowed(t, handler, exempt)
+
+	custom := newTestMiddlewareWithConfig(t, Config{Enabled: true, MaxHeaderBytes: 64 << 10})
+	assertAllowed(t, custom, over)
+}
+
+func newRequestViewLimitsRule(r *http.Request) (bool, string) {
+	fw := &firewall{rules: defaultRules(), maxURI: maxURILength, maxHeaders: maxHeaderCount, maxHdrBytes: maxHeaderBytes}
+	return fw.check(r)
 }

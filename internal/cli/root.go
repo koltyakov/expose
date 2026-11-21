@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/koltyakov/expose/internal/selfupdate"
@@ -56,7 +57,7 @@ func Run(args []string) int {
 	case "apikey":
 		return runAPIKeyAdmin(ctx, args[1:])
 	case "update":
-		return runUpdate(ctx)
+		return runUpdate(ctx, args[1:])
 	case "version", "--version", "-v":
 		printVersion()
 		return 0
@@ -64,6 +65,13 @@ func Run(args []string) int {
 		printUsage()
 		return 0
 	default:
+		// Flag-only invocations (expose --port 3000) keep running the raw
+		// client. A bare word is a mistyped command: running a tunnel from it
+		// would silently ignore every flag after the word.
+		if !strings.HasPrefix(args[0], "-") {
+			fmt.Fprintf(os.Stderr, "expose: unknown command %q (see expose --help)\n", args[0])
+			return 2
+		}
 		return runClient(ctx, args)
 	}
 }

@@ -78,16 +78,17 @@ The API also defaults to seven days and accepts a `retention` query parameter, f
 | `--log-level` (`http`) | `EXPOSE_LOG_LEVEL`         | Log level when output is not a terminal: `debug`, `info` (default), `warn`, `error`. Each forwarded request is an `info` line; `warn` keeps only problems |
 | `--log-requests` (`http`) | `EXPOSE_LOG_REQUESTS`   | Log each forwarded request when output is not a terminal (default: `true`). `false` keeps lifecycle lines such as `tunnel ready` |
 | `--json` (`http`) | `EXPOSE_LOG_FORMAT=json`        | Print one JSON object per log line instead of the terminal dashboard, even on a terminal |
+| `--ready-timeout` (`http`, `static`) | `EXPOSE_READY_TIMEOUT` | Exit nonzero if no tunnel is ready within this duration, e.g. `30s` (default `0`: retry forever). Later outages still reconnect indefinitely |
 
 ## Scripts, CI and AI agents
 
 When output is not a terminal, or with `--json`, the client prints log records instead of the dashboard. For a quiet, machine-readable stream that still reports the public URL, start the tunnel with:
 
 ```bash
-expose http 3000 --json --log-requests=false
+expose http 3000 --json --log-requests=false --ready-timeout=30s
 ```
 
-The first record is `tunnel ready` with `public_url`; later records report reconnects, warnings and errors. `EXPOSE_LOG_FORMAT=json` and `EXPOSE_LOG_REQUESTS=false` do the same for `static` and `up`. Use `expose list --json` to look up tunnels from another process.
+The first record is `tunnel ready` with `public_url`; later records report reconnects, warnings and errors. With `--json`, a fatal error is a final `client stopped` record with `err`, followed by a nonzero exit; `--ready-timeout` bounds the wait for the first `tunnel ready` when the server is unreachable. Prompts only run when stdin is a terminal, so a closed or `/dev/null` stdin fails fast with an explanation instead of waiting. `EXPOSE_LOG_FORMAT=json` and `EXPOSE_LOG_REQUESTS=false` do the same for `static` and `up`. Use `expose list --json` to look up tunnels from another process.
 
 ## Command-Specific Flags
 

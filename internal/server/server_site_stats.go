@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"io"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -208,7 +209,7 @@ func (s *Server) writeSiteStats(w http.ResponseWriter, r *http.Request, site dom
 	}
 	stats := s.statsForSite(site.ID).snapshot(time.Now().UTC())
 	stats.FileCount, stats.FileBytes = count, size
-	stats.Site, stats.ServerVersion = site, s.version
+	stats.Site, stats.ServerVersion = withSiteURL(r, site), s.version
 	stats.ServerTLSMode = s.serverTLSMode()
 	stats.WAFEnabled, stats.WAFAuditOnly = s.cfg.WAFEnabled, s.cfg.WAFAuditOnly
 	writeJSON(w, http.StatusOK, stats)
@@ -279,6 +280,26 @@ func (w *siteStatsWriter) WriteHeader(status int) {
 		w.status = status
 	}
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// ReadFrom keeps the response's optimized copy path (sendfile on HTTP/1.1)
+// visible through the stats wrapper; without it publication bodies fell back
+// to a buffered io.Copy with a fresh buffer per response.
+func (w *siteStatsWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	var (
+		n   int64
+		err error
+	)
+	if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		n, err = readerFrom.ReadFrom(r)
+	} else {
+		n, err = io.Copy(struct{ io.Writer }{w.ResponseWriter}, r)
+	}
+	w.bytes += n
+	return n, err
 }
 
 func (w *siteStatsWriter) Write(p []byte) (int, error) {

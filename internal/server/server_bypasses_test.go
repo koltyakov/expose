@@ -8,9 +8,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -340,4 +342,20 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.w.Write(p)
+}
+
+func TestBypassFailureClassIgnoresEphemeralDetails(t *testing.T) {
+	t.Parallel()
+	refusedA := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	resetA := &net.OpError{Op: "read", Net: "tcp", Source: &net.TCPAddr{Port: 50001}, Err: os.NewSyscallError("read", syscall.ECONNRESET)}
+	resetB := &net.OpError{Op: "read", Net: "tcp", Source: &net.TCPAddr{Port: 50002}, Err: os.NewSyscallError("read", syscall.ECONNRESET)}
+	if got := bypassFailureClass(refusedA); got != "refused" {
+		t.Fatalf("refused class = %q", got)
+	}
+	if a, b := bypassFailureClass(resetA), bypassFailureClass(resetB); a != "reset" || a != b {
+		t.Fatalf("resets from different ports classified %q and %q", a, b)
+	}
+	if got := bypassFailureClass(context.DeadlineExceeded); got != "timeout" {
+		t.Fatalf("deadline class = %q", got)
+	}
 }

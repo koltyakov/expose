@@ -49,7 +49,10 @@ func runHTTP(ctx context.Context, args []string) int {
 	fs.StringVar(&transport, "transport", transport, "Tunnel transport: ws|quic")
 	output := registerClientOutputFlags(fs)
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "http command error:", err)
+		return flagParseExitCode(err, "http command error:")
+	}
+	if output.envErr != nil {
+		fmt.Fprintln(os.Stderr, "http command error:", output.envErr)
 		return 2
 	}
 
@@ -123,7 +126,10 @@ func runStatic(ctx context.Context, args []string) int {
 	fs.Var(&allowPatterns, "allow", "Allow blocked static paths matching a glob pattern (repeatable, e.g. .well-known/**)")
 	output := registerClientOutputFlags(fs)
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "static command error:", err)
+		return flagParseExitCode(err, "static command error:")
+	}
+	if output.envErr != nil {
+		fmt.Fprintln(os.Stderr, "static command error:", output.envErr)
 		return 2
 	}
 
@@ -245,7 +251,7 @@ func runClientLogin(ctx context.Context, args []string) int {
 	fs.StringVar(&serverURL, "server", serverURL, "Server URL (e.g. https://example.com)")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return flagParseExitCode(err, "")
 	}
 	path, err := settings.ProfilePath(profile)
 	if err != nil {
@@ -334,7 +340,9 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 	c.SetVersion(Version)
 
 	if isInteractiveOutput() && ilog.NormalizeFormat(cfg.LogFormat) != ilog.FormatJSON {
-		display = client.NewDisplay(true)
+		// NO_COLOR (https://no-color.org) disables styling; the live dashboard
+		// still redraws in place.
+		display = client.NewDisplay(os.Getenv("NO_COLOR") == "")
 		cleaned := false
 		displayCleanup = func() {
 			if cleaned || display == nil {
@@ -408,6 +416,11 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 				return restartProcess(logger)
 			}
 			if err != nil {
+				if display == nil && ilog.NormalizeFormat(cfg.LogFormat) == ilog.FormatJSON {
+					// Also record the fatal error in the NDJSON stream scripts
+					// and agents already parse for "tunnel ready".
+					logger.Error("client stopped", "err", err.Error())
+				}
 				fmt.Fprintln(os.Stderr, "client error:", err)
 				return 1
 			}
@@ -555,9 +568,11 @@ func normalizeServerURL(raw string) (string, error) {
 // defaults come from EXPOSE_LOG_LEVEL, EXPOSE_LOG_REQUESTS and
 // EXPOSE_LOG_FORMAT, so flags only override the environment.
 type clientOutputFlags struct {
-	level    string
-	requests bool
-	json     bool
+	level        string
+	requests     bool
+	json         bool
+	readyTimeout time.Duration
+	envErr       error // invalid EXPOSE_* default, reported after parsing
 }
 
 func registerClientOutputFlags(fs *flag.FlagSet) *clientOutputFlags {
@@ -569,16 +584,19 @@ func registerClientOutputFlags(fs *flag.FlagSet) *clientOutputFlags {
 	fs.StringVar(&o.level, "log-level", o.level, "Log level when output is not a terminal: debug|info|warn|error")
 	fs.BoolVar(&o.requests, "log-requests", o.requests, "Log each forwarded request when output is not a terminal")
 	fs.BoolVar(&o.json, "json", o.json, "Print JSON log lines instead of the terminal dashboard")
+	o.readyTimeout, o.envErr = parseDurationEnv("EXPOSE_READY_TIMEOUT", 0)
+	fs.DurationVar(&o.readyTimeout, "ready-timeout", o.readyTimeout, "Exit with an error if no tunnel is ready within this duration (0 retries forever)")
 	return o
 }
 
 func (o *clientOutputFlags) args() []string {
-	return []string{"--log-level", o.level, "--log-requests=" + strconv.FormatBool(o.requests), "--json=" + strconv.FormatBool(o.json)}
+	return []string{"--log-level", o.level, "--log-requests=" + strconv.FormatBool(o.requests), "--json=" + strconv.FormatBool(o.json), "--ready-timeout=" + o.readyTimeout.String()}
 }
 
 func (o *clientOutputFlags) apply(cfg *config.ClientConfig) {
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(o.level))
 	cfg.OmitRequestLogs = !o.requests
+	cfg.ReadyTimeout = o.readyTimeout
 	cfg.LogFormat = ilog.FormatText
 	if o.json {
 		cfg.LogFormat = ilog.FormatJSON

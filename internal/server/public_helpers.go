@@ -100,7 +100,7 @@ func (s *Server) allowPublicRouteLookup(host string, r *http.Request) bool {
 	if _, _, cached := s.routes.lookup(host); cached {
 		return true
 	}
-	return s.lookupLimiter == nil || s.lookupLimiter.allow(s.clientIP(r))
+	return s.lookupLimiter == nil || s.lookupLimiter.allow(rateLimitClientKey(s.clientIP(r)))
 }
 
 func (s *Server) resolvePublicSession(snap liveRouteSnapshot) (*session, int, string, bool) {
@@ -127,7 +127,7 @@ func (s *Server) allowPublicRequest(route domain.TunnelRoute, r *http.Request) b
 
 func publicRateLimitKey(host, clientIP string) string {
 	host = normalizeHost(host)
-	clientIP = strings.TrimSpace(clientIP)
+	clientIP = rateLimitClientKey(clientIP)
 	if host == "" {
 		host = "unknown-host"
 	}
@@ -135,6 +135,23 @@ func publicRateLimitKey(host, clientIP string) string {
 		clientIP = "unknown-client"
 	}
 	return host + "|" + clientIP
+}
+
+// rateLimitClientKey groups IPv6 clients by /64, the smallest prefix normally
+// assigned to one subscriber. Keyed by full address, one host could rotate
+// through its /64 to get a fresh bucket per request, defeating every per-IP
+// limit and growing limiter maps without bound.
+func rateLimitClientKey(clientIP string) string {
+	clientIP = strings.TrimSpace(clientIP)
+	addr, err := netip.ParseAddr(clientIP)
+	if err != nil || !addr.Is6() || addr.Is4In6() {
+		return clientIP
+	}
+	prefix, err := addr.WithZone("").Prefix(64)
+	if err != nil {
+		return clientIP
+	}
+	return prefix.String()
 }
 
 func clientIPFromRemoteAddr(remoteAddr string) string {

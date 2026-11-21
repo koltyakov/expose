@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"errors"
+	"flag"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/koltyakov/expose/internal/config"
 )
@@ -53,4 +57,28 @@ func envRequestLogs() bool {
 
 func parseIntEnv(key string, def int) int {
 	return config.EnvIntOrDefault(key, def)
+}
+
+func parseDurationEnv(key string, def time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d < 0 {
+		return def, fmt.Errorf("invalid %s %q: want a duration such as 30s", key, value)
+	}
+	return d, nil
+}
+
+// flagParseExitCode maps a FlagSet parse error to an exit code: --help is a
+// successful request for usage (exit 0); anything else is a usage error.
+func flagParseExitCode(err error, prefix string) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	if prefix != "" {
+		fmt.Fprintln(os.Stderr, prefix, err)
+	}
+	return 2
 }

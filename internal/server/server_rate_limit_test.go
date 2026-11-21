@@ -348,3 +348,24 @@ func BenchmarkRateLimiterAllowParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestRateLimitClientKeyGroupsIPv6By64(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"203.0.113.7":            "203.0.113.7",
+		"2001:db8:1:2:aaaa::1":   "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff::9":   "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":        "2001:db8:1:3::/64",
+		"::ffff:203.0.113.7":     "::ffff:203.0.113.7",
+		"fe80::1%eth0":           "fe80::/64",
+		"not-an-ip":              "not-an-ip",
+		" 2001:db8:1:2:aaaa::1 ": "2001:db8:1:2::/64",
+	} {
+		if got := rateLimitClientKey(in); got != want {
+			t.Errorf("rateLimitClientKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if publicRateLimitKey("a.example.com", "2001:db8:1:2::1") != publicRateLimitKey("a.example.com", "2001:db8:1:2::2") {
+		t.Fatal("public limiter keys differ within one /64")
+	}
+}

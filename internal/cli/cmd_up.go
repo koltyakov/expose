@@ -36,8 +36,7 @@ func runUp(ctx context.Context, args []string) int {
 	fs.StringVar(&configFile, "f", configFile, "Path to expose YAML config")
 	fs.StringVar(&configFile, "file", configFile, "Path to expose YAML config")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "up command error:", err)
-		return 2
+		return flagParseExitCode(err, "up command error:")
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "usage: expose up [-f expose.yml] [--profile NAME]")
@@ -53,8 +52,7 @@ func runUpInit(ctx context.Context, args []string) int {
 	fs.StringVar(&configFile, "f", configFile, "Path to expose YAML config")
 	fs.StringVar(&configFile, "file", configFile, "Path to expose YAML config")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "up init error:", err)
-		return 2
+		return flagParseExitCode(err, "up init error:")
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "usage: expose up init [-f expose.yml]")

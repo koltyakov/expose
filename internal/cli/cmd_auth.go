@@ -45,8 +45,7 @@ func runAuthCurl(ctx context.Context, args []string) int {
 	fs.BoolVar(&insecure, "insecure", insecure, "Skip TLS verification (useful for local sslip.io testing)")
 	fs.StringVar(&format, "format", format, "Output format: curl|header|cookie")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "auth curl error:", err)
-		return 2
+		return flagParseExitCode(err, "auth curl error:")
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "auth curl error: unexpected positional arguments")

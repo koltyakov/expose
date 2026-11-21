@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -37,6 +38,7 @@ func (c *Client) Run(ctx context.Context) error {
 	// Auto-update: periodic background check + server-version-change trigger.
 	autoUpdateCh := make(chan struct{}, 1) // signals that the binary was replaced
 	var lastServerVersion string
+	var lastUpdateCheck time.Time
 	if c.autoUpdate {
 		updateWG.Add(1)
 		go func() {
@@ -47,11 +49,38 @@ func (c *Client) Run(ctx context.Context) error {
 
 	var retry reconnectSchedule
 	tlsProvisioningRetries := 0
+	readyDeadline := time.Time{}
+	if c.cfg.ReadyTimeout > 0 {
+		readyDeadline = time.Now().Add(c.cfg.ReadyTimeout)
+	}
+	// readyWait caps the retry delay at the --ready-timeout deadline and
+	// reports false once it passed without a tunnel ever having become ready.
+	readyWait := func(delay time.Duration) (time.Duration, bool) {
+		if readyDeadline.IsZero() {
+			return delay, true
+		}
+		remaining := time.Until(readyDeadline)
+		if remaining <= 0 {
+			return 0, false
+		}
+		return min(delay, remaining), true
+	}
 	for {
-		reg, err := c.register(ctx)
+		registerCtx, cancelRegister := ctx, context.CancelFunc(func() {})
+		if !readyDeadline.IsZero() {
+			// Bound a hung register (blackholed server) by the deadline too,
+			// not only the waits between attempts.
+			registerCtx, cancelRegister = context.WithDeadline(ctx, readyDeadline)
+		}
+		reg, err := c.register(registerCtx)
+		registerTimedOut := errors.Is(registerCtx.Err(), context.DeadlineExceeded)
+		cancelRegister()
+		if err != nil && ctx.Err() == nil && registerTimedOut {
+			return fmt.Errorf("tunnel not ready within %s: %w", c.cfg.ReadyTimeout, err)
+		}
 		if err != nil {
-			delay := retry.nextDelay(time.Now())
-			willRetry := !isNonRetriableRegisterError(err)
+			delay, beforeDeadline := readyWait(retry.nextDelay(time.Now()))
+			willRetry := !isNonRetriableRegisterError(err) && beforeDeadline
 			if hook := c.hooks.OnRegisterFailure; hook != nil {
 				hook(RegisterFailureEvent{
 					Err:       err,
@@ -61,6 +90,9 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			if isNonRetriableRegisterError(err) {
 				return err
+			}
+			if !beforeDeadline {
+				return fmt.Errorf("tunnel not ready within %s: %w", c.cfg.ReadyTimeout, err)
 			}
 			if isTLSProvisioningInProgressError(err) {
 				tlsProvisioningRetries++
@@ -102,7 +134,10 @@ func (c *Client) Run(ctx context.Context) error {
 			if isNonRetriableSessionError(err) {
 				return err
 			}
-			delay := retry.nextDelay(time.Now())
+			delay, beforeDeadline := readyWait(retry.nextDelay(time.Now()))
+			if !beforeDeadline {
+				return fmt.Errorf("tunnel not ready within %s: %w", c.cfg.ReadyTimeout, err)
+			}
 			if c.display != nil {
 				c.display.ShowWarning(fmt.Sprintf("tunnel connect failed, %s; retrying in %s", shortenError(err), delay.Round(time.Second)))
 			} else {
@@ -136,6 +171,7 @@ func (c *Client) Run(ctx context.Context) error {
 				c.log.Info("versions", "client", c.version, "server", versionutil.EnsureVPrefix(reg.ServerVersion), "waf_enabled", reg.WAFEnabled)
 			}
 		}
+		readyDeadline = time.Time{} // later outages reconnect indefinitely
 		if hook := c.hooks.OnTunnelReady; hook != nil {
 			hook(TunnelReadyEvent{
 				TunnelID:      reg.TunnelID,
@@ -158,8 +194,11 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 		lastServerVersion = reg.ServerVersion
-		// Check for updates in the background (non-blocking).
-		if !c.autoUpdate {
+		// Check for updates in the background (non-blocking). Reconnects
+		// re-register, so limit this to once per interval: a flapping link
+		// otherwise spends GitHub's unauthenticated API quota.
+		if !c.autoUpdate && (lastUpdateCheck.IsZero() || time.Since(lastUpdateCheck) >= updateNoticeInterval) {
+			lastUpdateCheck = time.Now()
 			updateWG.Add(1)
 			go func() {
 				defer updateWG.Done()

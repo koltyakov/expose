@@ -59,7 +59,7 @@ export EXPOSE_WAF_BODY_INSPECT_LIMIT=16384
 | **Header Injection**     | All non-exempt headers            | `\r` or `\n` in header values (CRLF injection)                              |
 | **Sensitive File Probe** | URL path                          | `/.env`, `/.git/`, `/.ssh/`, `/.idea/`, `/etc/passwd`, `/proc/self/environ` |
 | **Protocol Attack**      | Query string, headers, body       | `<?php`, `<% %>`, `data:…base64`                                            |
-| **SSRF**                 | Query string, headers, body       | `169.254.169.254`, `metadata.google.internal`, `file://`, `gopher://`       |
+| **SSRF**                 | Query string, headers (not `Origin`/`Referer`), body | `169.254.169.254`, `metadata.google.internal`, `file://`, `gopher://`       |
 | **XXE**                  | Query string, headers, body       | `<!DOCTYPE … [`, `<!ENTITY`, `SYSTEM "file://…"`                            |
 | **SSTI**                 | Query string, headers, body       | `{{config}}`, `{{''.__class__}}`, `<#assign`, `${T(…)}`                     |
 | **URI Too Long**         | Request URI length                | URI exceeding 8 KiB (buffer-overflow / smuggling defence)                   |
@@ -125,7 +125,8 @@ stops on the first match.
 - Double-decoded variant is computed once and only tested when it differs from
   the single-decoded value.
 - Safe headers are skipped via a hash-set lookup.
-- Structural limits (URI length, header-value count) are checked before regex
+- Structural limits (URI length, header-value count, 32 KiB of scanned header
+  bytes) are checked before regex
   evaluation for fast-path rejection.
 - Re-run `go test ./internal/waf -bench .` after changing rules or body
   inspection limits to measure the actual overhead in your environment.

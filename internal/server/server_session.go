@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -695,17 +696,32 @@ func (s *session) closeWSPending() {
 // recordWAFBlock increments the WAF-blocked counter for the given hostname
 // and emits a structured audit log entry that identifies the protected
 // tunnel endpoint.
+//
+// The WAF runs before route resolution, so evt.Host is attacker-chosen.
+// Per-host counters exist only for hosts already known in memory (live or
+// cached tunnel routes, published sites, bypasses); everything else shares a
+// single counter. Otherwise unique Host headers grow wafBlocks without bound
+// for the whole retention window, and each one cost a store lookup.
 func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
 	s.recordSiteWAF(evt)
-	nowUnix := time.Now().UnixNano()
-	val, _ := s.wafBlocks.LoadOrStore(evt.Host, &wafCounter{})
-	counter := val.(*wafCounter)
-	counter.lastSeenUnixNano.Store(nowUnix)
-	count := counter.total.Add(1)
+	route, routed := s.wafRouteForHost(evt.Host)
+	served := routed || s.servesHost(evt.Host)
+	var count int64
+	if served {
+		val, _ := s.wafBlocks.LoadOrStore(evt.Host, &wafCounter{})
+		counter := val.(*wafCounter)
+		counter.lastSeenUnixNano.Store(time.Now().UnixNano())
+		count = counter.total.Add(1)
+	} else {
+		count = s.wafUnknownHostBlocks.Add(1)
+	}
 
 	event := wafAuditEvent{
 		event:       evt,
 		totalBlocks: count,
+		route:       route,
+		routed:      routed,
+		served:      served,
 	}
 	if s.wafAuditQueue != nil {
 		select {
@@ -717,6 +733,31 @@ func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
 	}
 
 	s.logWAFAuditEvent(context.Background(), event)
+}
+
+// wafRouteForHost resolves host from in-memory route state only. It never
+// queries the store: blocked requests must stay cheap for unknown hosts.
+func (s *Server) wafRouteForHost(host string) (domain.TunnelRoute, bool) {
+	if snap, ok := s.liveRoutes.lookupHost(host); ok {
+		return snap.route, true
+	}
+	if route, found, cached := s.routes.lookup(host); cached && found {
+		return route, true
+	}
+	return domain.TunnelRoute{}, false
+}
+
+// servesHost reports whether host is the server's own domain (API and TURN),
+// a published site or a server-local bypass, all bounded by configuration.
+func (s *Server) servesHost(host string) bool {
+	if host == normalizeHost(s.cfg.BaseDomain) || (s.cfg.TURN.Enabled && host == normalizeHost(s.cfg.TURN.Host)) {
+		return host != ""
+	}
+	if _, ok := s.siteHosts.Load(host); ok {
+		return true
+	}
+	_, ok := s.bypasses[host]
+	return ok
 }
 
 func (s *Server) runWAFAuditWorker(ctx context.Context) {
@@ -734,25 +775,24 @@ func (s *Server) runWAFAuditWorker(ctx context.Context) {
 	}
 }
 
-func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent) {
+func (s *Server) logWAFAuditEvent(ctx context.Context, audit wafAuditEvent) {
+	if s.log == nil {
+		return
+	}
 	tunnelID := "unknown"
 	domainName := audit.event.Host
-	snap, ok := s.liveRoutes.lookupHost(audit.event.Host)
-	if !ok && s.store != nil {
-		lookupCtx, cancel := context.WithTimeout(parentCtx, wafAuditLookupTimeout)
-		next, err := s.resolvePublicRoute(lookupCtx, audit.event.Host)
-		cancel()
-		if err == nil {
-			snap = next
-			ok = true
-		}
+	if audit.routed {
+		tunnelID = audit.route.Tunnel.ID
+		domainName = audit.route.Domain.Hostname
 	}
-	if ok {
-		tunnelID = snap.route.Tunnel.ID
-		domainName = snap.route.Domain.Hostname
+	// Probes against hostnames this server does not serve are routine
+	// scanner noise; keep them out of the default log level. The shared
+	// counter still records them.
+	level := slog.LevelWarn
+	if !audit.served {
+		level = slog.LevelDebug
 	}
-
-	if s.log == nil {
+	if !s.log.Enabled(ctx, level) {
 		return
 	}
 	// Query strings may carry tokens; log the path only.
@@ -762,7 +802,7 @@ func (s *Server) logWAFAuditEvent(parentCtx context.Context, audit wafAuditEvent
 		msg = "waf audit: request matched"
 	}
 	// This is the only record per match: the middleware defers to OnBlock.
-	s.log.Warn(msg,
+	s.log.Log(ctx, level, msg,
 		"rule", audit.event.Rule,
 		"tunnel_id", tunnelID,
 		"domain", domainName,

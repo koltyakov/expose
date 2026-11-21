@@ -190,9 +190,7 @@ func pubCommand(ctx context.Context, args []string) error {
 			return watchPublishedSite(ctx, client, opts, result, snapshot, os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), jsonOutput, pubWatchTiming{})
 		}
 		if jsonOutput {
-			encoder := json.NewEncoder(os.Stdout)
-			encoder.SetIndent("", "  ")
-			return encoder.Encode(result.Site)
+			return newPubJSONEncoder().Encode(result.Site)
 		}
 		return writePublishedSiteResult(os.Stdout, result.Site, term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == "")
 	}
@@ -231,9 +229,7 @@ func pubCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	if jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(sites)
+		return newPubJSONEncoder().Encode(sites)
 	}
 	if len(sites) == 0 {
 		fmt.Println("No published sites.")
@@ -244,7 +240,7 @@ func pubCommand(ctx context.Context, args []string) error {
 			expiry = "expires " + site.ExpiresAt.Format(time.RFC3339)
 		}
 		subdomain, _, _ := strings.Cut(site.Hostname, ".")
-		fmt.Printf("%s  https://%s  %s\n", subdomain, site.Hostname, expiry)
+		fmt.Printf("%s  %s  %s\n", subdomain, publishedSiteURL(site), expiry)
 	}
 	return nil
 }
@@ -312,4 +308,14 @@ func (w *contextWriter) Write(p []byte) (int, error) {
 		return 0, w.ctx.Err()
 	}
 	return w.w.Write(p)
+}
+
+// newPubJSONEncoder indents for people reading a terminal and writes compact
+// JSON for scripts and agents.
+func newPubJSONEncoder() *json.Encoder {
+	encoder := json.NewEncoder(os.Stdout)
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		encoder.SetIndent("", "  ")
+	}
+	return encoder
 }

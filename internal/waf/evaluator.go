@@ -67,9 +67,11 @@ type requestView struct {
 	doubleDecoded    scanInput
 	userAgent        scanInput
 	headerValues     []scanInput
+	referrerValues   []scanInput // Origin and Referer, which rules with skipReferrers ignore
 	bodyValues       []scanInput
 	uriTooLong       bool // URI exceeds safety limit
 	tooManyHdrs      bool // excessive header count
+	headersTooBig    bool // inspected header bytes exceed the scan budget
 }
 
 // maxURILength is the maximum URI length before the WAF considers a request
@@ -81,13 +83,24 @@ const maxURILength = 8192
 // considers a request suspicious.
 const maxHeaderCount = 64
 
+// maxHeaderBytes bounds the header bytes the rules scan. Regex cost grows
+// with input size (about 1 µs per adversarial byte on a production vCPU), so
+// an unbounded scan let one request with large headers buy tens of
+// milliseconds of CPU. 32 KiB matches Kestrel's default total and leaves
+// room for chunked SSO cookie sets; the public listeners cap headers at 64 KiB.
+const maxHeaderBytes = 32 << 10
+
 func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
+	return newRequestViewLimits(r, maxURI, maxHeaders, maxHeaderBytes)
+}
+
+func newRequestViewLimits(r *http.Request, maxURI, maxHeaders, maxBytes int) requestView {
 	// Preserve structural-rule precedence without decoding/folding inputs that
 	// will be rejected. Header limits count values, not distinct header names.
 	if len(r.RequestURI) > maxURI {
 		return requestView{uriTooLong: true}
 	}
-	headerCount := 0
+	headerCount, headerBytes := 0, 0
 	for name, values := range r.Header {
 		if _, skip := skipHeaders[name]; skip {
 			continue
@@ -96,9 +109,15 @@ func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 			return requestView{tooManyHdrs: true}
 		}
 		headerCount += len(values)
+		for _, v := range values {
+			headerBytes += len(v)
+		}
 	}
 	if headerCount > maxHeaders {
 		return requestView{tooManyHdrs: true}
+	}
+	if headerBytes > maxBytes {
+		return requestView{headersTooBig: true}
 	}
 
 	rawQuery := r.URL.RawQuery
@@ -145,16 +164,23 @@ func newRequestView(r *http.Request, maxURI, maxHeaders int) requestView {
 	// keyed the same way and needs no per-header lowercasing.
 	userAgent := newScanInput(r.UserAgent())
 	headerValues := make([]scanInput, 0, headerCount)
+	var referrerValues []scanInput
 	for name, values := range r.Header {
 		if _, skip := skipHeaders[name]; skip {
 			continue
 		}
+		referrer := name == "Origin" || name == "Referer"
 		for _, v := range values {
-			headerValues = append(headerValues, reuseScanInput(v, userAgent))
+			in := reuseScanInput(v, userAgent)
+			if referrer {
+				referrerValues = append(referrerValues, in)
+			} else {
+				headerValues = append(headerValues, in)
+			}
 		}
 	}
 
-	view := requestView{userAgent: userAgent, headerValues: headerValues}
+	view := requestView{userAgent: userAgent, headerValues: headerValues, referrerValues: referrerValues}
 	view.requestURI = newScanInput(r.RequestURI)
 	view.decodedURI = reuseScanInput(decodedURI, view.requestURI)
 	view.doubleDecodedURI = reuseScanInput(doubleDecodedURI, view.requestURI, view.decodedURI)
@@ -179,7 +205,7 @@ func reuseScanInput(raw string, previous ...scanInput) scanInput {
 
 // check tests the request against every rule and returns on the first match.
 func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
-	view := newRequestView(r, fw.maxURI, fw.maxHeaders)
+	view := newRequestViewLimits(r, fw.maxURI, fw.maxHeaders, intOr(fw.maxHdrBytes, maxHeaderBytes))
 
 	// Structural limits — block before regex evaluation.
 	if view.uriTooLong {
@@ -187,6 +213,9 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 	}
 	if view.tooManyHdrs {
 		return true, "too-many-headers"
+	}
+	if view.headersTooBig {
+		return true, "headers-too-large"
 	}
 
 	var bodyOverflow bool
@@ -218,7 +247,8 @@ func (fw *firewall) check(r *http.Request) (matched bool, ruleName string) {
 		if rl.targets&targetUA != 0 && rl.matches(view.userAgent) {
 			return true, rl.name
 		}
-		if rl.targets&targetHeaders != 0 && fw.matchHeaderValues(rl, view.headerValues) {
+		if rl.targets&targetHeaders != 0 && (fw.matchHeaderValues(rl, view.headerValues) ||
+			(!rl.skipReferrers && fw.matchHeaderValues(rl, view.referrerValues))) {
 			return true, rl.name
 		}
 		if rl.targets&targetBody != 0 && fw.matchBodyValues(rl, view.bodyValues) {

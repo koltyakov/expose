@@ -125,6 +125,7 @@ type Server struct {
 	wafAuditQueue        chan wafAuditEvent
 	h3Sessions           sync.Map // auth token -> *session
 	wafAuditDrops        atomic.Int64
+	wafUnknownHostBlocks atomic.Int64 // blocks for hosts this server does not serve
 	domainTouchDrops     atomic.Int64
 	disconnectDrops      atomic.Int64
 	routeCacheHits       atomic.Int64
@@ -136,11 +137,17 @@ type Server struct {
 	responseQueueRejects atomic.Int64
 
 	rejectionLogLimiter *rateLimiter
+	// bypassFailureLogs collapses repeated local-service failures, e.g. one
+	// WARN per request while a bypassed service restarts.
+	bypassFailureLogs repeatLimiter
 }
 
 type wafAuditEvent struct {
 	event       waf.BlockEvent
 	totalBlocks int64
+	route       domain.TunnelRoute
+	routed      bool // route resolved from in-memory state
+	served      bool // routed, a published site, or a bypass
 }
 
 type wafCounter struct {
@@ -198,7 +205,6 @@ const (
 	httpsReadTimeout            = 30 * time.Second
 	httpsWriteTimeout           = 60 * time.Second
 	httpsIdleTimeout            = 120 * time.Second
-	httpsMaxHeaderBytes         = 1 << 20
 	httpIdleTimeout             = 60 * time.Second
 	usedTokenRetention          = 1 * time.Hour
 	tokenPurgeBatchLimit        = 1000
@@ -216,7 +222,6 @@ const (
 	preAuthRateLimit            = 10.0
 	preAuthBurstLimit           = 30.0
 	wafAuditQueueSize           = 2048
-	wafAuditLookupTimeout       = 250 * time.Millisecond
 	wsDataDispatchWait          = 0
 	wsControlDispatchWait       = 2 * time.Second
 	defaultWAFCounterRetention  = time.Hour
@@ -232,6 +237,12 @@ const (
 	// per connection.
 	tunnelWSWriteBufferSize = 264 * 1024
 )
+
+// httpsMaxHeaderBytes caps request headers on every public listener. The WAF
+// regex cost grows with header bytes, so the 1 MiB net/http default let one
+// request buy hundreds of milliseconds of CPU. 64 KiB stays above common
+// upstream limits (Node.js 16 KiB, nginx 4x8 KiB).
+const httpsMaxHeaderBytes = 64 << 10
 
 // wsWriteBufferPool shares tunnel websocket write buffers across connections;
 // gorilla acquires a buffer per message write and returns it afterwards.
@@ -309,6 +320,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		queuedResponses:  byteBudget{limit: queuedResponseLimit(cfg.MaxQueuedResponseBytes, config.DefaultMaxQueuedResponseBytes)},
 
 		rejectionLogLimiter: newConfiguredRateLimiter(1, 5, 0),
+		bypassFailureLogs:   repeatLimiter{window: bypassFailureLogWindow},
 	}
 	s.initBypasses(store)
 	return s

@@ -54,3 +54,25 @@ func testContext(t *testing.T) context.Context {
 	t.Helper()
 	return context.Background()
 }
+
+func TestRunRejectsUnknownCommands(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("EXPOSE_PORT", "13000")
+	// A mistyped command must not start a tunnel from EXPOSE_PORT.
+	if code := Run([]string{"lsit", "--json"}); code != 2 {
+		t.Fatalf("Run(lsit) = %d, want 2", code)
+	}
+}
+
+func TestRunUpdateParsesFlagsBeforeNetwork(t *testing.T) {
+	// --help and bad flags return before any release check or download.
+	if code := runUpdate(testContext(t), []string{"--help"}); code != 0 {
+		t.Fatalf("update --help = %d, want 0", code)
+	}
+	if code := runUpdate(testContext(t), []string{"--bogus"}); code != 2 {
+		t.Fatalf("update --bogus = %d, want 2", code)
+	}
+	if code := runUpdate(testContext(t), []string{"now"}); code != 2 {
+		t.Fatalf("update now = %d, want 2", code)
+	}
+}

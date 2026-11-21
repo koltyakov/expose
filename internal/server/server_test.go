@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1496,6 +1499,10 @@ func TestRecordWAFBlockQueueOverflowNonBlocking(t *testing.T) {
 		RemoteAddr: "192.0.2.1",
 		UserAgent:  "sqlmap/1.7",
 	}
+	srv.routes.set(evt.Host, domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d1", Hostname: evt.Host},
+		Tunnel: domain.Tunnel{ID: "t1"},
+	})
 
 	done := make(chan struct{})
 	go func() {
@@ -1517,6 +1524,59 @@ func TestRecordWAFBlockQueueOverflowNonBlocking(t *testing.T) {
 	}
 	if got := val.(*wafCounter).total.Load(); got != 5000 {
 		t.Fatalf("expected 5000 blocked count, got %d", got)
+	}
+}
+
+func TestRecordWAFBlockBoundsUnknownHosts(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	var lookups atomic.Int64
+	store := &stubServerStore{findRouteByHostFn: func(context.Context, string) (domain.TunnelRoute, error) {
+		lookups.Add(1)
+		return domain.TunnelRoute{}, sql.ErrNoRows
+	}}
+	srv := &Server{
+		log:        slog.New(slog.NewTextHandler(&buf, nil)),
+		store:      store,
+		liveRoutes: newLiveRouteIndex(),
+		routes: routeCache{
+			entries:       make(map[string]routeCacheEntry),
+			hostsByTunnel: make(map[string]map[string]struct{}),
+		},
+	}
+	srv.routes.set("app.example.com", domain.TunnelRoute{
+		Domain: domain.Domain{ID: "d1", Hostname: "app.example.com"},
+		Tunnel: domain.Tunnel{ID: "t1"},
+	})
+
+	for i := range 1000 {
+		srv.recordWAFBlock(waf.BlockEvent{Host: fmt.Sprintf("h%d.example.com", i), Rule: "sensitive-file-probe", Method: http.MethodGet, RequestURI: "/.env"})
+	}
+	srv.recordWAFBlock(waf.BlockEvent{Host: "app.example.com", Rule: "sensitive-file-probe", Method: http.MethodGet, RequestURI: "/.env"})
+	srv.cfg.BaseDomain = "example.com"
+	srv.recordWAFBlock(waf.BlockEvent{Host: "example.com", Rule: "sensitive-file-probe", Method: http.MethodGet, RequestURI: "/.env"})
+
+	entries := 0
+	srv.wafBlocks.Range(func(any, any) bool { entries++; return true })
+	if entries != 2 {
+		t.Fatalf("wafBlocks has %d entries, want the routed host and the base domain", entries)
+	}
+	if got := srv.wafUnknownHostBlocks.Load(); got != 1000 {
+		t.Fatalf("unknown host blocks = %d, want 1000", got)
+	}
+	if got := lookups.Load(); got != 0 {
+		t.Fatalf("WAF blocks issued %d store lookups, want 0", got)
+	}
+	out := buf.String()
+	if strings.Contains(out, "h1.example.com") {
+		t.Fatalf("unknown-host probe logged at default level: %q", out)
+	}
+	if !strings.Contains(out, "tunnel_id=t1") || !strings.Contains(out, "domain=app.example.com") {
+		t.Fatalf("served host block not attributed to its tunnel: %q", out)
+	}
+	if !strings.Contains(out, "domain=example.com ") {
+		t.Fatalf("base-domain probe not logged at default level: %q", out)
 	}
 }
 
@@ -2416,6 +2476,7 @@ func TestLogWAFAuditEventRedactsQueryString(t *testing.T) {
 			RemoteAddr: "192.0.2.1",
 		},
 		totalBlocks: 1,
+		served:      true,
 	})
 
 	out := buf.String()

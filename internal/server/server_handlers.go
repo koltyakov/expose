@@ -135,7 +135,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) allowPreAuthRequest(w http.ResponseWriter, r *http.Request) bool {
-	if s.authLimiter == nil || s.authLimiter.allow(s.clientIP(r)) {
+	if s.authLimiter == nil || s.authLimiter.allow(rateLimitClientKey(s.clientIP(r))) {
 		return true
 	}
 	w.Header().Set("Retry-After", "1")

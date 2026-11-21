@@ -1,6 +1,7 @@
 package turnrelay
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -31,8 +32,16 @@ func (l relayLog) Error(msg string) {
 	l.Logger.Error(msg)
 }
 func (l relayLog) Trace(msg string)                  { l.Debug(msg) }
-func (l relayLog) Tracef(format string, args ...any) { l.Debug(fmt.Sprintf(format, args...)) }
-func (l relayLog) Debugf(format string, args ...any) { l.Debug(fmt.Sprintf(format, args...)) }
+func (l relayLog) Tracef(format string, args ...any) { l.Debugf(format, args...) }
+
+// Debugf is called by pion for individual datagrams, so skip formatting when
+// debug output is disabled.
+func (l relayLog) Debugf(format string, args ...any) {
+	if !l.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	l.Debug(fmt.Sprintf(format, args...))
+}
 func (l relayLog) Infof(format string, args ...any)  { l.Info(fmt.Sprintf(format, args...)) }
 func (l relayLog) Warnf(format string, args ...any)  { l.Warn(fmt.Sprintf(format, args...)) }
 func (l relayLog) Errorf(format string, args ...any) { l.Error(fmt.Sprintf(format, args...)) }

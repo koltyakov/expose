@@ -79,6 +79,7 @@ func (s *Server) MetricsHandler() http.HandlerFunc {
 		metric("expose_disconnect_drops_total", s.disconnectDrops.Load())
 		metric("expose_domain_touch_drops_total", s.domainTouchDrops.Load())
 		metric("expose_waf_audit_drops_total", s.wafAuditDrops.Load())
+		metric("expose_waf_unknown_host_blocks_total", s.wafUnknownHostBlocks.Load())
 		metric("expose_shutdown_duration_seconds", float64(s.shutdownNanos.Load())/1e9)
 		metric("expose_sqlite_open_connections", storeStats.OpenConnections)
 		metric("expose_sqlite_in_use_connections", storeStats.InUseConnections)

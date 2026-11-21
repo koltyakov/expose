@@ -257,6 +257,35 @@ func TestPublishedSiteLookupCacheRechecksRevocationOnHeartbeat(t *testing.T) {
 	if f.cached(site.Hostname) {
 		t.Fatal("revoked key's site was cached again")
 	}
+	// The host stays in siteHosts until restart; repeat requests must be
+	// answered from the negative cache instead of querying the store.
+	if !f.srv.siteLookups.missing(site.Hostname) {
+		t.Fatal("revoked key's site was not cached as missing")
+	}
+}
+
+func TestSiteLookupCacheMisses(t *testing.T) {
+	t.Parallel()
+	var c siteLookupCache
+	c.putMiss("a.example.com", c.generation())
+	if !c.missing("a.example.com") || c.missing("b.example.com") {
+		t.Fatal("miss not recorded for exactly the looked-up host")
+	}
+	c.invalidate("a.example.com")
+	if c.missing("a.example.com") {
+		t.Fatal("republishing a host kept its stale miss")
+	}
+	c.putMiss("a.example.com", c.generation())
+	c.clear()
+	if c.missing("a.example.com") {
+		t.Fatal("heartbeat clear kept a miss")
+	}
+	gen := c.generation()
+	c.invalidate("other.example.com")
+	c.putMiss("a.example.com", gen)
+	if c.missing("a.example.com") {
+		t.Fatal("miss read before an invalidation was cached")
+	}
 }
 
 // TestPublishedSiteLookupCacheConcurrentChanges races readers against

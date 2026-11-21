@@ -12,22 +12,18 @@ import (
 
 	"github.com/koltyakov/expose/internal/access"
 	"github.com/koltyakov/expose/internal/config"
+	"golang.org/x/term"
 )
 
+// isInteractiveInput reports whether stdin is a terminal. A character-device
+// check is not enough: /dev/null is a character device, so agents and CI jobs
+// running with a closed stdin started prompts that then failed with EOF.
 func isInteractiveInput() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func isInteractiveOutput() bool {
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 func prompt(reader *bufio.Reader, label string) (string, error) {

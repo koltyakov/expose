@@ -229,7 +229,7 @@ func (d *pubStatsDisplay) render(stats domain.PublishedSiteStats, roundTrip time
 	newline()
 	field("Latency", termui.FormatDurationRounded(roundTrip))
 	part("", fmt.Sprintf("%-19s", "Public URL"))
-	part(termui.Cyan, "https://"+stats.Site.Hostname)
+	part(termui.Cyan, publishedSiteURL(stats.Site))
 	newline()
 	files := "--"
 	if stats.FileCount > 0 {

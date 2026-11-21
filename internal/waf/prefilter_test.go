@@ -89,6 +89,21 @@ func requiredLiteralTraces(expr *syntax.Regexp) []string {
 			}
 			return traces
 		}
+	case syntax.OpCharClass:
+		// Expand small classes so groups may name the separator a branch
+		// requires (" on", "'on", ...). Large or negated classes stay opaque.
+		var runes []string
+		for i := 0; i+1 < len(expr.Rune); i += 2 {
+			for r := expr.Rune[i]; r <= expr.Rune[i+1]; r++ {
+				if len(runes) == 16 {
+					return []string{"\x00"}
+				}
+				runes = append(runes, strings.ToLower(string(r)))
+			}
+		}
+		if len(runes) > 0 {
+			return runes
+		}
 	case syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,
 		syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
 		return []string{""}

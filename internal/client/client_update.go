@@ -35,6 +35,10 @@ func (c *Client) checkForUpdates(ctx context.Context) {
 
 const clientAutoUpdateInterval = 30 * time.Minute
 
+// updateNoticeInterval spaces out "update available" checks across
+// reconnects when auto-update is off.
+const updateNoticeInterval = 6 * time.Hour
+
 // runAutoUpdateLoop periodically checks for a newer release. When an update
 // is downloaded and the binary replaced it sends on the channel and returns.
 func (c *Client) runAutoUpdateLoop(ctx context.Context, updated chan<- struct{}) {

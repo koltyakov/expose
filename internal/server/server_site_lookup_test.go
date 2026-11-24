@@ -239,10 +239,11 @@ func TestPublishedSiteLookupCacheRechecksRevocationOnHeartbeat(t *testing.T) {
 		defer close(done)
 		f.srv.runJanitor(ctx)
 	}()
-	defer func() {
+	stopJanitor := sync.OnceFunc(func() {
 		cancel()
 		<-done
-	}()
+	})
+	defer stopJanitor()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		code, _ := f.get(site.Hostname)
@@ -256,6 +257,12 @@ func TestPublishedSiteLookupCacheRechecksRevocationOnHeartbeat(t *testing.T) {
 	}
 	if f.cached(site.Hostname) {
 		t.Fatal("revoked key's site was cached again")
+	}
+	// Every heartbeat tick clears the lookup cache, so stop the janitor before
+	// asserting on it; otherwise a tick can race the check below.
+	stopJanitor()
+	if code, _ := f.get(site.Hostname); code != http.StatusNotFound {
+		t.Fatalf("revoked key's site served after janitor stop: %d", code)
 	}
 	// The host stays in siteHosts until restart; repeat requests must be
 	// answered from the negative cache instead of querying the store.

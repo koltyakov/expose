@@ -1256,8 +1256,17 @@ type fakeHTTP3ResponseWriter struct {
 
 var _ http3.HTTPStreamer = (*fakeHTTP3ResponseWriter)(nil)
 
-func (w *fakeHTTP3ResponseWriter) HTTPStream() (*http3.Stream, error) {
-	return nil, w.streamErr
+func (w *fakeHTTP3ResponseWriter) HTTPStream() *http3.Stream {
+	return nil
+}
+
+// FlushError simulates a failure to send the response header before takeover.
+func (w *fakeHTTP3ResponseWriter) FlushError() error {
+	if w.streamErr != nil {
+		return w.streamErr
+	}
+	w.Flush()
+	return nil
 }
 
 func TestHandleConnectH3TokenSetupFailureDoesNotMarkTunnelConnected(t *testing.T) {

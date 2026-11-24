@@ -36,7 +36,7 @@ func TestHTTP3IntegrationControlAndWorkerStreamRoundTrip(t *testing.T) {
 		}
 		w.Header().Set(h3SessionHeader, sessionToken)
 		w.WriteHeader(http.StatusOK)
-		if _, err := streamer.HTTPStream(); err != nil {
+		if _, err := takeOverHTTP3Stream(w, streamer); err != nil {
 			t.Errorf("take over control stream: %v", err)
 		}
 	})
@@ -51,7 +51,7 @@ func TestHTTP3IntegrationControlAndWorkerStreamRoundTrip(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		stream, err := streamer.HTTPStream()
+		stream, err := takeOverHTTP3Stream(w, streamer)
 		if err != nil {
 			t.Errorf("take over worker stream: %v", err)
 			return
@@ -145,7 +145,7 @@ func TestHTTP3IntegrationDistinctWorkerStreamsForHTTPAndWS(t *testing.T) {
 		}
 		w.Header().Set(h3SessionHeader, sessionToken)
 		w.WriteHeader(http.StatusOK)
-		if _, err := streamer.HTTPStream(); err != nil {
+		if _, err := takeOverHTTP3Stream(w, streamer); err != nil {
 			t.Errorf("take over control stream: %v", err)
 		}
 	})
@@ -160,7 +160,7 @@ func TestHTTP3IntegrationDistinctWorkerStreamsForHTTPAndWS(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		stream, err := streamer.HTTPStream()
+		stream, err := takeOverHTTP3Stream(w, streamer)
 		if err != nil {
 			t.Errorf("take over worker stream: %v", err)
 			return

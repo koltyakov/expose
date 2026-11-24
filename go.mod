@@ -7,7 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
 	github.com/pion/logging v0.2.4
 	github.com/pion/turn/v5 v5.1.3
-	github.com/quic-go/quic-go v0.65.0
+	github.com/quic-go/quic-go v0.66.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0

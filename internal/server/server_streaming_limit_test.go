@@ -223,7 +223,7 @@ func newStreamingLimitTestPeer(t *testing.T, transport string) (*session, func()
 	workers := make(chan *http3.Stream, 1)
 	addr, shutdown := startHTTP3IntegrationServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		stream, err := w.(http3.HTTPStreamer).HTTPStream()
+		stream, err := takeOverHTTP3Stream(w, w.(http3.HTTPStreamer))
 		if err != nil {
 			t.Errorf("take over worker stream: %v", err)
 			return

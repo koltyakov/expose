@@ -432,7 +432,7 @@ func setupBenchmarkQUICSessions(
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		stream, err := streamer.HTTPStream()
+		stream, err := takeOverHTTP3Stream(w, streamer)
 		if err != nil {
 			b.Errorf("take over worker stream: %v", err)
 			return

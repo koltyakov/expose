@@ -26,7 +26,7 @@ func TestQUICV2ConnectionsReleaseAllWritePumps(t *testing.T) {
 	addr, shutdown := startHTTP3TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(h3SessionHeader, "lifecycle-token")
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.(http3.HTTPStreamer).HTTPStream(); err != nil {
+		if _, err := takeOverHTTP3Stream(w, w.(http3.HTTPStreamer)); err != nil {
 			t.Errorf("take over stream: %v", err)
 		}
 	}))

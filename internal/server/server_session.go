@@ -181,14 +181,16 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	stream, err := httpStreamer.HTTPStream()
-	if err != nil {
+	// HTTPStream no longer sends the response header; flush it first so the
+	// stream is writable and a failed send aborts the takeover.
+	if err := http.NewResponseController(w).Flush(); err != nil {
 		s.log.Error("http3 stream takeover failed", "tunnel_id", tunnelID, "err", err)
 		if snap.session == nil {
 			s.markTunnelDisconnectedNowLocked(s.serverContext(), tunnelID)
 		}
 		return
 	}
+	stream := httpStreamer.HTTPStream()
 	s.activeTunnels.markConnected(snap.route.Domain.APIKeyID, tunnelID)
 	keepLiveRoute = true
 	var conn *quic.Conn
@@ -261,11 +263,11 @@ func (s *Server) handleConnectH3Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	stream, err := httpStreamer.HTTPStream()
-	if err != nil {
+	if err := http.NewResponseController(w).Flush(); err != nil {
 		s.log.Error("http3 worker stream takeover failed", "tunnel_id", sess.tunnelID, "err", err)
 		return
 	}
+	stream := httpStreamer.HTTPStream()
 	if !sess.addH3Worker(stream) {
 		closeH3Stream(stream)
 		return

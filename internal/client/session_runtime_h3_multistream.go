@@ -560,6 +560,18 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 	}
 
 	localErr := make(chan struct{})
+	// The caller closes the stream after this returns. http3.Stream.Close and
+	// Write share unsynchronized frame state, so the local reader goroutine
+	// must have stopped writing first. Closing the upstream connection ends
+	// its ReadMessage; a blocked stream write is bounded by its deadline, and
+	// cancelling the write side on shutdown releases it at once.
+	defer func() {
+		_ = upstreamConn.Close()
+		if rt.ctx.Err() != nil {
+			stream.CancelWrite(0)
+		}
+		<-localErr
+	}()
 	go func() {
 		defer close(localErr)
 		for {

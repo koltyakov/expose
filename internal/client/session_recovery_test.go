@@ -53,7 +53,7 @@ func TestQUICFallbackRefreshesSingleUseToken(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.(http3.HTTPStreamer).HTTPStream(); err != nil {
+		if _, err := takeOverHTTP3Stream(w, w.(http3.HTTPStreamer)); err != nil {
 			t.Errorf("take over control stream: %v", err)
 		}
 	}))

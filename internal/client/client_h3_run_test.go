@@ -75,7 +75,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 			registerMu.Unlock()
 			w.Header().Set(h3SessionHeader, "session-token")
 			w.WriteHeader(http.StatusOK)
-			stream, err := streamer.HTTPStream()
+			stream, err := takeOverHTTP3Stream(w, streamer)
 			if err != nil {
 				select {
 				case <-done:
@@ -99,7 +99,7 @@ func TestClientRunReconnectsAfterH3MultiStreamV2ServerRestart(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			stream, err := streamer.HTTPStream()
+			stream, err := takeOverHTTP3Stream(w, streamer)
 			if err != nil {
 				select {
 				case <-done:
@@ -286,7 +286,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 			}
 			w.Header().Set(h3SessionHeader, "session-token")
 			w.WriteHeader(http.StatusOK)
-			stream, err := streamer.HTTPStream()
+			stream, err := takeOverHTTP3Stream(w, streamer)
 			if err != nil {
 				recordAsyncTestError(asyncErrCh, "take over control stream: %v", err)
 				return
@@ -304,7 +304,7 @@ func TestClientRunH3DisplayTracksWebSockets(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			stream, err := streamer.HTTPStream()
+			stream, err := takeOverHTTP3Stream(w, streamer)
 			if err != nil {
 				recordAsyncTestError(asyncErrCh, "take over worker stream: %v", err)
 				return
@@ -694,7 +694,7 @@ func TestClientRunH3ReplacesWorkerTakenByWebSocket(t *testing.T) {
 		case "/_expose/v1/tunnels/connect-h3":
 			w.Header().Set(h3SessionHeader, "session-token")
 			w.WriteHeader(http.StatusOK)
-			stream, err := streamer.HTTPStream()
+			stream, err := takeOverHTTP3Stream(w, streamer)
 			if err != nil {
 				recordAsyncTestError(asyncErrCh, "take over control stream: %v", err)
 				return
@@ -703,7 +703,7 @@ func TestClientRunH3ReplacesWorkerTakenByWebSocket(t *testing.T) {
 			closeHTTP3TestStream(stream)
 		case "/_expose/v1/tunnels/connect-h3/stream":
 			w.WriteHeader(http.StatusOK)
-			stream, err := streamer.HTTPStream()
+			stream, err := takeOverHTTP3Stream(w, streamer)
 			if err != nil {
 				recordAsyncTestError(asyncErrCh, "take over worker stream: %v", err)
 				return

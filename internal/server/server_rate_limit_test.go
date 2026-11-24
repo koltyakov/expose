@@ -88,6 +88,7 @@ func TestRateLimiterRefillsOverTime(t *testing.T) {
 	s.mu.Lock()
 	b := s.buckets["key-c"]
 	b.lastCheck = b.lastCheck.Add(-1 * time.Second)
+	s.buckets["key-c"] = b
 	s.mu.Unlock()
 
 	// After 1 second at 5/s rate, at least 1 token should be available.
@@ -105,7 +106,9 @@ func TestRateLimiterCleanup(t *testing.T) {
 	// Age the bucket beyond cleanup threshold.
 	s := rl.shard("stale-key")
 	s.mu.Lock()
-	s.buckets["stale-key"].lastCheck = time.Now().Add(-(regCleanupAge + time.Minute))
+	b := s.buckets["stale-key"]
+	b.lastCheck = time.Now().Add(-(regCleanupAge + time.Minute))
+	s.buckets["stale-key"] = b
 	s.mu.Unlock()
 
 	rl.cleanup()
@@ -367,5 +370,77 @@ func TestRateLimitClientKeyGroupsIPv6By64(t *testing.T) {
 	}
 	if publicRateLimitKey("a.example.com", "2001:db8:1:2::1") != publicRateLimitKey("a.example.com", "2001:db8:1:2::2") {
 		t.Fatal("public limiter keys differ within one /64")
+	}
+}
+
+func TestRateLimiterShardCapPrefersRefilledBuckets(t *testing.T) {
+	t.Parallel()
+	rl := newConfiguredRateLimiter(1, 2, time.Hour)
+	s := &rl.shards[0]
+	now := time.Now()
+	// Fill one shard directly: half limited (no tokens), half refilled.
+	for i := range rateLimiterShardMaxBuckets {
+		b := bucket{tokens: 2, lastCheck: now}
+		if i%2 == 0 {
+			b.tokens = 0
+		}
+		s.buckets[fmt.Sprint("k", i)] = b
+	}
+	s.mu.Lock()
+	rl.shrinkLocked(s, now)
+	remaining := len(s.buckets)
+	limitedKept := true
+	for k, b := range s.buckets {
+		if b.tokens != 0 {
+			t.Errorf("refilled bucket %s kept while the shard was full", k)
+		}
+	}
+	for i := 0; i < rateLimiterShardMaxBuckets; i += 2 {
+		if _, ok := s.buckets[fmt.Sprint("k", i)]; !ok {
+			limitedKept = false
+		}
+	}
+	s.mu.Unlock()
+	if remaining != rateLimiterShardMaxBuckets/2 || !limitedKept {
+		t.Fatalf("after sweep: %d buckets, limited kept=%v", remaining, limitedKept)
+	}
+
+	// A flood of distinct keys stays bounded.
+	flood := newConfiguredRateLimiter(1, 2, time.Hour)
+	for i := range rateLimiterShards * rateLimiterShardMaxBuckets * 3 {
+		key := fmt.Sprint("client-", i)
+		flood.allow(key)
+		flood.allow(key)
+		flood.allow(key) // exhausted: these buckets carry state
+	}
+	if got := flood.size(); got > rateLimiterShards*rateLimiterShardMaxBuckets {
+		t.Fatalf("limiter grew to %d buckets", got)
+	}
+}
+
+func TestCachedACMECertRememberedBetweenHandshakes(t *testing.T) {
+	dir := t.TempDir()
+	srv := &Server{cfg: config.ServerConfig{CertCacheDir: dir}}
+	if srv.hasCachedACMECert("a.example.com") {
+		t.Fatal("missing certificate reported as cached")
+	}
+	cert := filepath.Join(dir, "a.example.com")
+	if err := os.WriteFile(cert, []byte("cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.hasCachedACMECert("a.example.com") {
+		t.Fatal("cached certificate not found")
+	}
+	// Later handshakes answer from memory, without touching the directory.
+	if err := os.Remove(cert); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.hasCachedACMECert("a.example.com") {
+		t.Fatal("found certificate not remembered")
+	}
+	// Removing a host's certificates forgets it at once.
+	srv.forgetACMECert("a.example.com")
+	if srv.hasCachedACMECert("a.example.com") {
+		t.Fatal("forgotten certificate still reported")
 	}
 }

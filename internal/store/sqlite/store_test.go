@@ -1350,13 +1350,23 @@ VALUES('legacy-named-tunnel', 'legacy-key', 'legacy-named', 'disconnected', 0, ?
 	if applied != len(schemaMigrations) {
 		t.Fatalf("expected %d recorded migrations, got %d", len(schemaMigrations), applied)
 	}
-	for _, name := range []string{"idx_domains_temp_inactive_last_seen", "idx_domains_tunnel_last_seen", "trg_tunnels_update_domain_activity"} {
+	for _, name := range []string{"idx_domains_api_key", "idx_domains_tunnel_last_seen", "trg_tunnels_update_domain_activity"} {
 		var count int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE name = ?`, name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
 			t.Fatalf("expected schema object %s", name)
+		}
+	}
+	// Migration 15 removes indexes that no query needs.
+	for _, name := range []string{"idx_domains_temp_inactive_last_seen", "idx_domains_type_status", "idx_domains_hostname", "idx_api_keys_hash", "idx_tunnels_domain_id"} {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE name = ?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("redundant index %s survived migration", name)
 		}
 	}
 	var backfilled time.Time

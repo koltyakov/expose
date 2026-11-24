@@ -40,7 +40,7 @@ func patternMatchesWithoutTrigger(rl *rule, s string) bool {
 		// Prefilter is bypassed for non-ASCII input by design.
 		return false
 	}
-	if containsAnyFolded(in.folded, rl.triggersFolded) {
+	if containsAnyFolded(in.folded, rl.triggersFolded) || hasAnyPrefix(in.folded, rl.prefixTriggersFolded) {
 		return false
 	}
 	return rl.pattern.MatchString(s)

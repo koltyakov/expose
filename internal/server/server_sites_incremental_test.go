@@ -197,6 +197,8 @@ func TestIncrementalPublishedSiteLifecycle(t *testing.T) {
 				}
 			}
 			// The publication survives a server restart with the committed directory.
+			// Run's shutdown flushes queued visitor writes; do the same here.
+			srv.flushSiteVisitors(context.Background())
 			srv = New(srv.cfg, st, srv.log, "test")
 			if err := srv.cleanupPublishedSites(context.Background()); err != nil {
 				t.Fatal(err)

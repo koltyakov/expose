@@ -129,7 +129,7 @@ func (t bypassTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 	}
 	failed, _ := r.Context().Value(bypassBodyFailureKey{}).(*bool)
-	resp.Body = &bypassResponseBody{ReadCloser: resp.Body, cancel: cancel, timeout: t.timeout, failed: failed}
+	resp.Body = newBypassResponseBody(resp.Body, cancel, t.timeout, failed)
 	return resp, nil
 }
 
@@ -138,11 +138,21 @@ type bypassResponseBody struct {
 	cancel  context.CancelFunc
 	timeout time.Duration
 	failed  *bool // read and inspected by the proxy handler's goroutine
+	// stall cancels the upstream request when one Read blocks for timeout.
+	// One timer per body, re-armed per Read; created stopped so Read and
+	// Close only call its goroutine-safe methods.
+	stall *time.Timer
+}
+
+func newBypassResponseBody(body io.ReadCloser, cancel context.CancelFunc, timeout time.Duration, failed *bool) *bypassResponseBody {
+	stall := time.AfterFunc(time.Hour, cancel)
+	stall.Stop()
+	return &bypassResponseBody{ReadCloser: body, cancel: cancel, timeout: timeout, failed: failed, stall: stall}
 }
 
 func (b *bypassResponseBody) Read(p []byte) (int, error) {
-	timer := time.AfterFunc(b.timeout, b.cancel)
-	defer timer.Stop()
+	b.stall.Reset(b.timeout)
+	defer b.stall.Stop()
 	n, err := b.ReadCloser.Read(p)
 	if err != nil && err != io.EOF && b.failed != nil {
 		*b.failed = true
@@ -151,6 +161,7 @@ func (b *bypassResponseBody) Read(p []byte) (int, error) {
 }
 
 func (b *bypassResponseBody) Close() error {
+	b.stall.Stop()
 	defer b.cancel()
 	return b.ReadCloser.Close()
 }

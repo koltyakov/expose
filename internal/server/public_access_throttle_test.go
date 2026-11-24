@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,9 +58,11 @@ func TestConcurrentPasswordAttemptsRespectBudget(t *testing.T) {
 			start := make(chan struct{})
 			var wg sync.WaitGroup
 			var checked, throttled atomic.Int64
-			for range 32 {
+			for i := range 32 {
 				wg.Go(func() {
-					req := passwordAttemptRequest(mode, "wrong-pass")
+					// Distinct guesses: identical Basic credentials share one
+					// verification (see TestBasicAuthColdCacheSharesVerification).
+					req := passwordAttemptRequest(mode, fmt.Sprintf("wrong-pass-%d", i))
 					w := httptest.NewRecorder()
 					<-start
 					srv.authorizePublicRequest(w, req, route)
@@ -256,5 +260,110 @@ func TestFormLoginFailedAttemptsThrottled(t *testing.T) {
 	}
 	if rr := postLogin("correct-pass"); rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("throttled login status = %d, want 429", rr.Code)
+	}
+}
+
+func TestBasicAuthColdCacheSharesVerification(t *testing.T) {
+	srv, route := newThrottleTestServer(t)
+	srv.accessLimiter = newConfiguredRateLimiter(accessAuthFailRate, accessAuthFailBurst, time.Minute)
+	// DefaultCost keeps bcrypt slow enough that the requests overlap.
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct-pass"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route.Tunnel.AccessPasswordHash = string(hash)
+	// Leave a single server-wide check slot: separate verifications would
+	// throttle all but one request.
+	srv.accessChecks.Store(maxAccessChecks - 1)
+
+	const parallel = 32 // more than the per-client failure burst too
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var ok, other atomic.Int64
+	for range parallel {
+		wg.Go(func() {
+			req := passwordAttemptRequest("basic", "correct-pass")
+			w := httptest.NewRecorder()
+			<-start
+			if srv.authorizePublicRequest(w, req, route) {
+				ok.Add(1)
+			} else {
+				other.Add(1)
+				t.Errorf("valid credentials rejected: status=%d", w.Code)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if ok.Load() != parallel {
+		t.Fatalf("authorized %d of %d", ok.Load(), parallel)
+	}
+	if srv.accessChecks.Load() != maxAccessChecks-1 {
+		t.Fatalf("check slots leaked: %d", srv.accessChecks.Load())
+	}
+
+	// Wrong credentials are still throttled once the budget is spent.
+	srv.accessChecks.Store(0)
+	srv.accessLimiter = newConfiguredRateLimiter(0, 2, time.Minute)
+	for i, want := range []int{http.StatusUnauthorized, http.StatusUnauthorized, http.StatusTooManyRequests} {
+		w := httptest.NewRecorder()
+		srv.authorizePublicRequest(w, passwordAttemptRequest("basic", fmt.Sprintf("guess-%d", i)), route)
+		if w.Code != want {
+			t.Fatalf("guess %d: status=%d want %d", i, w.Code, want)
+		}
+	}
+}
+
+func TestBasicAuthWaiterRetriesWhenLeaderThrottled(t *testing.T) {
+	srv, route := newThrottleTestServer(t)
+	key := srv.basicAuthSuccessKey(route, "admin", "correct-pass")
+	flight, leader := srv.basicAuthFlights.join(key)
+	if !leader {
+		t.Fatal("expected to lead the first flight")
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- srv.authorizePublicRequest(httptest.NewRecorder(), passwordAttemptRequest("basic", "correct-pass"), route)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	// A leader throttled under another client's budget must not fail waiters.
+	srv.basicAuthFlights.finish(key, flight, false, false)
+	select {
+	case got := <-done:
+		if !got {
+			t.Fatal("waiter rejected after the leader was throttled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter did not retry")
+	}
+}
+
+func TestBasicAuthWaiterStopsOnCancel(t *testing.T) {
+	srv, route := newThrottleTestServer(t)
+	key := srv.basicAuthSuccessKey(route, "admin", "correct-pass")
+	flight, _ := srv.basicAuthFlights.join(key)
+	defer srv.basicAuthFlights.finish(key, flight, false, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := passwordAttemptRequest("basic", "correct-pass").WithContext(ctx)
+	if srv.authorizePublicRequest(httptest.NewRecorder(), req, route) {
+		t.Fatal("cancelled waiter authorized")
+	}
+}
+
+func TestBasicAuthCacheHitSlidesExpiry(t *testing.T) {
+	var c basicAuthSuccessCache
+	key := [32]byte{1}
+	now := time.Now()
+	c.remember(key, now)
+	later := now.Add(basicAuthSuccessTTL - time.Second)
+	if !c.valid(key, later) {
+		t.Fatal("entry expired early")
+	}
+	if !c.valid(key, later.Add(basicAuthSuccessTTL-time.Second)) {
+		t.Fatal("hit did not slide the expiry")
+	}
+	if c.valid(key, later.Add(3*basicAuthSuccessTTL)) {
+		t.Fatal("idle entry did not expire")
 	}
 }

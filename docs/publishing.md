@@ -195,6 +195,8 @@ Published files, including HTML and SPA fallbacks, send `Cache-Control: no-cache
 
 Each file has a quoted, publication-specific `ETag`. Conditional `GET` and `HEAD` requests with a matching `If-None-Match` receive `304 Not Modified` without transferring the file again. Republishing changes the ETags even if file sizes and modification times match the previous upload. `Last-Modified` and byte-range requests remain supported. Missing or blocked paths send `Cache-Control: no-store`.
 
+The server stores gzip copies of compressible files (HTML, CSS, JavaScript, JSON, SVG, source maps and similar text formats, 1 KiB or larger) when it publishes a site, keeping a copy only when it saves at least 10%. Requests that accept gzip get the compressed copy with `Content-Encoding: gzip` and their own `ETag`; these files always send `Vary: Accept-Encoding`. Byte-range requests, and HTML with the `--ws` presence script, are served uncompressed. Incremental updates reuse the compressed copies of unchanged files. The copies live in a hidden directory, never appear in file lists, totals or diffs, and are capped at the site's byte limit.
+
 ## Upload guards and limits
 
 The CLI silently skips blocked paths, including the entire contents of blocked directories. Publishing continues with the remaining files. The server rejects archives containing blocked paths.

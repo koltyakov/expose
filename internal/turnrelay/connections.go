@@ -8,14 +8,24 @@ import (
 )
 
 type connectionPool struct {
-	mu     sync.Mutex
-	conns  map[*trackedConn]struct{}
+	mu    sync.Mutex
+	conns map[*trackedConn]struct{}
+	// byAddr indexes conns by "remote|local" so each successful TURN auth
+	// finds its connection without formatting every tracked address.
+	byAddr map[string][]*trackedConn
 	max    int
 	closed bool
 }
 
 func newConnectionPool(max int) *connectionPool {
-	return &connectionPool{max: max, conns: make(map[*trackedConn]struct{})}
+	return &connectionPool{max: max, conns: make(map[*trackedConn]struct{}), byAddr: make(map[string][]*trackedConn)}
+}
+
+func connAddrKey(remote, local net.Addr) string {
+	if remote == nil || local == nil {
+		return ""
+	}
+	return remote.String() + "|" + local.String()
 }
 
 func (p *connectionPool) add(conn net.Conn) (*trackedConn, bool) {
@@ -25,17 +35,41 @@ func (p *connectionPool) add(conn net.Conn) (*trackedConn, bool) {
 		return nil, false
 	}
 	c := &trackedConn{Conn: conn, pool: p, authDeadline: time.Now().Add(10 * time.Second)}
+	c.addrKey = connAddrKey(conn.RemoteAddr(), conn.LocalAddr())
 	p.conns[c] = struct{}{}
+	p.byAddr[c.addrKey] = append(p.byAddr[c.addrKey], c)
 	return c, true
 }
 
-func (p *connectionPool) authenticated(src, dst net.Addr) {
+func (p *connectionPool) remove(c *trackedConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for conn := range p.conns {
-		if conn.RemoteAddr().String() == src.String() && conn.LocalAddr().String() == dst.String() {
-			conn.ready.Store(true)
+	delete(p.conns, c)
+	peers := p.byAddr[c.addrKey]
+	for i, peer := range peers {
+		if peer == c {
+			peers = append(peers[:i], peers[i+1:]...)
+			break
 		}
+	}
+	if len(peers) == 0 {
+		delete(p.byAddr, c.addrKey)
+	} else {
+		p.byAddr[c.addrKey] = peers
+	}
+}
+
+// authenticated marks the stream connection behind a successful TURN auth.
+// UDP allocations have no tracked connection.
+func (p *connectionPool) authenticated(src, dst net.Addr) {
+	if _, udp := src.(*net.UDPAddr); udp {
+		return
+	}
+	key := connAddrKey(src, dst)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, conn := range p.byAddr[key] {
+		conn.ready.Store(true)
 	}
 }
 
@@ -73,6 +107,7 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 type trackedConn struct {
 	net.Conn
 	pool         *connectionPool
+	addrKey      string
 	authDeadline time.Time
 	ready        atomic.Bool
 	once         sync.Once
@@ -100,9 +135,7 @@ func (c *trackedConn) Write(buf []byte) (int, error) {
 func (c *trackedConn) Close() error {
 	c.once.Do(func() {
 		c.err = c.Conn.Close()
-		c.pool.mu.Lock()
-		delete(c.pool.conns, c)
-		c.pool.mu.Unlock()
+		c.pool.remove(c)
 	})
 	return c.err
 }

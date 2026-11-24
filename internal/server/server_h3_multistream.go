@@ -211,7 +211,10 @@ func (s *session) flushH3WorkerDemand() {
 			}
 			return
 		}
-		if err := s.writeJSON(tunnelproto.Message{
+		// Queue without waiting: this runs on the public request path, which
+		// must not block behind a slow tunnel writer. A full queue keeps the
+		// demand for the next acquire to send.
+		if err := s.writeJSONAsync(tunnelproto.Message{
 			Kind:       tunnelproto.KindWorkerCtrl,
 			WorkerCtrl: &tunnelproto.WorkerControl{Desired: desired},
 		}); err != nil {

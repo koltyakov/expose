@@ -12,6 +12,7 @@ import (
 	"github.com/koltyakov/expose/internal/config"
 	"github.com/koltyakov/expose/internal/debughttp"
 	ilog "github.com/koltyakov/expose/internal/log"
+	"github.com/koltyakov/expose/internal/selfupdate"
 	"github.com/koltyakov/expose/internal/server"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
@@ -37,12 +38,13 @@ func runServer(ctx context.Context, args []string) int {
 	}
 	logger := ilog.NewFormat(cfg.LogLevel, cfg.LogFormat)
 
-	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
+	// Auto-update when EXPOSE_AUTOUPDATE=true. The first check runs in the
+	// background loop once the server starts, not before it.
 	autoUpdate := autoUpdateActive(logger)
 	if autoUpdate {
-		if autoUpdateOnStart(ctx, Version, logger) {
-			return restartProcess(logger)
-		}
+		// Synchronous and quick, so it never holds the update lock when the
+		// first update check starts.
+		selfupdate.SweepStaleUpdates() // work left by an interrupted update
 	}
 
 	store, err := sqlite.OpenWithOptions(cfg.DBPath, sqlite.OpenOptions{
@@ -79,7 +81,7 @@ func runServer(ctx context.Context, args []string) int {
 	var needsRestart atomic.Bool
 	s := server.New(cfg, store, logger, Version)
 	if autoUpdate {
-		go startAutoUpdateLoop(serverCtx, Version, logger, s.UpdateChecks(), func() {
+		go startAutoUpdateLoop(serverCtx, Version, logger, !autoUpdateStartedByUpdate(), s.UpdateChecks(), func() {
 			needsRestart.Store(true)
 			serverCancel()
 		})

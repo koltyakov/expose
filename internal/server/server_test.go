@@ -1441,10 +1441,7 @@ func TestInjectForwardedProxyHeadersDefaultsHTTPValues(t *testing.T) {
 }
 
 func TestQueueDomainTouchDeduplicates(t *testing.T) {
-	srv := &Server{
-		domainTouches: make(chan string, 4),
-		domainTouched: make(map[string]struct{}),
-	}
+	srv := &Server{domainTouches: make(chan string, 4)}
 
 	srv.queueDomainTouch("domain-1")
 	srv.queueDomainTouch("domain-1")
@@ -1453,19 +1450,50 @@ func TestQueueDomainTouchDeduplicates(t *testing.T) {
 	}
 
 	id := <-srv.domainTouches
-	srv.completeDomainTouch(id)
+	srv.releaseDomainTouch(id)
 
 	srv.queueDomainTouch("domain-1")
 	if got := len(srv.domainTouches); got != 1 {
-		t.Fatalf("expected requeue after completion, got %d", got)
+		t.Fatalf("expected requeue after release, got %d", got)
+	}
+}
+
+func TestQueueDomainTouchThrottlesBeforeQueue(t *testing.T) {
+	srv := &Server{domainTouches: make(chan string, 4)}
+	for range 1000 {
+		srv.queueDomainTouch("domain-1")
+	}
+	if got := len(srv.domainTouches); got != 1 {
+		t.Fatalf("1000 requests queued %d touches, want 1", got)
+	}
+	<-srv.domainTouches // stored by the worker; the reservation stays
+	srv.queueDomainTouch("domain-1")
+	if got := len(srv.domainTouches); got != 0 {
+		t.Fatalf("touch requeued within the interval: %d", got)
+	}
+
+	// Once the interval has passed, the next request queues again.
+	v, _ := srv.domainTouched.Load("domain-1")
+	v.(*atomic.Int64).Add(-int64(domainTouchInterval))
+	srv.queueDomainTouch("domain-1")
+	if got := len(srv.domainTouches); got != 1 {
+		t.Fatalf("touch not requeued after the interval: %d", got)
+	}
+
+	// Cleanup forgets reservations older than the interval only.
+	srv.queueDomainTouch("domain-2")
+	v.(*atomic.Int64).Add(-int64(domainTouchInterval))
+	srv.cleanupDomainTouches(time.Now())
+	if _, ok := srv.domainTouched.Load("domain-1"); ok {
+		t.Fatal("stale reservation kept")
+	}
+	if _, ok := srv.domainTouched.Load("domain-2"); !ok {
+		t.Fatal("recent reservation dropped")
 	}
 }
 
 func TestQueueDomainTouchReleasesDedupOnOverflow(t *testing.T) {
-	srv := &Server{
-		domainTouches: make(chan string, 1),
-		domainTouched: make(map[string]struct{}),
-	}
+	srv := &Server{domainTouches: make(chan string, 1)}
 
 	srv.queueDomainTouch("domain-1")
 	srv.queueDomainTouch("domain-2") // dropped because queue is full
@@ -1476,7 +1504,7 @@ func TestQueueDomainTouchReleasesDedupOnOverflow(t *testing.T) {
 	if ok := srv.reserveDomainTouch("domain-2"); !ok {
 		t.Fatal("expected dropped domain touch to be released from dedupe tracking")
 	}
-	srv.completeDomainTouch("domain-2")
+	srv.releaseDomainTouch("domain-2")
 }
 
 func TestRecordWAFBlockQueueOverflowNonBlocking(t *testing.T) {

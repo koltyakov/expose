@@ -15,12 +15,28 @@ import (
 // BlockEvent carries context about a single WAF-blocked request so that
 // callers can produce meaningful audit log entries.
 type BlockEvent struct {
-	Host       string // normalised hostname (port stripped, lowercased)
-	Rule       string // name of the WAF rule that matched
-	Method     string // HTTP method (GET, POST, …)
-	RequestURI string // request URI with query values redacted
+	Host   string // normalised hostname (port stripped, lowercased)
+	Rule   string // name of the WAF rule that matched
+	Method string // HTTP method (GET, POST, …)
+	// RequestURI is the request URI with query values redacted. Events passed
+	// to OnBlock leave it empty until Resolve builds it: most blocks are
+	// probes against unknown hosts that are only counted.
+	RequestURI string
 	RemoteAddr string // client IP (from X-Forwarded-For or RemoteAddr)
 	UserAgent  string // User-Agent header value
+
+	request *http.Request // valid only during the OnBlock call
+}
+
+// Resolve returns the event detached from its request, with RequestURI built
+// when withURI is set. OnBlock must call it before returning or retaining the
+// event; the request may be reused afterwards.
+func (e BlockEvent) Resolve(withURI bool) BlockEvent {
+	if withURI && e.RequestURI == "" && e.request != nil {
+		e.RequestURI = redactedRequestURI(e.request)
+	}
+	e.request = nil
+	return e
 }
 
 // Config controls WAF behaviour.
@@ -123,8 +139,8 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 				host := normalizeHost(r.Host)
 				userAgent := r.UserAgent()
 
-				requestURI := redactedRequestURI(r)
 				if fw.onBlock == nil {
+					requestURI := redactedRequestURI(r)
 					logMsg := "waf blocked request"
 					if fw.auditOnly {
 						logMsg = "waf matched request (audit)"
@@ -141,9 +157,9 @@ func NewMiddleware(cfg Config, logger *slog.Logger) func(http.Handler) http.Hand
 						Host:       host,
 						Rule:       ruleName,
 						Method:     r.Method,
-						RequestURI: requestURI,
 						RemoteAddr: clientIP,
 						UserAgent:  userAgent,
+						request:    r,
 					})
 				}
 

@@ -1166,3 +1166,66 @@ func TestPubStatsPacerBacksOffUntilChange(t *testing.T) {
 		t.Fatalf("reset pacer waited %v", got)
 	}
 }
+
+func TestPubWatchRecreatesFailedNotifications(t *testing.T) {
+	root := t.TempDir()
+	writeIncrementalCLIFile(t, root, "index.html", "old")
+	h, client, opts, initial, snapshot := newPubWatchTestServer(t, root)
+	original := newPubWatchNotifierFunc
+	t.Cleanup(func() { newPubWatchNotifierFunc = original })
+	var mu sync.Mutex
+	attempts := 0
+	newPubWatchNotifierFunc = func(ctx context.Context, opts pubUploadOptions) *pubWatchNotifier {
+		mu.Lock()
+		attempts++
+		first := attempts == 1
+		mu.Unlock()
+		if first {
+			return nil // notifications unavailable at start
+		}
+		return original(ctx, opts)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	timing := fastPubWatchTiming()
+	timing.NotifyRetry = 20 * time.Millisecond
+	var output pubWatchTestOutput
+	changed, published := false, 0
+	output.onEvent = func(event pubWatchEvent) {
+		mu.Lock()
+		rearmed := attempts >= 2
+		mu.Unlock()
+		if event.Type == "stats" && rearmed && !changed {
+			changed = true
+			writeIncrementalCLIFile(t, root, "index.html", "new")
+		}
+		if event.Type == "published" {
+			if published++; published == 2 { // the first reports the initial upload
+				cancel()
+			}
+		}
+	}
+	if err := watchPublishedSite(ctx, client, opts, initial, snapshot, &output, false, true, timing); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 2 {
+		t.Fatalf("notifier created %d times, want 2 (one failure, one retry)", attempts)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !changed || h.commits != 1 {
+		t.Fatalf("change after re-arming not published: changed=%v commits=%d", changed, h.commits)
+	}
+}
+
+func TestPubWatchTimingDefaults(t *testing.T) {
+	got := pubWatchTiming{Poll: 5 * time.Second}.defaults()
+	if got.PollIdle != 5*time.Second || got.NotifyRetry != 2*time.Second {
+		t.Fatalf("defaults: idle=%s retry=%s", got.PollIdle, got.NotifyRetry)
+	}
+	if got := (pubWatchTiming{}).defaults(); got.PollIdle != 2*time.Second {
+		t.Fatalf("default idle poll = %s, want 2s", got.PollIdle)
+	}
+}

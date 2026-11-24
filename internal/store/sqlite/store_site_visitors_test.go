@@ -8,7 +8,7 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 )
 
-func TestPublishedSiteVisitorsBoundedAndDeletedWithSite(t *testing.T) {
+func TestPublishedSiteVisitorsDeduplicatedAndDeletedWithSite(t *testing.T) {
 	st, err := openTestStore(t)
 	if err != nil {
 		t.Fatal(err)
@@ -23,20 +23,25 @@ func TestPublishedSiteVisitorsBoundedAndDeletedWithSite(t *testing.T) {
 	if err := st.CreatePublishedSite(ctx, site); err != nil {
 		t.Fatal(err)
 	}
-	for _, fingerprint := range [][32]byte{{1}, {1}, {2}, {3}} {
-		if err := st.RecordPublishedSiteVisitor(ctx, site.ID, fingerprint, 2); err != nil {
-			t.Fatal(err)
-		}
+	batch := []SiteVisitor{{site.ID, [32]byte{2}}, {site.ID, [32]byte{1}}, {site.ID, [32]byte{1}}, {"site_missing", [32]byte{9}}}
+	if err := st.RecordPublishedSiteVisitors(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordPublishedSiteVisitors(ctx, []SiteVisitor{{site.ID, [32]byte{2}}}); err != nil {
+		t.Fatal(err)
 	}
 	visitors, err := st.ListPublishedSiteVisitors(ctx, site.ID)
 	if err != nil || len(visitors) != 2 || visitors[0] != [32]byte{1} || visitors[1] != [32]byte{2} {
-		t.Fatalf("deduplication or cap failed: %v, %v", visitors, err)
+		t.Fatalf("deduplication failed: %v, %v", visitors, err)
+	}
+	if missing, err := st.ListPublishedSiteVisitors(ctx, "site_missing"); err != nil || len(missing) != 0 {
+		t.Fatalf("visitor stored for a missing site: %v, %v", missing, err)
 	}
 	if err := st.DeletePublishedSite(ctx, key.ID, site.ID); err != nil {
 		t.Fatal(err)
 	}
-	// A late request cannot recreate visitor data for a deleted publication.
-	if err := st.RecordPublishedSiteVisitor(ctx, site.ID, [32]byte{4}, 2); err != nil {
+	// A late batch cannot recreate visitor data for a deleted publication.
+	if err := st.RecordPublishedSiteVisitors(ctx, []SiteVisitor{{site.ID, [32]byte{4}}}); err != nil {
 		t.Fatal(err)
 	}
 	if visitors, err := st.ListPublishedSiteVisitors(ctx, site.ID); err != nil || len(visitors) != 0 {

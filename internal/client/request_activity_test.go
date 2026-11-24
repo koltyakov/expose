@@ -83,7 +83,8 @@ func TestForwardUpstreamInactivityCancelsRequest(t *testing.T) {
 			failed := false
 			started := time.Now()
 			c.forwardAndSend(ctx, base, &tunnelproto.HTTPRequest{ID: "idle", Method: http.MethodGet, Path: "/", TimeoutMs: 100}, nil, func(msg tunnelproto.Message) error {
-				if msg.Response != nil && msg.Response.Status == http.StatusBadGateway {
+				// Headers never arrived: a timeout, reported as 504.
+				if msg.Response != nil && msg.Response.Status == http.StatusGatewayTimeout {
 					failed = true
 				}
 				if msg.Kind == tunnelproto.KindRespBodyEnd && msg.BodyChunk.Error != "" {
@@ -183,5 +184,37 @@ func TestRequestActivityReusesTimerWithoutCancelingPausedReads(t *testing.T) {
 	activity.expire()
 	if ctx.Err() == nil {
 		t.Fatal("expired active read did not cancel the request")
+	}
+}
+
+func TestRequestActivityLazyReadDeadline(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := newRequestActivity(40*time.Millisecond, cancel)
+	defer a.stop()
+	a.finishHeaders()
+	timer := a.timer
+	for range 1000 {
+		a.beginRead()
+		a.endRead()
+	}
+	if a.timer != timer {
+		t.Fatal("reads replaced the timer")
+	}
+	// Idle between reads is not bounded.
+	time.Sleep(100 * time.Millisecond)
+	if ctx.Err() != nil {
+		t.Fatal("idle time between reads cancelled the request")
+	}
+	// A read that stalls past the timeout is.
+	a.beginRead()
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("stalled read was not cancelled")
+	}
+	if !a.timedOut() {
+		t.Fatal("timeout not reported")
 	}
 }

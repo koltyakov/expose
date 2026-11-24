@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -116,10 +115,7 @@ func TestDelegatedAccessSessionsAreBoundedScopedAndExpire(t *testing.T) {
 	now := time.Now()
 	scope := delegatedAccessScope{host: "app.example.com", tunnelID: "t1", keyID: "k1", connection: &session{}}
 	entry := delegatedAccessSession{scope: scope, user: "alice", auth: "Basic secret"}
-	token, ok := c.create(entry, now)
-	if !ok {
-		t.Fatal("create failed")
-	}
+	token := c.create(entry, now)
 	for _, changed := range []delegatedAccessScope{
 		{host: "other.example.com", tunnelID: "t1", keyID: "k1", connection: scope.connection},
 		{host: scope.host, tunnelID: "t2", keyID: "k1", connection: scope.connection},
@@ -139,14 +135,14 @@ func TestDelegatedAccessSessionsAreBoundedScopedAndExpire(t *testing.T) {
 	if _, ok := c.lookup(token, scope, now.Add(delegatedAccessTTL)); ok || len(c.entries) != 0 {
 		t.Fatal("session survived expiry")
 	}
-	entry.expiresAt = now.Add(delegatedAccessTTL)
-	for i := range delegatedAccessMaxSessions {
-		c.entries[sha256.Sum256(fmt.Appendf(nil, "token-%d", i))] = entry
+	for range delegatedAccessMaxPerScope + 5 {
+		c.create(entry, now)
 	}
-	if _, ok := c.create(entry, now); ok || len(c.entries) != delegatedAccessMaxSessions {
-		t.Fatal("session capacity not enforced")
+	if len(c.entries) != delegatedAccessMaxPerScope {
+		t.Fatalf("per-scope cap not enforced: %d sessions", len(c.entries))
 	}
-	if _, ok := c.create(entry, now.Add(delegatedAccessTTL)); !ok || len(c.entries) != 1 {
+	c.create(entry, now.Add(delegatedAccessTTL))
+	if len(c.entries) != 1 {
 		t.Fatal("expired entries did not release capacity")
 	}
 	c.removeConnection(scope.connection)
@@ -310,5 +306,40 @@ func TestDelegatedAccessRegistrationNeedsNoEdgePassword(t *testing.T) {
 			prepared.passwordHash != "" || prepared.request.Password != "" {
 			t.Fatal("delegated registration retained or required edge credentials")
 		}
+	}
+}
+
+func TestDelegatedAccessFullTunnelDoesNotBlockOthers(t *testing.T) {
+	t.Parallel()
+	var c delegatedAccessSessions
+	now := time.Now()
+	busy := delegatedAccessScope{host: "busy.example.com", tunnelID: "t1", keyID: "k1", connection: &session{}}
+	quiet := delegatedAccessScope{host: "quiet.example.com", tunnelID: "t2", keyID: "k1", connection: &session{}}
+	first := c.create(delegatedAccessSession{scope: busy, user: "a"}, now)
+	for range delegatedAccessMaxPerScope * 2 {
+		c.create(delegatedAccessSession{scope: busy, user: "a"}, now)
+	}
+	if _, ok := c.lookup(first, busy, now); ok {
+		t.Fatal("oldest session of a full scope was not evicted")
+	}
+	token := c.create(delegatedAccessSession{scope: quiet, user: "b"}, now)
+	if _, ok := c.lookup(token, quiet, now); !ok {
+		t.Fatal("login on another tunnel blocked by a full one")
+	}
+
+	// A full table evicts the globally oldest session rather than refusing.
+	for i := range delegatedAccessMaxSessions {
+		c.create(delegatedAccessSession{scope: delegatedAccessScope{tunnelID: fmt.Sprint("fill-", i/delegatedAccessMaxPerScope)}}, now)
+	}
+	if len(c.entries) > delegatedAccessMaxSessions {
+		t.Fatalf("table grew past its cap: %d", len(c.entries))
+	}
+	last := c.create(delegatedAccessSession{scope: quiet, user: "b"}, now)
+	if _, ok := c.lookup(last, quiet, now); !ok {
+		t.Fatal("login refused when the table was full")
+	}
+	c.removeTunnel("t2")
+	if _, ok := c.lookup(last, quiet, now); ok {
+		t.Fatal("tunnel removal kept a session")
 	}
 }

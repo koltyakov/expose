@@ -463,3 +463,33 @@ func testTLSConfig(t *testing.T) *tls.Config {
 	}
 	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 }
+
+func TestConnectionPoolAuthIndex(t *testing.T) {
+	p := newConnectionPool(4)
+	a, aPeer := net.Pipe()
+	b, bPeer := net.Pipe()
+	defer func() { _ = aPeer.Close(); _ = bPeer.Close() }()
+	ta, _ := p.add(&addrConn{Conn: a, remote: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, local: &net.TCPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478}})
+	tb, _ := p.add(&addrConn{Conn: b, remote: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 1000}, local: &net.TCPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478}})
+	p.authenticated(&net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, ta.LocalAddr())
+	if ta.ready.Load() {
+		t.Fatal("UDP auth marked a stream connection")
+	}
+	p.authenticated(ta.RemoteAddr(), ta.LocalAddr())
+	if !ta.ready.Load() || tb.ready.Load() {
+		t.Fatalf("auth marked the wrong connection: a=%v b=%v", ta.ready.Load(), tb.ready.Load())
+	}
+	_ = ta.Close()
+	_ = tb.Close()
+	if len(p.conns) != 0 || len(p.byAddr) != 0 {
+		t.Fatalf("closed connections left in the pool: %d conns, %d index keys", len(p.conns), len(p.byAddr))
+	}
+}
+
+type addrConn struct {
+	net.Conn
+	remote, local net.Addr
+}
+
+func (c *addrConn) RemoteAddr() net.Addr { return c.remote }
+func (c *addrConn) LocalAddr() net.Addr  { return c.local }

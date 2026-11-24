@@ -343,6 +343,23 @@ END;`)
 		_, err := tx.ExecContext(ctx, `CREATE INDEX idx_published_sites_owner_source ON published_sites(api_key_id, source_id)`)
 		return err
 	}},
+	// Drop indexes no query needs; each costs a write on every insert and
+	// update of its table. hostname and key_hash already have UNIQUE
+	// autoindexes; tunnels(domain_id) and domains(type, status) are prefixes
+	// of composite indexes; no query leads with domains(type, status, ...),
+	// and the inactive-domain purge uses idx_domains_tunnel_last_seen.
+	// ListExposures filters domains by owner, which had no index.
+	// TestHotQueryPlansUseIndexes pins the resulting plans.
+	{version: 15, name: "index_cleanup", apply: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+DROP INDEX IF EXISTS idx_domains_temp_inactive_last_seen;
+DROP INDEX IF EXISTS idx_domains_type_status;
+DROP INDEX IF EXISTS idx_domains_hostname;
+DROP INDEX IF EXISTS idx_api_keys_hash;
+DROP INDEX IF EXISTS idx_tunnels_domain_id;
+CREATE INDEX IF NOT EXISTS idx_domains_api_key ON domains(api_key_id);`)
+		return err
+	}},
 }
 
 func applyTemporaryDomainActivityMigration(ctx context.Context, tx *sql.Tx) error {

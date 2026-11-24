@@ -38,44 +38,33 @@ func autoUpdateActive(logger *slog.Logger) bool {
 	return true
 }
 
-// autoUpdateOnStart performs a single update check. If a newer release is
-// available it downloads and replaces the binary in-place. Returns true
-// when the binary was replaced and the caller should restart the process.
-func autoUpdateOnStart(ctx context.Context, currentVersion string, logger *slog.Logger) bool {
-	if currentVersion == "" {
-		return false
-	}
-	logger.Info("auto-update: checking for updates", "current_version", currentVersion)
-	result, err := autoUpdateCheckAndApply(ctx, currentVersion)
-	if err != nil {
-		logger.Warn("auto-update: check failed", "err", err)
-		return false
-	}
-	if !result.Updated {
-		logger.Info("auto-update: already up to date", "version", currentVersion)
-		return false
-	}
-	logger.Info("auto-update: binary replaced", "from", result.CurrentVersion, "to", versionutil.EnsureVPrefix(result.LatestVersion), "asset", result.AssetName)
-	return true
-}
+// autoUpdateStartedByUpdate reports whether an update restart started this
+// process; its startup check is then skipped.
+var autoUpdateStartedByUpdate = selfupdate.StartedByUpdate
 
-// startAutoUpdateLoop runs periodic and client-triggered update checks. When
-// an update is successfully applied it calls onUpdate (which should trigger
-// a graceful shutdown) and returns.
-func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slog.Logger, updateChecks <-chan struct{}, onUpdate func()) {
+// startAutoUpdateLoop runs startup, periodic and client-triggered update
+// checks. The caller runs it beside the service it updates, so a slow or
+// unreachable release API never delays startup. checkAtStart requests an
+// immediate first check. When an update is successfully applied it calls
+// onUpdate (which should trigger a graceful shutdown) and returns.
+func startAutoUpdateLoop(ctx context.Context, currentVersion string, logger *slog.Logger, checkAtStart bool, updateChecks <-chan struct{}, onUpdate func()) {
 	if currentVersion == "" {
 		return
 	}
 	logger.Info("auto-update: periodic checks enabled", "interval", autoUpdateCheckInterval)
 	ticker := time.NewTicker(autoUpdateCheckInterval)
 	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		case <-updateChecks:
-			logger.Info("auto-update: newer client registered, checking for updates")
+	for first := true; ; first = false {
+		if first && checkAtStart {
+			logger.Info("auto-update: checking for updates", "current_version", currentVersion)
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			case <-updateChecks:
+				logger.Info("auto-update: newer client registered, checking for updates")
+			}
 		}
 		if ctx.Err() != nil {
 			return

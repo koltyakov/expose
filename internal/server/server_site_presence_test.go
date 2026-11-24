@@ -114,7 +114,7 @@ func TestPublishedSitePresenceLifecycle(t *testing.T) {
 	// Simulate a page that has not downloaded anything for several minutes.
 	stats.mu.Lock()
 	for visitor := range stats.visitors {
-		stats.visitors[visitor] = time.Now().Add(-2 * time.Minute)
+		stats.visitors[visitor] = time.Now().Add(-2 * time.Minute).UnixNano()
 	}
 	stats.mu.Unlock()
 	if stats.snapshot(time.Now()).ActiveVisitors != 0 {

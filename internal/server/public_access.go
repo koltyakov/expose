@@ -29,8 +29,12 @@ const (
 	publicAccessFormPasswordField = access.FormPasswordField
 	publicAccessFormNextField     = access.FormNextField
 	maxPublicAccessFormBytes      = 8 * 1024
-	basicAuthSuccessTTL           = 30 * time.Second
-	basicAuthSuccessMaxEntries    = 4096
+	// basicAuthSuccessTTL is how long verified Basic credentials stay cached
+	// after their last use. Hits slide the expiry, so continuous use does not
+	// re-run bcrypt; the cache key is bound to the password hash, so a
+	// password change invalidates entries immediately.
+	basicAuthSuccessTTL        = 2 * time.Minute
+	basicAuthSuccessMaxEntries = 4096
 )
 
 type basicAuthSuccessCache struct {
@@ -38,6 +42,7 @@ type basicAuthSuccessCache struct {
 	entries map[[sha256.Size]byte]int64
 }
 
+// valid reports whether key holds verified credentials and slides its expiry.
 func (c *basicAuthSuccessCache) valid(key [sha256.Size]byte, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -49,7 +54,44 @@ func (c *basicAuthSuccessCache) valid(key [sha256.Size]byte, now time.Time) bool
 		delete(c.entries, key)
 		return false
 	}
+	c.entries[key] = now.Add(basicAuthSuccessTTL).UnixNano()
 	return true
+}
+
+// basicAuthFlight is one in-progress bcrypt verification that concurrent
+// requests presenting the same credentials wait on instead of repeating.
+type basicAuthFlight struct {
+	done     chan struct{}
+	verified bool // false when the leader was throttled before verifying
+	valid    bool
+}
+
+type basicAuthFlightGroup struct {
+	mu      sync.Mutex
+	flights map[[sha256.Size]byte]*basicAuthFlight
+}
+
+// join returns the flight for key and whether the caller leads it.
+func (g *basicAuthFlightGroup) join(key [sha256.Size]byte) (*basicAuthFlight, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if f, ok := g.flights[key]; ok {
+		return f, false
+	}
+	if g.flights == nil {
+		g.flights = make(map[[sha256.Size]byte]*basicAuthFlight)
+	}
+	f := &basicAuthFlight{done: make(chan struct{})}
+	g.flights[key] = f
+	return f, true
+}
+
+func (g *basicAuthFlightGroup) finish(key [sha256.Size]byte, f *basicAuthFlight, verified, valid bool) {
+	g.mu.Lock()
+	delete(g.flights, key)
+	g.mu.Unlock()
+	f.verified, f.valid = verified, valid
+	close(f.done)
 }
 
 func (c *basicAuthSuccessCache) remember(key [sha256.Size]byte, now time.Time) {
@@ -121,20 +163,55 @@ func (s *Server) authorizePublicRequest(w http.ResponseWriter, r *http.Request, 
 
 // Reserve the failure budget before bcrypt so simultaneous requests cannot
 // all pass an exhaustion check. A server-wide cap also bounds work spread over
-// many client addresses. Cached Basic credentials avoid expensive verification.
+// many client addresses.
+//
+// Basic credentials (cache=true) are cached after a successful check, and
+// concurrent requests presenting the same credentials share one bcrypt run:
+// a browser opening a protected page fires many parallel requests on a cold
+// cache, which must neither each pay for bcrypt nor trip the per-client or
+// server-wide limits. Joining a flight reserves nothing, since it adds no
+// guess; only the request that runs bcrypt reserves budget and a check slot.
 func (s *Server) checkPublicAccessPassword(r *http.Request, route domain.TunnelRoute, user, password string, cache bool) (valid, throttled bool) {
 	limitKey := s.accessAuthLimitKey(route, r)
-	if !s.accessLimiter.allow(limitKey) {
-		return false, true
-	}
 	if !isAuthorizedBasicUser(user, publicAccessExpectedUser(route)) {
+		if !s.accessLimiter.allow(limitKey) {
+			return false, true
+		}
 		return false, false
 	}
-	now := time.Now()
+	if !cache {
+		return s.verifyPublicAccessPassword(limitKey, route, password)
+	}
 	cacheKey := s.basicAuthSuccessKey(route, user, password)
-	if cache && s.basicAuthCache.valid(cacheKey, now) {
-		s.accessLimiter.refund(limitKey)
-		return true, false
+	for {
+		if s.basicAuthCache.valid(cacheKey, time.Now()) {
+			return true, false
+		}
+		flight, leader := s.basicAuthFlights.join(cacheKey)
+		if leader {
+			valid, throttled = s.verifyPublicAccessPassword(limitKey, route, password)
+			if valid {
+				s.basicAuthCache.remember(cacheKey, time.Now())
+			}
+			s.basicAuthFlights.finish(cacheKey, flight, !throttled, valid)
+			return valid, throttled
+		}
+		select {
+		case <-flight.done:
+		case <-r.Context().Done():
+			return false, false
+		}
+		if flight.verified {
+			return flight.valid, false
+		}
+		// The leader was throttled before verifying (its own client budget or
+		// the server-wide cap); retry under this request's own limits.
+	}
+}
+
+func (s *Server) verifyPublicAccessPassword(limitKey string, route domain.TunnelRoute, password string) (valid, throttled bool) {
+	if !s.accessLimiter.allow(limitKey) {
+		return false, true
 	}
 	if s.accessChecks.Add(1) > maxAccessChecks {
 		s.accessChecks.Add(-1)
@@ -146,9 +223,6 @@ func (s *Server) checkPublicAccessPassword(r *http.Request, route domain.TunnelR
 		return false, false
 	}
 	s.accessLimiter.refund(limitKey)
-	if cache {
-		s.basicAuthCache.remember(cacheKey, now)
-	}
 	return true, false
 }
 

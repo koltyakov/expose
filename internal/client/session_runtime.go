@@ -3,9 +3,11 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/koltyakov/expose/internal/timerpool"
@@ -14,6 +16,16 @@ import (
 )
 
 const streamedReqBodyDispatchWait = 100 * time.Millisecond
+
+// tunnelSilentPingIntervals is how many ping intervals may pass without any
+// inbound message before the session is declared dead. The server answers
+// pings asynchronously and may drop a pong under backpressure, so a single
+// missing pong is tolerated.
+const tunnelSilentPingIntervals = 3
+
+// errTunnelUnresponsive reports a tunnel that accepts writes but delivers
+// nothing back, such as a path that died without FIN or RST.
+var errTunnelUnresponsive = errors.New("tunnel unresponsive: no message from server")
 
 type streamedRequestState struct {
 	ch     chan []byte
@@ -90,6 +102,8 @@ type clientSessionRuntime struct {
 
 	pingSentMu sync.Mutex
 	pingSentAt time.Time
+	// lastRecvAt is the unix-nano time of the last inbound message.
+	lastRecvAt atomic.Int64
 
 	msgCh        chan tunnelproto.Message
 	readErr      chan error
@@ -122,6 +136,7 @@ func newClientSessionRuntimeFromConn(c *Client, parentCtx context.Context, local
 		streamedReqState: make(map[string]*streamedRequestState),
 	}
 	rt.transport.SetReadLimit(clientWSReadLimit)
+	rt.lastRecvAt.Store(time.Now().UnixNano())
 
 	go func() {
 		<-rt.ctx.Done()
@@ -242,21 +257,30 @@ func (rt *clientSessionRuntime) startKeepaliveLoop() {
 		return
 	}
 	go func() {
-		ticker := time.NewTicker(rt.client.cfg.PingInterval)
+		interval := rt.client.cfg.PingInterval
+		silentLimit := tunnelSilentPingIntervals * interval
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		fail := func(err error) {
+			select {
+			case rt.keepaliveErr <- err:
+			default:
+			}
+		}
 		for {
 			select {
 			case <-rt.ctx.Done():
 				return
-			case <-ticker.C:
+			case now := <-ticker.C:
+				if silent := now.Sub(time.Unix(0, rt.lastRecvAt.Load())); silent > silentLimit {
+					fail(fmt.Errorf("%w for %s", errTunnelUnresponsive, silent.Round(time.Second)))
+					return
+				}
 				rt.pingSentMu.Lock()
-				rt.pingSentAt = time.Now()
+				rt.pingSentAt = now
 				rt.pingSentMu.Unlock()
 				if err := rt.writeJSON(tunnelproto.Message{Kind: tunnelproto.KindPing}); err != nil {
-					select {
-					case rt.keepaliveErr <- err:
-					default:
-					}
+					fail(err)
 					return
 				}
 			}
@@ -275,6 +299,7 @@ func (rt *clientSessionRuntime) startReadLoop() {
 				}
 				return
 			}
+			rt.lastRecvAt.Store(time.Now().UnixNano())
 			select {
 			case rt.msgCh <- msg:
 			case <-rt.ctx.Done():

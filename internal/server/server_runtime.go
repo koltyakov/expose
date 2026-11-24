@@ -56,6 +56,15 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.runDisconnectWorker(disconnectCtx)
 	go s.runJanitor(ctx)
 	go s.runDomainTouchWorker(ctx)
+	// The visitor writer outlives the listeners: its deferred stop runs after
+	// shutdown, so it flushes every visit recorded before the store closes.
+	visitorCtx, visitorCancel := context.WithCancel(context.Background())
+	visitorDone := make(chan struct{})
+	go s.runSiteVisitorWriter(visitorCtx, visitorDone)
+	defer func() {
+		visitorCancel()
+		<-visitorDone
+	}()
 	if s.cfg.WAFEnabled {
 		go s.runWAFAuditWorker(ctx)
 	}
@@ -244,10 +253,7 @@ func (s *Server) allowACMEIssuance(host string) bool {
 		return true
 	}
 	if s.hasCachedACMECert(host) {
-		s.acmeIssueMu.Lock()
-		delete(s.acmeIssueHosts, host)
-		s.acmeIssueMu.Unlock()
-		return true
+		return true // a leftover admission expires through cleanupACMEIssueAdmissions
 	}
 	now := time.Now()
 	s.acmeIssueMu.Lock()
@@ -274,19 +280,40 @@ func (s *Server) cleanupACMEIssueAdmissions() {
 		}
 	}
 	s.acmeIssueMu.Unlock()
+	s.acmeCertSeen.Range(func(host, until any) bool {
+		if now.UnixNano() >= until.(int64) {
+			s.acmeCertSeen.Delete(host)
+		}
+		return true
+	})
 }
+
+// acmeCertSeenTTL bounds how long a found certificate file is remembered.
+// autocert asks HostPolicy on every TLS handshake, so without this each
+// handshake in dynamic TLS mode stats the cache directory.
+const acmeCertSeenTTL = 5 * time.Minute
 
 func (s *Server) hasCachedACMECert(host string) bool {
 	dir := strings.TrimSpace(s.cfg.CertCacheDir)
 	if dir == "" || host == "" {
 		return false
 	}
+	now := time.Now().UnixNano()
+	if until, ok := s.acmeCertSeen.Load(host); ok && now < until.(int64) {
+		return true
+	}
 	for _, name := range []string{host, host + "+rsa"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			s.acmeCertSeen.Store(host, now+int64(acmeCertSeenTTL))
 			return true
 		}
 	}
 	return false
+}
+
+// forgetACMECert drops a remembered certificate after its files are removed.
+func (s *Server) forgetACMECert(host string) {
+	s.acmeCertSeen.Delete(host)
 }
 
 func requestReadDeadlineMiddleware(next http.Handler, timeout time.Duration) http.Handler {
@@ -340,7 +367,7 @@ func (s *Server) httpHandler() http.Handler {
 			MaxURILength:         s.cfg.WAFMaxURILength,
 			MaxHeaderCount:       s.cfg.WAFMaxHeaderCount,
 			MaxHeaderBytes:       s.cfg.WAFMaxHeaderBytes,
-			ShouldInspectBody:    shouldInspectWAFBody,
+			ShouldInspectBody:    s.shouldInspectWAFBody,
 			ShouldIgnorePathRule: s.shouldIgnoreWAFPathRule,
 			ClientAddr:           s.clientIP,
 			OnBlock:              s.recordWAFBlock,
@@ -385,6 +412,43 @@ func shouldInspectWAFBody(r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// shouldInspectWAFBody also skips bodies for hosts this server is known not
+// to serve, which handlePublic answers without reading the body: a cached
+// route miss, or an IP-literal Host (tunnels and sites have DNS names).
+// Hosts not yet resolved are still inspected; handlePublic's lookup then
+// caches the answer for later requests. For inspected bodies the preview read
+// gets one overall deadline instead of a fresh one per Read.
+func (s *Server) shouldInspectWAFBody(r *http.Request) bool {
+	if !shouldInspectWAFBody(r) {
+		return false
+	}
+	if !s.mayServeHost(normalizeHost(r.Host)) {
+		return false
+	}
+	if body, ok := r.Body.(*publicDeadlineBody); ok && s.cfg.WAFBodyInspectLimit > 0 {
+		body.capDeadline(s.cfg.WAFBodyInspectLimit+1, time.Now().Add(body.timeout))
+	}
+	return true
+}
+
+// mayServeHost reports false only when in-memory state shows host is not
+// served. It never touches the store.
+func (s *Server) mayServeHost(host string) bool {
+	if _, ok := s.bypasses[host]; ok {
+		return true
+	}
+	if _, ok := s.siteHosts.Load(host); ok {
+		return true
+	}
+	if _, ok := s.liveRoutes.lookupHost(host); ok {
+		return true
+	}
+	if _, found, cached := s.routes.lookup(host); cached {
+		return found
+	}
+	return net.ParseIP(host) == nil
 }
 
 // gracefulShutdown performs an orderly multi-phase shutdown:

@@ -357,7 +357,7 @@ See [Auto-Update](auto-update.md) for configuration details.
 The client automatically reconnects when the connection drops:
 
 - Staged retry delays of 2 seconds, 5 seconds, then 15 seconds
-- Periodic keepalive pings maintain the connection
+- Periodic keepalive pings maintain the connection; three ping intervals with no message from the server end the session and reconnect
 - Server version changes trigger an update check (when auto-update is enabled)
 
 ## Debug Profiling

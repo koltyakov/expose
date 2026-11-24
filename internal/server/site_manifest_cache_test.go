@@ -80,6 +80,7 @@ func TestSiteManifestCacheBoundsAndEviction(t *testing.T) {
 func TestPublishedManifestEvictedOnReplaceAndDelete(t *testing.T) {
 	srv, store := newIncrementalTestServer(t)
 	root := t.TempDir()
+	previousID := ""
 	for _, content := range []string{"first", "replacement"} {
 		writeIncrementalTestFile(t, root, "index.html", content)
 		var archive bytes.Buffer
@@ -90,8 +91,13 @@ func TestPublishedManifestEvictedOnReplaceAndDelete(t *testing.T) {
 		if w.Code != 201 && w.Code != 200 {
 			t.Fatalf("publish: %d %s", w.Code, w.Body.String())
 		}
-		if len(srv.siteManifests.entries) != 0 {
+		if _, ok := srv.siteManifests.get(previousID); previousID != "" && ok {
 			t.Fatal("replacement retained the old manifest")
+		}
+		// The upload primes the new revision's manifest from the checksums
+		// computed while extracting.
+		if len(srv.siteManifests.entries) != 1 {
+			t.Fatalf("upload did not prime its manifest: %d entries", len(srv.siteManifests.entries))
 		}
 		w = incrementalSiteRequest(srv, "GET", serviceapi.Sites+"/files?domain=docs", "owner", "", nil)
 		var files []domain.PublishedFile
@@ -105,6 +111,7 @@ func TestPublishedManifestEvictedOnReplaceAndDelete(t *testing.T) {
 		if _, ok := srv.siteManifests.get(site.StorageID()); !ok {
 			t.Fatal("manifest was not cached")
 		}
+		previousID = site.StorageID()
 	}
 	w := incrementalSiteRequest(srv, "DELETE", serviceapi.Sites+"/docs", "owner", "", nil)
 	if w.Code != 204 || len(srv.siteManifests.entries) != 0 || srv.siteManifests.bytes != 0 {

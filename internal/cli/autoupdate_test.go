@@ -36,7 +36,7 @@ func TestAutoUpdateLoopClientTrigger(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	restarts := 0
-	startAutoUpdateLoop(ctx, "1.2.9", slog.New(slog.NewTextHandler(io.Discard, nil)), checks, func() {
+	startAutoUpdateLoop(ctx, "1.2.9", slog.New(slog.NewTextHandler(io.Discard, nil)), false, checks, func() {
 		restarts++
 		if calls != 3 {
 			t.Errorf("restart before update applied, checks = %d", calls)
@@ -65,18 +65,58 @@ func TestAutoUpdateDevelopmentBuilds(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			if !autoUpdateOnStart(ctx, version, logger) {
-				t.Fatal("startup did not request restart after update")
-			}
 			restarts := 0
-			startAutoUpdateLoop(ctx, version, logger, checks, func() {
+			startAutoUpdateLoop(ctx, version, logger, true, nil, func() {
 				restarts++
 			})
-			if calls != 2 || restarts != 1 {
-				t.Fatalf("checks = %d, loop restarts = %d; want 2, 1", calls, restarts)
+			if calls != 1 || restarts != 1 {
+				t.Fatalf("startup checks = %d, restarts = %d; want 1, 1", calls, restarts)
+			}
+			startAutoUpdateLoop(ctx, version, logger, false, checks, func() {
+				restarts++
+			})
+			if calls != 2 || restarts != 2 {
+				t.Fatalf("checks = %d, restarts = %d; want 2, 2", calls, restarts)
 			}
 		})
 	}
+}
+
+func TestAutoUpdateStartupCheckRunsInLoop(t *testing.T) {
+	original := autoUpdateCheckAndApply
+	t.Cleanup(func() { autoUpdateCheckAndApply = original })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// The startup check runs inside the loop, which callers start beside the
+	// service, so an unreachable release API delays nothing else.
+	started := make(chan struct{})
+	autoUpdateCheckAndApply = func(ctx context.Context, version string) (*selfupdate.Result, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		startAutoUpdateLoop(ctx, "1.2.9", logger, true, nil, func() { t.Error("unexpected restart") })
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("startup check did not run without a trigger")
+	}
+	cancel()
+	<-done
+
+	// A process an update just restarted waits for the interval or a trigger.
+	autoUpdateCheckAndApply = func(context.Context, string) (*selfupdate.Result, error) {
+		t.Error("checked at startup after an update restart")
+		return &selfupdate.Result{}, nil
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	startAutoUpdateLoop(ctx, "1.2.9", logger, false, nil, func() { t.Error("unexpected restart") })
 }
 
 func TestIsAutoUpdateEnabled(t *testing.T) {

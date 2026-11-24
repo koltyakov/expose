@@ -42,8 +42,11 @@ func (s *Server) deferPinnedRemoval(dir string) bool {
 	return false
 }
 
+// removeSiteDir is os.RemoveAll; tests replace it to hold a removal open.
+var removeSiteDir = os.RemoveAll
+
 func (s *Server) removeRetiredSiteDir(dir string) {
-	if err := os.RemoveAll(dir); err != nil && s.log != nil {
+	if err := removeSiteDir(dir); err != nil && s.log != nil {
 		s.log.Warn("remove retired site files", "dir", dir, "err", err)
 	}
 }

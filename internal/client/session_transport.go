@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go"
@@ -165,26 +166,16 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg domain.RegisterR
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	if err := stream.SendRequestHeader(req); err != nil {
-		_ = h3Transport.Close()
-		_ = quicConn.CloseWithError(0, "")
-		return sessionTransportConn{}, err
-	}
-	resp, err := stream.ReadResponse()
+	_, rejected, err := h3ControlHandshake(ctx, quicConn, stream, req)
 	if err != nil {
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := resp.Status
-		if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && strings.TrimSpace(string(body)) != "" {
-			msg = strings.TrimSpace(string(body))
-		}
-		_ = resp.Body.Close()
+	if rejected != "" {
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
-		return sessionTransportConn{}, fmt.Errorf("http3 connect rejected: %s", msg)
+		return sessionTransportConn{}, fmt.Errorf("http3 connect rejected: %s", rejected)
 	}
 
 	closeFn := func() error {
@@ -242,26 +233,16 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domai
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	if err := stream.SendRequestHeader(req); err != nil {
-		_ = h3Transport.Close()
-		_ = quicConn.CloseWithError(0, "")
-		return sessionTransportConn{}, err
-	}
-	resp, err := stream.ReadResponse()
+	resp, rejected, err := h3ControlHandshake(ctx, quicConn, stream, req)
 	if err != nil {
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
 		return sessionTransportConn{}, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := resp.Status
-		if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && strings.TrimSpace(string(body)) != "" {
-			msg = strings.TrimSpace(string(body))
-		}
-		_ = resp.Body.Close()
+	if rejected != "" {
 		_ = h3Transport.Close()
 		_ = quicConn.CloseWithError(0, "")
-		return sessionTransportConn{}, fmt.Errorf("http3 multistream connect rejected: %s", msg)
+		return sessionTransportConn{}, fmt.Errorf("http3 multistream connect rejected: %s", rejected)
 	}
 	sessionToken := strings.TrimSpace(resp.Header.Get("X-Expose-H3-Session"))
 	if sessionToken == "" {
@@ -300,6 +281,46 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domai
 		h3WorkerURL:    workerURL,
 		h3SessionToken: sessionToken,
 	}, nil
+}
+
+// h3ControlHandshakeTimeout bounds sending the control request and reading
+// its response, as the worker streams do.
+var h3ControlHandshakeTimeout = h3WorkerConnectTimeout
+
+// h3ControlHandshake sends req on the control stream and reads the response.
+// Deadlines bound a server that accepts the QUIC connection but never
+// answers, and cancelling ctx closes the connection so the caller returns at
+// once. A non-2xx response is drained, closed, and reported as rejected.
+func h3ControlHandshake(ctx context.Context, quicConn *quic.Conn, stream *http3.RequestStream, req *http.Request) (*http.Response, string, error) {
+	stop := context.AfterFunc(ctx, func() { _ = quicConn.CloseWithError(0, "connect cancelled") })
+	defer stop()
+	fail := func(err error) (*http.Response, string, error) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, "", ctxErr
+		}
+		return nil, "", err
+	}
+	deadline := time.Now().Add(h3ControlHandshakeTimeout)
+	_ = stream.SetWriteDeadline(deadline)
+	defer func() { _ = stream.SetWriteDeadline(time.Time{}) }()
+	if err := stream.SendRequestHeader(req); err != nil {
+		return fail(err)
+	}
+	_ = stream.SetReadDeadline(deadline)
+	defer func() { _ = stream.SetReadDeadline(time.Time{}) }()
+	resp, err := stream.ReadResponse()
+	if err != nil {
+		return fail(err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := resp.Status
+		if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && strings.TrimSpace(string(body)) != "" {
+			msg = strings.TrimSpace(string(body))
+		}
+		_ = resp.Body.Close()
+		return nil, msg, nil
+	}
+	return resp, "", nil
 }
 
 func (c *Client) openHTTP3ClientConnection(ctx context.Context, target *url.URL) (*quic.Conn, *http3.Transport, *http3.ClientConn, error) {

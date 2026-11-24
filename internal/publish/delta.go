@@ -16,6 +16,14 @@ import (
 // Only target paths are retained, so deletions never mutate the live directory.
 // The caller must prevent the base directory from being replaced or deleted.
 func CompleteDelta(baseDir, dir string, manifest []domain.PublishedFile, maxBytes int64) error {
+	return CompleteDeltaWithBase(baseDir, dir, manifest, maxBytes, nil)
+}
+
+// CompleteDeltaWithBase is CompleteDelta given the base publication's
+// verified manifest, when the caller has it. The base directory is immutable
+// once published, so a reused file whose manifest entry matches by checksum
+// and size is linked without hashing it again; others are verified as before.
+func CompleteDeltaWithBase(baseDir, dir string, manifest []domain.PublishedFile, maxBytes int64, baseManifest []domain.PublishedFile) error {
 	if err := validateManifest(manifest, maxBytes, true); err != nil {
 		return err
 	}
@@ -33,6 +41,10 @@ func CompleteDelta(baseDir, dir string, manifest []domain.PublishedFile, maxByte
 		return err
 	}
 	defer func() { _ = dest.Close() }()
+	trusted := make(map[string]domain.PublishedFile, len(baseManifest))
+	for _, file := range baseManifest {
+		trusted[file.Path] = file
+	}
 	for _, file := range manifest {
 		info, err := dest.Lstat(file.Path)
 		if err == nil {
@@ -57,14 +69,15 @@ func CompleteDelta(baseDir, dir string, manifest []domain.PublishedFile, maxByte
 		if base == nil {
 			return fmt.Errorf("missing file content: %s", file.Path)
 		}
-		if err := reuseFile(base, baseDir, dir, file); err != nil {
+		known, ok := trusted[file.Path]
+		if err := reuseFile(base, baseDir, dir, file, ok && known == file); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func reuseFile(base *os.Root, baseDir, dir string, file domain.PublishedFile) error {
+func reuseFile(base *os.Root, baseDir, dir string, file domain.PublishedFile, verified bool) error {
 	f, info, err := openRegularFile(base, file.Path)
 	if err != nil {
 		return fmt.Errorf("cannot reuse %s: %w", file.Path, err)
@@ -73,8 +86,10 @@ func reuseFile(base *os.Root, baseDir, dir string, file domain.PublishedFile) er
 	if info.Size() != file.Size {
 		return fmt.Errorf("unchanged file size mismatch: %s", file.Path)
 	}
-	if err := verifyFileContent(f, file); err != nil {
-		return err
+	if !verified {
+		if err := verifyFileContent(f, file); err != nil {
+			return err
+		}
 	}
 	target := filepath.Join(dir, filepath.FromSlash(file.Path))
 	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"container/list"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,8 +18,13 @@ import (
 )
 
 const (
-	delegatedAccessTTL         = 15 * time.Minute
+	delegatedAccessTTL = 15 * time.Minute
+	// delegatedAccessMaxSessions bounds all sessions in memory and
+	// delegatedAccessMaxPerScope bounds one tunnel connection's share. A full
+	// table evicts the oldest session (the scope's own first) instead of
+	// refusing logins, so one busy tunnel cannot lock out the others.
 	delegatedAccessMaxSessions = 4096
+	delegatedAccessMaxPerScope = 512
 )
 
 // Sessions belong to one live tunnel connection, not merely a reusable hostname.
@@ -35,69 +41,99 @@ type delegatedAccessSession struct {
 	expiresAt  time.Time
 }
 
+// delegatedAccessSessions keeps sessions in creation order, globally and per
+// scope. Every session has the same TTL, so creation order is also expiry
+// order: cleanup pops expired sessions from the front, and eviction removes
+// the oldest. Lookups do not extend a session: its cookie has a fixed
+// lifetime set at login, so a server-side extension could not be used.
 type delegatedAccessSessions struct {
 	mu      sync.Mutex
-	entries map[[sha256.Size]byte]delegatedAccessSession
+	entries map[[sha256.Size]byte]*delegatedAccessEntry
+	order   list.List // *delegatedAccessEntry, oldest first
+	scopes  map[delegatedAccessScope]*list.List
 }
 
-func (c *delegatedAccessSessions) create(entry delegatedAccessSession, now time.Time) (string, bool) {
+type delegatedAccessEntry struct {
+	key            [sha256.Size]byte
+	session        delegatedAccessSession
+	inOrder, scope *list.Element
+}
+
+func (c *delegatedAccessSessions) create(entry delegatedAccessSession, now time.Time) string {
 	var random [32]byte
 	_, _ = rand.Read(random[:])
 	token := base64.RawURLEncoding.EncodeToString(random[:])
+	key := sha256.Sum256([]byte(token))
+	entry.expiresAt = now.Add(delegatedAccessTTL)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cleanupLocked(now)
-	if len(c.entries) >= delegatedAccessMaxSessions {
-		return "", false
-	}
 	if c.entries == nil {
-		c.entries = make(map[[sha256.Size]byte]delegatedAccessSession)
+		c.entries = make(map[[sha256.Size]byte]*delegatedAccessEntry)
+		c.scopes = make(map[delegatedAccessScope]*list.List)
 	}
-	entry.expiresAt = now.Add(delegatedAccessTTL)
-	c.entries[sha256.Sum256([]byte(token))] = entry
-	return token, true
+	scoped := c.scopes[entry.scope]
+	if scoped == nil {
+		scoped = list.New()
+		c.scopes[entry.scope] = scoped
+	}
+	if scoped.Len() >= delegatedAccessMaxPerScope {
+		c.deleteLocked(scoped.Front().Value.(*delegatedAccessEntry))
+	}
+	if len(c.entries) >= delegatedAccessMaxSessions {
+		c.deleteLocked(c.order.Front().Value.(*delegatedAccessEntry))
+	}
+	e := &delegatedAccessEntry{key: key, session: entry}
+	e.inOrder = c.order.PushBack(e)
+	e.scope = scoped.PushBack(e)
+	c.entries[key] = e
+	return token
 }
 
 func (c *delegatedAccessSessions) lookup(token string, scope delegatedAccessScope, now time.Time) (delegatedAccessSession, bool) {
+	key := sha256.Sum256([]byte(token))
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	key := sha256.Sum256([]byte(token))
-	entry, ok := c.entries[key]
+	e, ok := c.entries[key]
 	if !ok {
 		return delegatedAccessSession{}, false
 	}
-	if !now.Before(entry.expiresAt) {
-		delete(c.entries, key)
+	if !now.Before(e.session.expiresAt) {
+		c.deleteLocked(e)
 		return delegatedAccessSession{}, false
 	}
-	if entry.scope != scope {
+	if e.session.scope != scope {
 		return delegatedAccessSession{}, false
 	}
-	return entry, true
+	return e.session, true
 }
 
 func (c *delegatedAccessSessions) remove(token string) {
+	key := sha256.Sum256([]byte(token))
 	c.mu.Lock()
-	delete(c.entries, sha256.Sum256([]byte(token)))
+	if e, ok := c.entries[key]; ok {
+		c.deleteLocked(e)
+	}
 	c.mu.Unlock()
 }
 
 func (c *delegatedAccessSessions) removeConnection(connection *session) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for key, entry := range c.entries {
-		if entry.scope.connection == connection {
-			delete(c.entries, key)
-		}
-	}
+	c.removeScopes(func(scope delegatedAccessScope) bool { return scope.connection == connection })
 }
 
 func (c *delegatedAccessSessions) removeTunnel(tunnelID string) {
+	c.removeScopes(func(scope delegatedAccessScope) bool { return scope.tunnelID == tunnelID })
+}
+
+func (c *delegatedAccessSessions) removeScopes(match func(delegatedAccessScope) bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for key, entry := range c.entries {
-		if entry.scope.tunnelID == tunnelID {
-			delete(c.entries, key)
+	for scope, scoped := range c.scopes {
+		if !match(scope) {
+			continue
+		}
+		for scoped.Len() > 0 {
+			c.deleteLocked(scoped.Front().Value.(*delegatedAccessEntry))
 		}
 	}
 }
@@ -109,9 +145,22 @@ func (c *delegatedAccessSessions) cleanup(now time.Time) {
 }
 
 func (c *delegatedAccessSessions) cleanupLocked(now time.Time) {
-	for key, entry := range c.entries {
-		if !now.Before(entry.expiresAt) {
-			delete(c.entries, key)
+	for front := c.order.Front(); front != nil; front = c.order.Front() {
+		e := front.Value.(*delegatedAccessEntry)
+		if now.Before(e.session.expiresAt) {
+			return
+		}
+		c.deleteLocked(e)
+	}
+}
+
+func (c *delegatedAccessSessions) deleteLocked(e *delegatedAccessEntry) {
+	delete(c.entries, e.key)
+	c.order.Remove(e.inOrder)
+	if scoped := c.scopes[e.session.scope]; scoped != nil {
+		scoped.Remove(e.scope)
+		if scoped.Len() == 0 {
+			delete(c.scopes, e.session.scope)
 		}
 	}
 }
@@ -288,11 +337,7 @@ func (s *Server) handleDelegatedAccessResponse(w http.ResponseWriter, r *http.Re
 		return true
 	}
 	s.accessLimiter.refund(state.limitKey)
-	token, ok := s.delegatedAccess.create(state.entry, time.Now())
-	if !ok {
-		http.Error(w, "access sessions full; try again later", http.StatusServiceUnavailable)
-		return true
-	}
+	token := s.delegatedAccess.create(state.entry, time.Now())
 	http.SetCookie(w, &http.Cookie{
 		Name: publicAccessCookieName, Value: token, Path: "/",
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,

@@ -41,9 +41,8 @@ func releaseChecksum(ctx context.Context, rel *Release, assetName string) (strin
 	return checksumForAsset(manifest, assetName)
 }
 
-func verifyChecksum(assetName string, data []byte, expected string) error {
-	sum := sha256.Sum256(data)
-	actual := hex.EncodeToString(sum[:])
+// verifyDigest compares a hex SHA-256 digest with the authenticated manifest.
+func verifyDigest(assetName, actual, expected string) error {
 	if subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) != 1 {
 		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", assetName, expected, actual)
 	}

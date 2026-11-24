@@ -7,11 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/store/sqlite"
 )
+
+// domainTouchInterval throttles last-seen updates per domain before they
+// reach the queue. The store applies the same minimum interval; checking it
+// here keeps every proxied request from taking a lock, waking the worker
+// and allocating a store request only for the touch to be discarded.
+const domainTouchInterval = 30 * time.Second
 
 func (s *Server) queueDomainTouch(domainID string) {
 	domainID = strings.TrimSpace(domainID)
@@ -24,7 +31,7 @@ func (s *Server) queueDomainTouch(domainID string) {
 	select {
 	case s.domainTouches <- domainID:
 	default:
-		s.completeDomainTouch(domainID)
+		s.releaseDomainTouch(domainID)
 		s.domainTouchDrops.Add(1)
 	}
 }
@@ -50,35 +57,56 @@ func (s *Server) runDomainTouchWorker(ctx context.Context) {
 			touchCtx, cancel := context.WithTimeout(ctx, domainTouchTimeout)
 			err := s.store.TouchDomains(touchCtx, batch)
 			cancel()
-			s.domainTouchMu.Lock()
-			for _, id := range batch {
-				delete(s.domainTouched, id)
-			}
-			s.domainTouchMu.Unlock()
-			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.log.Warn("failed to update domain last seen", "domains", len(batch), "err", err)
+			if err != nil {
+				// Let the next request retry instead of waiting out the interval.
+				for _, id := range batch {
+					s.releaseDomainTouch(id)
+				}
+				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					s.log.Warn("failed to update domain last seen", "domains", len(batch), "err", err)
+				}
 			}
 		}
 	}
 }
 
+// reserveDomainTouch reports whether domainID may be queued now: true when
+// it was not queued within domainTouchInterval. The common case, a recently
+// queued domain, is one sync.Map load and one atomic load.
 func (s *Server) reserveDomainTouch(domainID string) bool {
-	s.domainTouchMu.Lock()
-	defer s.domainTouchMu.Unlock()
-	if s.domainTouched == nil {
-		s.domainTouched = make(map[string]struct{})
+	now := time.Now().UnixNano()
+	v, ok := s.domainTouched.Load(domainID)
+	if !ok {
+		stamp := new(atomic.Int64)
+		stamp.Store(now)
+		if v, ok = s.domainTouched.LoadOrStore(domainID, stamp); !ok {
+			return true
+		}
 	}
-	if _, exists := s.domainTouched[domainID]; exists {
+	stamp := v.(*atomic.Int64)
+	last := stamp.Load()
+	if now-last < int64(domainTouchInterval) {
 		return false
 	}
-	s.domainTouched[domainID] = struct{}{}
-	return true
+	return stamp.CompareAndSwap(last, now)
 }
 
-func (s *Server) completeDomainTouch(domainID string) {
-	s.domainTouchMu.Lock()
-	delete(s.domainTouched, domainID)
-	s.domainTouchMu.Unlock()
+// releaseDomainTouch forgets a reservation whose touch was not stored, so
+// the next request for the domain queues it again.
+func (s *Server) releaseDomainTouch(domainID string) {
+	s.domainTouched.Delete(domainID)
+}
+
+// cleanupDomainTouches drops reservations old enough that the next request
+// would queue a touch anyway, bounding the map to recently active domains.
+func (s *Server) cleanupDomainTouches(now time.Time) {
+	cutoff := now.Add(-domainTouchInterval).UnixNano()
+	s.domainTouched.Range(func(key, value any) bool {
+		if stamp, ok := value.(*atomic.Int64); !ok || stamp.Load() <= cutoff {
+			s.domainTouched.Delete(key)
+		}
+		return true
+	})
 }
 
 func (s *Server) runJanitor(ctx context.Context) {
@@ -111,6 +139,7 @@ func (s *Server) runJanitor(ctx context.Context) {
 			s.cleanupStaleTunnelResources(ctx)
 			s.cleanupStaleWAFCounters()
 			s.cleanupStaleH3Sessions()
+			s.cleanupDomainTouches(time.Now())
 			s.logDroppedQueueEvents()
 		case <-bucketTicker.C:
 			s.regLimiter.cleanup()
@@ -246,6 +275,9 @@ func (s *Server) cleanupStaleTunnelResources(ctx context.Context) {
 			}
 		}
 
+		for _, host := range hosts {
+			s.forgetACMECert(host)
+		}
 		removed, failed, err := removeTunnelCertCacheBatch(s.cfg.CertCacheDir, hosts)
 		if err != nil {
 			s.log.Error("failed to remove certificate cache during cleanup", "err", err)
@@ -261,6 +293,8 @@ func (s *Server) cleanupStaleTunnelResources(ctx context.Context) {
 		s.log.Info("stale tunnel domains cleaned", "domains", domains, "cert_files", removedFiles, "cert_failures", failedFiles)
 	}
 
+	s.pruneClosedTunnels(ctx, started, cutoff)
+
 	now := time.Now().UTC()
 	purged, err := s.store.PurgeStaleConnectTokens(ctx, now, now.Add(-usedTokenRetention), tokenPurgeBatchLimit)
 	if err != nil {
@@ -270,11 +304,43 @@ func (s *Server) cleanupStaleTunnelResources(ctx context.Context) {
 	}
 }
 
+type closedTunnelPruner interface {
+	PruneClosedTunnels(ctx context.Context, olderThan, now time.Time, limit int) (int, error)
+}
+
+// pruneClosedTunnels deletes closed tunnel history past retention in
+// batches, sharing the domain purge's time budget for this pass.
+func (s *Server) pruneClosedTunnels(ctx context.Context, started, cutoff time.Time) {
+	pruner, ok := s.store.(closedTunnelPruner)
+	if !ok {
+		return
+	}
+	total := 0
+	for range staleDomainPurgeMaxBatches {
+		if ctx.Err() != nil || time.Since(started) > staleDomainPurgeBudget {
+			break
+		}
+		n, err := pruner.PruneClosedTunnels(ctx, cutoff, time.Now(), staleDomainPurgeBatch)
+		if err != nil {
+			s.log.Error("closed tunnel cleanup failed", "err", err)
+			break
+		}
+		total += n
+		if n < staleDomainPurgeBatch {
+			break
+		}
+	}
+	if total > 0 {
+		s.log.Info("closed tunnels pruned", "tunnels", total)
+	}
+}
+
 func (s *Server) removeInactiveTunnelCertCache(ctx context.Context, hostname, domainID string, requireDeleted bool) (int, error) {
 	unpublished, err := s.unpublishInactiveTunnelRoute(ctx, hostname, domainID, requireDeleted)
 	if err != nil || !unpublished {
 		return 0, err
 	}
+	s.forgetACMECert(hostname)
 	// Deliberately outside routeLifecycleMu: scanning and pruning the
 	// certificate cache directory only touches the filesystem, and it is a
 	// full ReadDir per hostname. Doing it under the lock that gates every
@@ -436,6 +502,9 @@ func (s *Server) logDroppedQueueEvents() {
 	}
 	if drops := s.domainTouchDrops.Swap(0); drops > 0 {
 		s.log.Warn("domain touch events dropped due to queue pressure", "count", drops)
+	}
+	if drops := s.siteVisitorDrops.Swap(0); drops > 0 {
+		s.log.Warn("site visitor writes deferred due to queue pressure", "count", drops)
 	}
 	if drops := s.disconnectDrops.Swap(0); drops > 0 {
 		s.log.Warn("tunnel disconnect events dropped due to queue pressure", "count", drops)

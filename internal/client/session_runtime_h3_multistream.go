@@ -24,7 +24,6 @@ import (
 const (
 	h3SessionHeader          = "X-Expose-H3-Session"
 	h3WorkerConnectTimeout   = 15 * time.Second
-	h3WorkerIdleTTL          = 30 * time.Second
 	h3WorkerOpenCountFloor   = 4
 	h3WorkerOpenCountCeiling = 64
 )
@@ -389,14 +388,13 @@ func (rt *clientH3MultiStreamRuntime) runWorkerStream(leavePool func()) error {
 	}
 
 	for {
-		msg, err := readH3RequestStreamMessage(stream, h3WorkerIdleTTL, rt.useStreamV2)
+		// Idle workers block here with no deadline. The server keeps ready
+		// workers in its pool, so they must stay open, and a deadline firing
+		// mid-frame would discard the bytes io.ReadFull already consumed and
+		// desynchronize the stream. Session teardown closes the connection,
+		// which ends this read.
+		msg, err := readH3RequestStreamMessage(stream, rt.useStreamV2)
 		if err != nil {
-			if isTimeoutError(err) {
-				// Keep idle workers open. The server retains ready workers in its
-				// pool, so closing here would leave a stale entry that may not be
-				// discovered until the next request write fails.
-				continue
-			}
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
@@ -439,7 +437,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 		bodyCh = ch
 		bodyDone = make(chan struct{})
 		go pumpStreamedRequestBodyMessages(reqCtx, reqCopy.ID, cancel, func() (tunnelproto.Message, error) {
-			return readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
+			return readH3RequestStreamMessage(stream, rt.useStreamV2)
 		}, ch, bodyDone)
 	}
 
@@ -595,7 +593,7 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 		default:
 		}
 
-		msg, err := readH3RequestStreamMessage(stream, 0, rt.useStreamV2)
+		msg, err := readH3RequestStreamMessage(stream, rt.useStreamV2)
 		if err != nil {
 			return false, nil
 		}
@@ -627,20 +625,23 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerWS(stream *http3.RequestStream
 	}
 }
 
-func readH3RequestStreamMessage(stream *http3.RequestStream, timeout time.Duration, useV2 bool) (tunnelproto.Message, error) {
-	var msg tunnelproto.Message
+// readH3RequestStreamMessage reads one frame without a deadline: frames are
+// decoded with io.ReadFull, so a deadline that fires partway through a frame
+// would lose the consumed bytes.
+func readH3RequestStreamMessage(stream *http3.RequestStream, useV2 bool) (tunnelproto.Message, error) {
 	if stream == nil {
-		return msg, io.EOF
+		return tunnelproto.Message{}, io.EOF
 	}
-	if timeout > 0 {
-		_ = stream.SetReadDeadline(time.Now().Add(timeout))
-		defer func() { _ = stream.SetReadDeadline(time.Time{}) }()
-	}
+	return readStreamMessage(stream, useV2)
+}
+
+func readStreamMessage(r io.Reader, useV2 bool) (tunnelproto.Message, error) {
+	var msg tunnelproto.Message
 	var err error
 	if useV2 {
-		err = tunnelproto.ReadStreamMessageV2(stream, clientWSReadLimit, &msg)
+		err = tunnelproto.ReadStreamMessageV2(r, clientWSReadLimit, &msg)
 	} else {
-		err = tunnelproto.ReadStreamMessage(stream, clientWSReadLimit, &msg)
+		err = tunnelproto.ReadStreamMessage(r, clientWSReadLimit, &msg)
 	}
 	if err != nil {
 		return tunnelproto.Message{}, err
@@ -679,17 +680,4 @@ func closeH3RequestStream(stream *http3.RequestStream) {
 	stream.CancelRead(0)
 	stream.CancelWrite(0)
 	_ = stream.Close()
-}
-
-func isTimeoutError(err error) bool {
-	type timeout interface {
-		Timeout() bool
-	}
-	if err == nil {
-		return false
-	}
-	if te, ok := err.(timeout); ok {
-		return te.Timeout()
-	}
-	return false
 }

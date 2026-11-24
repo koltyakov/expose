@@ -3,8 +3,10 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,7 +174,9 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 		t.Fatalf("incorrect audit counts: %+v", next)
 	}
 	// Visitor identities survive a database/server restart, without inventing
-	// recent activity or counting a returning visitor twice.
+	// recent activity or counting a returning visitor twice. Run's shutdown
+	// flushes the visitor queue before the store closes; do the same here.
+	srv.flushSiteVisitors(ctx)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -231,53 +234,68 @@ func TestPublishedStatsAccessAndTraffic(t *testing.T) {
 	}
 }
 
-func TestVisitorPersistenceDoesNotHoldStatsLock(t *testing.T) {
-	stats := (&Server{}).statsForSite("site")
-	started, release := make(chan struct{}), make(chan struct{})
-	var writes atomic.Int32
-	stats.persistVisitor = func([32]byte) error {
-		writes.Add(1)
-		close(started)
-		<-release
-		return nil
+func TestNewVisitorsDoNotWaitForStore(t *testing.T) {
+	srv := &Server{siteVisitors: make(chan sqlite.SiteVisitor, 16)}
+	stats := srv.statsForSite("site")
+	stats.persistVisitor = func(fp [32]byte) bool {
+		return srv.queueSiteVisitor(sqlite.SiteVisitor{SiteID: "site", Fingerprint: fp})
 	}
-	entry := domain.PublishedSiteRequest{Time: time.Now(), Method: "GET"}
-	finished := make(chan struct{})
-	go func() { defer close(finished); stats.record(entry, "ip", "agent") }()
-	defer func() { close(release); <-finished }()
-	<-started
-	duplicate := make(chan struct{})
+	// No writer is running: a synchronous write would block forever here.
+	done := make(chan struct{})
 	go func() {
-		defer close(duplicate)
-		stats.record(entry, "ip", "agent")
-		_ = stats.snapshot(time.Now())
+		defer close(done)
+		for i := range 10 {
+			stats.record(domain.PublishedSiteRequest{Time: time.Now()}, fmt.Sprintf("ip-%d", i), "agent")
+			stats.record(domain.PublishedSiteRequest{Time: time.Now()}, fmt.Sprintf("ip-%d", i), "agent")
+		}
 	}()
 	select {
-	case <-duplicate:
+	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("visitor storage blocked another request or stats snapshot")
+		t.Fatal("recording new visitors waited on persistence")
 	}
-	if writes.Load() != 1 {
-		t.Fatal("concurrent visit duplicated a pending write")
+	if got := len(srv.siteVisitors); got != 10 {
+		t.Fatalf("queued %d visitor writes, want 10 (one per new visitor)", got)
+	}
+	st := &recordingVisitorStore{}
+	srv.store = st
+	srv.flushSiteVisitors(t.Context())
+	if len(st.visitors) != 10 || len(srv.siteVisitors) != 0 {
+		t.Fatalf("flush persisted %d visitors, %d left queued", len(st.visitors), len(srv.siteVisitors))
 	}
 }
 
-func TestFailedVisitorPersistenceRetriesOnNextVisit(t *testing.T) {
-	stats := (&Server{}).statsForSite("site")
-	var writes int
-	stats.persistVisitor = func([32]byte) error {
-		writes++
-		if writes == 1 {
-			return errors.New("storage busy")
-		}
-		return nil
+func TestQueuedVisitorRetriesWhenQueueFull(t *testing.T) {
+	srv := &Server{siteVisitors: make(chan sqlite.SiteVisitor, 1)}
+	srv.siteVisitors <- sqlite.SiteVisitor{SiteID: "other"} // full
+	stats := srv.statsForSite("site")
+	stats.persistVisitor = func(fp [32]byte) bool {
+		return srv.queueSiteVisitor(sqlite.SiteVisitor{SiteID: "site", Fingerprint: fp})
 	}
-	for range 3 {
-		stats.record(domain.PublishedSiteRequest{Time: time.Now()}, "ip", "agent")
+	stats.record(domain.PublishedSiteRequest{Time: time.Now()}, "ip", "agent")
+	if len(stats.visitorWrites) != 1 || srv.siteVisitorDrops.Load() != 1 {
+		t.Fatalf("dropped visitor not kept for retry: pending=%d drops=%d", len(stats.visitorWrites), srv.siteVisitorDrops.Load())
 	}
-	if writes != 2 || len(stats.visitorWrites) != 0 || stats.snapshot(time.Now()).Visitors != 1 {
-		t.Fatalf("failed write was lost or durable visitor written twice: writes=%d pending=%d", writes, len(stats.visitorWrites))
+	<-srv.siteVisitors
+	stats.record(domain.PublishedSiteRequest{Time: time.Now()}, "ip", "agent")
+	stats.record(domain.PublishedSiteRequest{Time: time.Now()}, "ip", "agent")
+	if len(stats.visitorWrites) != 0 || len(srv.siteVisitors) != 1 || stats.snapshot(time.Now()).Visitors != 1 {
+		t.Fatalf("retry failed or duplicated: pending=%d queued=%d", len(stats.visitorWrites), len(srv.siteVisitors))
 	}
+}
+
+type recordingVisitorStore struct {
+	serverStore
+	visitors []sqlite.SiteVisitor
+}
+
+func (*recordingVisitorStore) ListPublishedSiteVisitors(context.Context, string) ([][32]byte, error) {
+	return nil, nil
+}
+
+func (s *recordingVisitorStore) RecordPublishedSiteVisitors(_ context.Context, v []sqlite.SiteVisitor) error {
+	s.visitors = append(s.visitors, v...)
+	return nil
 }
 
 func TestPublishedFileTotalsCacheUsesStorageIdentity(t *testing.T) {
@@ -349,5 +367,87 @@ func TestSiteStatsBoundedAndConcurrent(t *testing.T) {
 	}
 	if snapshot := stats.snapshot(now); snapshot.Visitors != siteVisitorLimit || !snapshot.VisitorsCapped {
 		t.Fatal("visitor storage is unbounded")
+	}
+}
+
+type loadingVisitorStore struct {
+	serverStore
+	mu       sync.Mutex
+	loads    int
+	fail     bool
+	visitors [][32]byte
+}
+
+func (s *loadingVisitorStore) ListPublishedSiteVisitors(context.Context, string) ([][32]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loads++
+	if s.fail {
+		return nil, errors.New("database busy")
+	}
+	return s.visitors, nil
+}
+
+func (*loadingVisitorStore) RecordPublishedSiteVisitors(context.Context, []sqlite.SiteVisitor) error {
+	return nil
+}
+
+func (s *loadingVisitorStore) loadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loads
+}
+
+func TestSiteVisitorsLoadLazilyWithBackoff(t *testing.T) {
+	returning := sha256.Sum256([]byte("192.0.2.1\x00agent"))
+	st := &loadingVisitorStore{visitors: [][32]byte{returning, {7}}}
+	srv := &Server{store: st, siteVisitors: make(chan sqlite.SiteVisitor, 16)}
+
+	// Creating stats (startup, janitor, publish) does not read the store.
+	stats := srv.statsForSite("site")
+	if st.loadCount() != 0 {
+		t.Fatal("visitors loaded before any request or stats poll")
+	}
+
+	// The first visit loads in the background and merges without
+	// counting the returning visitor twice.
+	stats.record(domain.PublishedSiteRequest{Time: time.Now()}, "192.0.2.1", "agent")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stats.mu.Lock()
+		loaded := stats.visitorsLoaded
+		stats.mu.Unlock()
+		if loaded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("visitors never loaded")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := stats.snapshot(time.Now()); got.Visitors != 2 || got.ActiveVisitors != 1 {
+		t.Fatalf("merged visitors = %d active %d, want 2 and 1", got.Visitors, got.ActiveVisitors)
+	}
+	stats.loadStoredVisitors()
+	if st.loadCount() != 1 {
+		t.Fatalf("loaded %d times, want 1", st.loadCount())
+	}
+
+	// A failed load backs off instead of retrying on every request.
+	st.fail = true
+	failing := srv.statsForSite("other")
+	failing.loadStoredVisitors()
+	for range 20 {
+		failing.record(domain.PublishedSiteRequest{Time: time.Now()}, "198.51.100.1", "agent")
+	}
+	failing.loadStoredVisitors()
+	if got := st.loadCount(); got != 2 {
+		t.Fatalf("failed load retried %d times during backoff", got-2)
+	}
+	failing.mu.Lock()
+	retryAt := failing.visitorsRetryAt
+	failing.mu.Unlock()
+	if until := time.Until(retryAt); until < siteVisitorLoadMinBackoff/2 {
+		t.Fatalf("backoff too short: %s", until)
 	}
 }

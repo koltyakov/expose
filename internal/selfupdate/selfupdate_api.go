@@ -180,28 +180,45 @@ func applyAt(ctx context.Context, rel *Release, exe string) (*Result, error) {
 	}
 	defer func() { _ = lock.Close() }()
 
+	// Holding the lock, no other update of this executable is in progress.
+	sweepUpdateDirs(exe, time.Now())
+
 	// Authenticate the small manifest before spending bandwidth on the archive.
 	expected, err := releaseChecksum(ctx, rel, assetName)
 	if err != nil {
 		return nil, fmt.Errorf("verify %s: %w", assetName, err)
 	}
-	data, err := download(ctx, dlURL)
+
+	// Stream the archive and the binary through files in a work directory
+	// beside the executable instead of holding both in memory.
+	work, err := newUpdateDir(exe)
+	if err != nil {
+		return nil, err
+	}
+	archive := filepath.Join(work, "release.archive")
+	staged := filepath.Join(work, "expose.exe")
+	defer func() {
+		_ = os.Remove(archive)
+		_ = os.Remove(staged)
+		// Remove, not RemoveAll: on Windows the replaced executable waits
+		// here as previous.exe until the restarted process deletes it.
+		_ = os.Remove(work)
+	}()
+	digest, err := downloadToFile(ctx, dlURL, maxDownloadBytes, archive)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", assetName, err)
 	}
-	if err := verifyChecksum(assetName, data, expected); err != nil {
+	if err := verifyDigest(assetName, digest, expected); err != nil {
 		return nil, fmt.Errorf("verify %s: %w", assetName, err)
 	}
-
-	binary, err := extractBinary(assetName, data)
-	if err != nil {
+	if err := extractBinaryFile(assetName, archive, staged); err != nil {
 		return nil, fmt.Errorf("extract binary: %w", err)
 	}
-
-	if err := validateBinary(binary); err != nil {
+	_ = os.Remove(archive)
+	if err := validateBinaryFile(staged); err != nil {
 		return nil, fmt.Errorf("validate binary: %w", err)
 	}
-	if err := replaceBinaryAtContext(ctx, exe, binary); err != nil {
+	if err := installStagedBinary(ctx, exe, staged); err != nil {
 		return nil, fmt.Errorf("replace binary: %w", err)
 	}
 
@@ -230,14 +247,42 @@ func CheckAndApply(ctx context.Context, currentVersion string) (*Result, error) 
 	return result, nil
 }
 
+// restartedEnv marks a process started by [Restart] after an update.
+const restartedEnv = "EXPOSE_UPDATE_RESTARTED"
+
 // Restart starts the installed binary with the original arguments and
 // environment after the caller has shut down its services. Unix replaces the
 // process image and never returns on success. Windows starts a replacement
 // which waits for this process to exit; the caller must exit after success.
+// The replacement sees [StartedByUpdate] return true.
 func Restart() error {
 	exe, err := executablePath()
 	if err != nil {
 		return fmt.Errorf("determine executable: %w", err)
 	}
-	return restartExecutable(exe, os.Args, os.Environ())
+	return restartExecutable(exe, os.Args, restartEnv(os.Environ()))
+}
+
+func restartEnv(env []string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, restartedEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, restartedEnv+"=1")
+}
+
+// StartedByUpdate reports whether [Restart] started this process after
+// applying an update, then clears the marker so child processes and later
+// restarts do not inherit it. The binary was just checked, so the caller can
+// skip its startup update check.
+var StartedByUpdate = sync.OnceValue(consumeRestartMarker)
+
+func consumeRestartMarker() bool {
+	v, ok := os.LookupEnv(restartedEnv)
+	if ok {
+		_ = os.Unsetenv(restartedEnv)
+	}
+	return ok && v == "1"
 }

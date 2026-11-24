@@ -6,20 +6,19 @@ expose supports automatic self-update for both the server and client binaries.
 
 ```mermaid
 flowchart LR
-    Start["Process starts"] --> Check{"EXPOSE_AUTOUPDATE<br/>enabled?"}
-    Check -- No --> Run["Run normally"]
-    Check -- Yes --> Fetch["Check GitHub Releases"]
+    Start["Process starts"] --> Run["Run normally"]
+    Start --> Check{"EXPOSE_AUTOUPDATE<br/>enabled?"}
+    Check -- Yes --> Fetch["Check GitHub Releases<br/>(in the background)"]
     Fetch --> New{"Newer version<br/>available?"}
-    New -- No --> Run
     New -- Yes --> Download["Download + replace binary"]
     Download --> Restart["Restart process"]
 ```
 
 When auto-update is enabled:
 
-1. **On startup** - checks for a newer release and updates before proceeding
+1. **On startup** - checks for a newer release in the background while the server starts listening or the client connects, so a slow or unreachable GitHub API never delays serving. A process that an update just restarted skips this check.
 2. **Periodically** - checks every 30 minutes in the background
-3. **On server version change** - if the client detects the server upgraded (via registration response), it triggers an immediate update check
+3. **On server version change** - if the client detects the server upgraded (via registration response), it triggers an immediate update check in the background; the tunnel keeps serving while it runs
 4. **On newer client registration** - if a client registers with a newer version than the server, the server triggers an immediate update check. Client-triggered checks are limited to once per minute.
 
 Updates run inside the existing process. There is no resident updater or supervisor.
@@ -29,8 +28,9 @@ Signature verification is mandatory; there is no checksum-only fallback.
 It then downloads and verifies the archive, rejecting invalid Go executables and
 binaries built for a different OS or architecture before replacing anything.
 
-The new executable is written and synced in a private temporary directory beside
-the installed binary. Linux and macOS install it using an atomic rename, shut down
+The archive is downloaded (and hashed) into a private temporary directory beside
+the installed binary, and the executable is extracted, validated and synced there,
+so neither is held in memory. Linux and macOS install it using an atomic rename, shut down
 the service, then use `exec` to replace the process image. The PID, arguments, and
 environment stay the same, including when expose is container PID 1. This is a
 restart, not a live migration of connections or in-memory state. Active tunnels
@@ -56,7 +56,9 @@ There is no automatic rollback after a replacement fails to start. Use your serv
 manager's restart policy for startup failures. On Windows, manual `expose update`
 or another running invocation may leave a locked `previous.exe` in a
 `.expose-update-*` directory beside the installation. That directory can be removed
-after the processes using the old executable exit.
+after the processes using the old executable exit. With auto-update enabled, expose
+removes `.expose-update-*` directories older than an hour at startup and before each
+update.
 
 ## Enabling Auto-Update
 

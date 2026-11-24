@@ -278,8 +278,13 @@ listener on loopback or restrict it at the network boundary.
 Response queue metrics include `expose_response_queue_bytes`,
 `expose_response_queue_limit_bytes`, and `expose_response_queue_rejects_total`.
 The rejection counter includes both full per-request body queues and exhausted
-byte budgets. See [performance testing](performance-testing.md) for complete
-client/server benchmarks and profiling commands.
+byte budgets. `expose_rate_limiter_buckets{limiter="..."}` reports how many client
+buckets each rate limiter holds (each shard is capped, so a flood of distinct
+addresses cannot grow them without bound). `expose_site_visitor_queue_depth` and
+`expose_site_visitor_drops_total` cover new published-site visitors waiting to be
+stored; a dropped visitor is retried on its next request. See
+[performance testing](performance-testing.md) for complete client/server benchmarks
+and profiling commands.
 
 ## Rate Limiting
 

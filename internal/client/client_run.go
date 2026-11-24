@@ -36,14 +36,15 @@ func (c *Client) Run(ctx context.Context) error {
 	}()
 
 	// Auto-update: periodic background check + server-version-change trigger.
-	autoUpdateCh := make(chan struct{}, 1) // signals that the binary was replaced
+	autoUpdateCh := make(chan struct{}, 1)  // signals that the binary was replaced
+	updateCheckCh := make(chan struct{}, 1) // asks the loop for an immediate check
 	var lastServerVersion string
 	var lastUpdateCheck time.Time
 	if c.autoUpdate {
 		updateWG.Add(1)
 		go func() {
 			defer updateWG.Done()
-			c.runAutoUpdateLoop(ctx, autoUpdateCh)
+			c.runAutoUpdateLoop(ctx, updateCheckCh, autoUpdateCh)
 		}()
 	}
 
@@ -129,6 +130,18 @@ func (c *Client) Run(ctx context.Context) error {
 		tlsProvisioningRetries = 0
 		c.resumeID = reg.TunnelID
 
+		// A server version change usually means a new release is out. Ask the
+		// background loop to check; the session is served meanwhile and ends
+		// through autoUpdateCh if the binary gets replaced.
+		if c.autoUpdate && lastServerVersion != "" && reg.ServerVersion != "" &&
+			reg.ServerVersion != lastServerVersion {
+			c.log.Info("server version changed", "from", lastServerVersion, "to", reg.ServerVersion)
+			requestUpdateCheck(updateCheckCh)
+		}
+		if reg.ServerVersion != "" {
+			lastServerVersion = reg.ServerVersion
+		}
+
 		rt, err := newSessionRuntime(c, ctx, localBase, reg)
 		if err != nil {
 			if isNonRetriableSessionError(err) {
@@ -183,17 +196,6 @@ func (c *Client) Run(ctx context.Context) error {
 			})
 		}
 
-		// If server version changed since last registration and auto-update
-		// is on, immediately try to self-update.
-		if c.autoUpdate && lastServerVersion != "" && reg.ServerVersion != "" &&
-			reg.ServerVersion != lastServerVersion {
-			c.log.Info("server version changed", "from", lastServerVersion, "to", reg.ServerVersion)
-			if c.trySelfUpdate(ctx) {
-				rt.close()
-				return ErrAutoUpdated
-			}
-		}
-		lastServerVersion = reg.ServerVersion
 		// Check for updates in the background (non-blocking). Reconnects
 		// re-register, so limit this to once per interval: a flapping link
 		// otherwise spends GitHub's unauthenticated API quota.

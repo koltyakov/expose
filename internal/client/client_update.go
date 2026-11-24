@@ -39,25 +39,43 @@ const clientAutoUpdateInterval = 30 * time.Minute
 // reconnects when auto-update is off.
 const updateNoticeInterval = 6 * time.Hour
 
-// runAutoUpdateLoop periodically checks for a newer release. When an update
-// is downloaded and the binary replaced it sends on the channel and returns.
-func (c *Client) runAutoUpdateLoop(ctx context.Context, updated chan<- struct{}) {
+// runAutoUpdateLoop checks for a newer release at start (unless this process
+// was just started by an update), on every interval tick, and whenever the
+// session loop signals a server version change on checkNow. Checks run here,
+// off the session path, so a slow release API never delays serving. When an
+// update is downloaded and the binary replaced it sends on updated and returns.
+func (c *Client) runAutoUpdateLoop(ctx context.Context, checkNow <-chan struct{}, updated chan<- struct{}) {
 	c.log.Info("auto-update: periodic checks enabled", "interval", clientAutoUpdateInterval)
 	ticker := time.NewTicker(clientAutoUpdateInterval)
 	defer ticker.Stop()
+	check := !c.skipStartupUpdateCheck
 	for {
+		if check && c.trySelfUpdate(ctx) {
+			select {
+			case updated <- struct{}{}:
+			default:
+			}
+			return
+		}
+		check = true
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if c.trySelfUpdate(ctx) {
-				select {
-				case updated <- struct{}{}:
-				default:
-				}
-				return
-			}
+		case <-checkNow:
 		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// requestUpdateCheck asks the auto-update loop for an immediate check without
+// waiting for it. A check already pending absorbs the request.
+func requestUpdateCheck(checkNow chan<- struct{}) {
+	select {
+	case checkNow <- struct{}{}:
+	default:
 	}
 }
 
@@ -67,7 +85,11 @@ func (c *Client) trySelfUpdate(ctx context.Context) bool {
 	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	result, err := selfupdate.CheckAndApply(checkCtx, c.version)
+	checkAndApply := c.checkAndApply
+	if checkAndApply == nil {
+		checkAndApply = selfupdate.CheckAndApply
+	}
+	result, err := checkAndApply(checkCtx, c.version)
 	if err != nil {
 		c.log.Warn("auto-update: check failed", "err", err)
 		return false

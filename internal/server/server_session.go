@@ -703,12 +703,18 @@ func (s *session) closeWSPending() {
 // single counter. Otherwise unique Host headers grow wafBlocks without bound
 // for the whole retention window, and each one cost a store lookup.
 func (s *Server) recordWAFBlock(evt waf.BlockEvent) {
-	s.recordSiteWAF(evt)
 	route, routed := s.wafRouteForHost(evt.Host)
 	served := routed || s.servesHost(evt.Host)
+	// The redacted URI is only logged for served hosts, or for unknown hosts
+	// at debug level; skip building it for routine scanner noise.
+	evt = evt.Resolve(served || (s.log != nil && s.log.Enabled(context.Background(), slog.LevelDebug)))
+	s.recordSiteWAF(evt)
 	var count int64
 	if served {
-		val, _ := s.wafBlocks.LoadOrStore(evt.Host, &wafCounter{})
+		val, ok := s.wafBlocks.Load(evt.Host)
+		if !ok {
+			val, _ = s.wafBlocks.LoadOrStore(evt.Host, &wafCounter{})
+		}
 		counter := val.(*wafCounter)
 		counter.lastSeenUnixNano.Store(time.Now().UnixNano())
 		count = counter.total.Add(1)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/koltyakov/expose/internal/netutil"
 )
@@ -101,6 +102,19 @@ func ServeWithOptions(w http.ResponseWriter, r *http.Request, dir string, opts S
 			validator += "\x00" + presenceHTMLScript
 			content = io.NewSectionReader(presenceHTML{file: f, size: info.Size()}, 0, info.Size()+int64(len(presenceHTMLScript)))
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		} else if typ := compressibleType(candidate); typ != "" && info.Size() >= precompressMinBytes {
+			if gz := openPrecompressed(root, candidate); gz != nil {
+				defer func() { _ = gz.Close() }()
+				// Either representation may be served from this URL.
+				w.Header().Add("Vary", "Accept-Encoding")
+				// Ranges stay on the identity bytes, which clients expect.
+				if acceptsGzip(r) && r.Header.Get("Range") == "" {
+					validator += "\x00gzip"
+					content = gz
+					w.Header().Set("Content-Encoding", "gzip")
+					w.Header().Set("Content-Type", typ)
+				}
+			}
 		}
 		etag := sha256.Sum256([]byte(validator))
 		w.Header().Set("ETag", fmt.Sprintf(`"%x"`, etag))
@@ -151,7 +165,35 @@ func (w *publicationContentWriter) ReadFrom(r io.Reader) (int64, error) {
 	if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
 		return readerFrom.ReadFrom(r)
 	}
-	return io.Copy(struct{ io.Writer }{w}, r)
+	return CopyBuffered(struct{ io.Writer }{w}, r)
+}
+
+// CopyBuffered copies with a pooled 32 KB buffer. HTTP/2 and HTTP/3 response
+// writers lack ReadFrom, so io.Copy would allocate a fresh buffer for every
+// response. dst and src must not implement ReaderFrom/WriterTo, or the
+// buffer goes unused; wrap them as plain writers and readers.
+func CopyBuffered(dst io.Writer, src io.Reader) (int64, error) {
+	buf := copyBufferPool.Get().(*[]byte)
+	defer copyBufferPool.Put(buf)
+	return io.CopyBuffer(dst, src, *buf)
+}
+
+var copyBufferPool = sync.Pool{New: func() any {
+	b := make([]byte, 32<<10)
+	return &b
+}}
+
+// openPrecompressed opens the gzip variant of name, or returns nil.
+func openPrecompressed(root *os.Root, name string) *os.File {
+	f, err := root.Open(precompressedName(name))
+	if err != nil {
+		return nil
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil
+	}
+	return f
 }
 
 func isHTML(f *os.File, name string) bool {

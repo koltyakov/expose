@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/koltyakov/expose/internal/domain"
@@ -311,6 +312,12 @@ func ExtractWithLimit(src io.Reader, dir string, maxBytes int64) error {
 	return err
 }
 
+// ExtractWithManifest is ExtractWithLimit that also returns the manifest of
+// the extracted files, hashed while they were written, in Manifest's order.
+func ExtractWithManifest(src io.Reader, dir string, maxBytes int64) ([]domain.PublishedFile, error) {
+	return extractArchive(src, dir, maxBytes, false)
+}
+
 // ExtractDeltaWithLimit validates the target manifest and extracts changed files
 // into a new private directory. CompleteDelta must run before publishing it.
 func ExtractDeltaWithLimit(src io.Reader, dir string, maxBytes int64) ([]domain.PublishedFile, error) {
@@ -354,7 +361,8 @@ func extractArchive(src io.Reader, dir string, maxBytes int64, delta bool) ([]do
 			expected[file.Path] = file
 		}
 	}
-	if err := extractTar(tr, dir, maxBytes, expected); err != nil {
+	extracted, err := extractTar(tr, dir, maxBytes, expected)
+	if err != nil {
 		return nil, err
 	}
 	// Consume the gzip trailer to verify its checksum, bounding trailing padding.
@@ -370,80 +378,112 @@ func extractArchive(src io.Reader, dir string, maxBytes int64, delta bool) ([]do
 		if err != nil || !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("publish requires a root index.html")
 		}
+		manifest = extracted
 	}
+	SortFiles(manifest)
 	return manifest, nil
 }
 
-func extractTar(tr *tar.Reader, dir string, maxBytes int64, expected map[string]domain.PublishedFile) error {
+// SortFiles orders files as Manifest lists them: a depth-first walk with
+// entries sorted by name, so "a/b" precedes "a-c".
+func SortFiles(files []domain.PublishedFile) {
+	slices.SortFunc(files, func(a, b domain.PublishedFile) int {
+		return comparePaths(a.Path, b.Path)
+	})
+}
+
+func comparePaths(a, b string) int {
+	for {
+		aHead, aRest, aMore := strings.Cut(a, "/")
+		bHead, bRest, bMore := strings.Cut(b, "/")
+		if c := strings.Compare(aHead, bHead); c != 0 {
+			return c
+		}
+		switch {
+		case !aMore && !bMore:
+			return 0
+		case !aMore:
+			return -1
+		case !bMore:
+			return 1
+		}
+		a, b = aRest, bRest
+	}
+}
+
+// extractTar writes the archive's files into dir and returns them with the
+// checksums computed while writing.
+func extractTar(tr *tar.Reader, dir string, maxBytes int64, expected map[string]domain.PublishedFile) ([]domain.PublishedFile, error) {
 	var total int64
 	seen := make(map[string]bool)
+	var files []domain.PublishedFile
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if len(seen) >= MaxArchiveEntries {
-			return fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
+			return nil, fmt.Errorf("%w (%d entries)", ErrTooManyEntries, MaxArchiveEntries)
 		}
 		name := h.Name
 		if h.Typeflag == tar.TypeDir {
 			name = strings.TrimSuffix(name, "/")
 		}
 		if err := ValidatePath(name); err != nil {
-			return err
+			return nil, err
 		}
 		if seen[name] {
-			return fmt.Errorf("duplicate archive path: %s", name)
+			return nil, fmt.Errorf("duplicate archive path: %s", name)
 		}
 		seen[name] = true
 		if h.Size < 0 {
-			return fmt.Errorf("invalid archive entry size: %s", name)
+			return nil, fmt.Errorf("invalid archive entry size: %s", name)
 		}
 		if h.Size > maxBytes-total {
-			return fmt.Errorf("%w (%d bytes)", ErrSiteTooLarge, maxBytes)
+			return nil, fmt.Errorf("%w (%d bytes)", ErrSiteTooLarge, maxBytes)
 		}
 		total += h.Size
 		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir {
-			return fmt.Errorf("archive links and special files are forbidden: %s", name)
+			return nil, fmt.Errorf("archive links and special files are forbidden: %s", name)
 		}
 		if expected != nil {
 			file, exists := expected[name]
 			if !exists || h.Typeflag != tar.TypeReg || h.Size != file.Size {
-				return fmt.Errorf("archive entry does not match manifest: %s", name)
+				return nil, fmt.Errorf("archive entry does not match manifest: %s", name)
 			}
 		}
 		if h.Typeflag == tar.TypeDir {
 			if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(name)), 0700); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
 		if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(path.Dir(name))), 0700); err != nil {
-			return err
+			return nil, err
 		}
 		f, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(name)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		var contents io.Writer = f
+		// Hash while writing: the caller gets the manifest without a second
+		// read of every file.
 		hash := sha256.New()
-		if expected != nil {
-			contents = io.MultiWriter(f, hash)
-		}
-		_, copyErr := io.CopyN(contents, tr, h.Size)
+		_, copyErr := io.CopyN(io.MultiWriter(f, hash), tr, h.Size)
 		closeErr := f.Close()
 		if copyErr != nil {
-			return copyErr
+			return nil, copyErr
 		}
 		if closeErr != nil {
-			return closeErr
+			return nil, closeErr
 		}
-		if expected != nil && hex.EncodeToString(hash.Sum(nil)) != expected[name].Checksum {
-			return fmt.Errorf("checksum mismatch: %s", name)
+		checksum := hex.EncodeToString(hash.Sum(nil))
+		if expected != nil && checksum != expected[name].Checksum {
+			return nil, fmt.Errorf("checksum mismatch: %s", name)
 		}
+		files = append(files, domain.PublishedFile{Path: name, Checksum: checksum, Size: h.Size})
 	}
-	return nil
+	return files, nil
 }

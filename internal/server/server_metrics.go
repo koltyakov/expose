@@ -68,6 +68,15 @@ func (s *Server) MetricsHandler() http.HandlerFunc {
 		metric("expose_response_queue_bytes", s.queuedResponses.used.Load())
 		metric("expose_response_queue_limit_bytes", s.queuedResponses.limit)
 		metric("expose_response_queue_rejects_total", s.responseQueueRejects.Load())
+		for _, limiter := range []struct {
+			name string
+			rl   *rateLimiter
+		}{
+			{"register", s.regLimiter}, {"auth", s.authLimiter}, {"lookup", s.lookupLimiter},
+			{"public", s.publicLimiter}, {"access", s.accessLimiter}, {"acme_issue", s.acmeIssueLimiter},
+		} {
+			_, _ = fmt.Fprintf(w, "expose_rate_limiter_buckets{limiter=%q} %d\n", limiter.name, limiter.rl.size())
+		}
 		metric("expose_route_cache_entries", s.routes.size())
 		metric("expose_live_route_entries", s.liveRoutes.size())
 		metric("expose_route_cache_hits_total", s.routeCacheHits.Load())
@@ -75,9 +84,11 @@ func (s *Server) MetricsHandler() http.HandlerFunc {
 		metric("expose_route_store_loads_total", s.routeStoreLoads.Load())
 		metric("expose_disconnect_queue_depth", len(s.disconnects))
 		metric("expose_domain_touch_queue_depth", len(s.domainTouches))
+		metric("expose_site_visitor_queue_depth", len(s.siteVisitors))
 		metric("expose_waf_audit_queue_depth", len(s.wafAuditQueue))
 		metric("expose_disconnect_drops_total", s.disconnectDrops.Load())
 		metric("expose_domain_touch_drops_total", s.domainTouchDrops.Load())
+		metric("expose_site_visitor_drops_total", s.siteVisitorDrops.Load())
 		metric("expose_waf_audit_drops_total", s.wafAuditDrops.Load())
 		metric("expose_waf_unknown_host_blocks_total", s.wafUnknownHostBlocks.Load())
 		metric("expose_shutdown_duration_seconds", float64(s.shutdownNanos.Load())/1e9)

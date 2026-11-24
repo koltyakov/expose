@@ -94,10 +94,12 @@ type Server struct {
 	acmeIssueLimiter     *rateLimiter
 	acmeIssueMu          sync.Mutex
 	acmeIssueHosts       map[string]time.Time
+	acmeCertSeen         sync.Map // host -> int64 unix nanos until which its cached cert is trusted to exist
 	trustedProxies       []netip.Prefix
 	bypasses             map[string]*serverBypass
 	bypassWG             sync.WaitGroup
 	basicAuthCache       basicAuthSuccessCache
+	basicAuthFlights     basicAuthFlightGroup
 	delegatedAccess      delegatedAccessSessions
 	routes               routeCache
 	routeLookups         lookupGroup[liveRouteSnapshot]
@@ -106,8 +108,7 @@ type Server struct {
 	activeTunnels        *activeTunnelTracker
 	runtimeCtx           atomic.Value // context.Context
 	domainTouches        chan string
-	domainTouchMu        sync.Mutex
-	domainTouched        map[string]struct{}
+	domainTouched        sync.Map // domain ID -> *atomic.Int64, unix nanos last queued
 	routeLifecycleMu     sync.Mutex
 	sitesMu              sync.RWMutex
 	siteDirPins          map[string]*siteDirPin // guarded by sitesMu
@@ -127,6 +128,8 @@ type Server struct {
 	wafAuditDrops        atomic.Int64
 	wafUnknownHostBlocks atomic.Int64 // blocks for hosts this server does not serve
 	domainTouchDrops     atomic.Int64
+	siteVisitors         chan sqlite.SiteVisitor // new visitors awaiting the batch writer
+	siteVisitorDrops     atomic.Int64
 	disconnectDrops      atomic.Int64
 	routeCacheHits       atomic.Int64
 	routeCacheMisses     atomic.Int64
@@ -312,7 +315,7 @@ func New(cfg config.ServerConfig, store *sqlite.Store, logger *slog.Logger, vers
 		liveRoutes:       newLiveRouteIndex(),
 		activeTunnels:    newActiveTunnelTracker(),
 		domainTouches:    make(chan string, domainTouchQueueSize),
-		domainTouched:    make(map[string]struct{}),
+		siteVisitors:     make(chan sqlite.SiteVisitor, siteVisitorQueueSize),
 		disconnects:      make(chan string, disconnectQueueSize),
 		disconnectQ:      make(map[string]struct{}),
 		wafAuditQueue:    make(chan wafAuditEvent, wafAuditQueueSize),

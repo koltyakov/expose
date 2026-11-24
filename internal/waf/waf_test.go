@@ -500,7 +500,13 @@ func TestWAFRedactsQueryValuesInBlockEvent(t *testing.T) {
 	handler := NewMiddleware(Config{
 		Enabled: true,
 		OnBlock: func(evt BlockEvent) {
-			requestURI = evt.RequestURI
+			if evt.RequestURI != "" {
+				t.Error("URI built before the callback asked for it")
+			}
+			requestURI = evt.Resolve(true).RequestURI
+			if evt.Resolve(false).RequestURI != "" {
+				t.Error("Resolve(false) built the URI")
+			}
 		},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))(dummyHandler)
 	r := httptest.NewRequest(http.MethodGet, "/search?token=top-secret&q=UNION+SELECT", nil)

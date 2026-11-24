@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -222,7 +223,7 @@ func (w *deadlineConnectionWriter) Header() http.Header { return w.header }
 func (*deadlineConnectionWriter) WriteHeader(int)       {}
 
 func TestPublicDeadlinesStillBoundBlockedIO(t *testing.T) {
-	for _, tc := range []struct{ reading, multiplexed bool }{{true, false}, {false, false}, {false, true}} {
+	for _, tc := range []struct{ reading, multiplexed bool }{{true, false}, {true, true}, {false, false}, {false, true}} {
 		t.Run(fmt.Sprintf("reading=%t/multiplexed=%t", tc.reading, tc.multiplexed), func(t *testing.T) {
 			t.Parallel()
 			conn, peer := net.Pipe()
@@ -249,6 +250,91 @@ func TestPublicDeadlinesStillBoundBlockedIO(t *testing.T) {
 			}
 			if timeout, ok := blockedErr.(net.Error); !ok || !timeout.Timeout() {
 				t.Fatalf("expected a timeout, got %v", blockedErr)
+			}
+		})
+	}
+}
+
+type countingDeadlineWriter struct {
+	deadlineConnectionWriter
+	readDeadlines atomic.Int64
+}
+
+func (w *countingDeadlineWriter) SetReadDeadline(t time.Time) error {
+	w.readDeadlines.Add(1)
+	return w.Conn.SetReadDeadline(t)
+}
+
+func TestPublicDeadlinesMultiplexedFastReadsSkipDeadlineCalls(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer func() { _ = conn.Close(); _ = peer.Close() }()
+	w := &countingDeadlineWriter{deadlineConnectionWriter: deadlineConnectionWriter{conn, make(http.Header)}}
+	r := httptest.NewRequest(http.MethodPost, "/upload", nil)
+	r.Body = io.NopCloser(io.LimitReader(zeroReader{}, 1<<20))
+	r.ContentLength = 1 << 20
+	r.ProtoMajor = 2
+	var during int64
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		before := w.readDeadlines.Load()
+		buf := make([]byte, 4096)
+		for {
+			if _, err := r.Body.Read(buf); err != nil {
+				break
+			}
+		}
+		_ = r.Body.Close()
+		during = w.readDeadlines.Load() - before
+	})
+	publicDeadlineMiddleware(handler, time.Second, time.Second).ServeHTTP(w, r)
+	// 256 reads; only the one-time clear of the request-wide deadline may
+	// touch the stream.
+	if during > 1 {
+		t.Fatalf("fast HTTP/2 upload made %d read-deadline calls, want at most 1", during)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestPublicDeadlineBodyCapBoundsTrickledPreview(t *testing.T) {
+	for _, multiplexed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiplexed=%t", multiplexed), func(t *testing.T) {
+			t.Parallel()
+			conn, peer := net.Pipe()
+			defer func() { _ = conn.Close(); _ = peer.Close() }()
+			stop := make(chan struct{})
+			defer close(stop)
+			go func() { // one byte every 20 ms, each well inside the per-Read timeout
+				for {
+					select {
+					case <-stop:
+						return
+					case <-time.After(20 * time.Millisecond):
+						if _, err := peer.Write([]byte{'x'}); err != nil {
+							return
+						}
+					}
+				}
+			}()
+			w := &deadlineConnectionWriter{Conn: conn, header: make(http.Header)}
+			body := &publicDeadlineBody{ReadCloser: conn, controller: http.NewResponseController(w), timeout: time.Second, multiplexed: multiplexed}
+			body.capDeadline(1000, time.Now().Add(150*time.Millisecond))
+			started := time.Now()
+			_, err := io.ReadFull(body, make([]byte, 1000))
+			if err == nil {
+				t.Fatal("trickled preview finished despite the overall deadline")
+			}
+			if elapsed := time.Since(started); elapsed > time.Second {
+				t.Fatalf("preview ran %s, past its 150ms cap", elapsed)
+			}
+			// Bytes past the cap use only the per-Read timeout again.
+			body.capBytes = 0
+			if got := body.readDeadline(time.Now()); time.Until(got) < 900*time.Millisecond {
+				t.Fatalf("deadline after the cap = %s, want the per-Read timeout", time.Until(got))
 			}
 		})
 	}

@@ -2,11 +2,14 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -43,11 +46,39 @@ func fetchLatestRelease(ctx context.Context) (*Release, error) {
 	return &rel, nil
 }
 
-func download(ctx context.Context, url string) ([]byte, error) {
-	return downloadLimited(ctx, url, maxDownloadBytes)
+func downloadLimited(ctx context.Context, url string, limit int64) ([]byte, error) {
+	body, err := openDownload(ctx, url, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = body.Close() }()
+	return readAllWithLimit(body, limit)
 }
 
-func downloadLimited(ctx context.Context, url string, limit int64) ([]byte, error) {
+// downloadToFile streams url into path, hashing as it writes, so a release
+// archive is never held in memory. It returns the hex SHA-256 of the bytes.
+func downloadToFile(ctx context.Context, url string, limit int64, path string) (string, error) {
+	body, err := openDownload(ctx, url, limit)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = body.Close() }()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(f, hash), io.LimitReader(body, limit+1))
+	if err := errors.Join(copyErr, f.Close()); err != nil {
+		return "", err
+	}
+	if n > limit {
+		return "", fmt.Errorf("content exceeds limit of %d bytes", limit)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func openDownload(ctx context.Context, url string, limit int64) (io.ReadCloser, error) {
 	if err := validateAssetURL(url); err != nil {
 		return nil, err
 	}
@@ -60,16 +91,15 @@ func downloadLimited(ctx context.Context, url string, limit int64) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("download returned %s", resp.Status)
 	}
 	if resp.ContentLength > limit {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("download too large: %d bytes exceeds limit %d", resp.ContentLength, limit)
 	}
-
-	return readAllWithLimit(resp.Body, limit)
+	return resp.Body, nil
 }
 
 func readAllWithLimit(r io.Reader, limit int64) ([]byte, error) {

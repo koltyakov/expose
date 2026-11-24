@@ -25,6 +25,11 @@ const (
 	// uses.  Each shard has its own mutex, which drastically reduces lock
 	// contention under concurrent registrations from distinct API keys.
 	rateLimiterShards = 16
+
+	// rateLimiterShardMaxBuckets caps one shard's map between janitor
+	// cleanups, so a flood of distinct client addresses cannot grow it
+	// without bound (65,536 buckets across all shards).
+	rateLimiterShardMaxBuckets = 4096
 )
 
 type bucket struct {
@@ -45,7 +50,7 @@ type rateLimiter struct {
 
 type rateLimiterShard struct {
 	mu      sync.Mutex
-	buckets map[string]*bucket
+	buckets map[string]bucket // by value: one allocation per map growth, not per key
 }
 
 func newRateLimiter() *rateLimiter {
@@ -59,7 +64,7 @@ func newConfiguredRateLimiter(rate, burst float64, cleanupAge time.Duration) *ra
 		cleanupAge: cleanupAge,
 	}
 	for i := range rl.shards {
-		rl.shards[i].buckets = make(map[string]*bucket)
+		rl.shards[i].buckets = make(map[string]bucket)
 	}
 	return rl
 }
@@ -92,8 +97,10 @@ func (rl *rateLimiter) allow(key string) bool {
 	now := time.Now()
 	b, ok := s.buckets[key]
 	if !ok {
-		b = &bucket{tokens: rl.burst, lastCheck: now}
-		s.buckets[key] = b
+		if len(s.buckets) >= rateLimiterShardMaxBuckets {
+			rl.shrinkLocked(s, now)
+		}
+		b = bucket{tokens: rl.burst, lastCheck: now}
 	}
 
 	elapsed := now.Sub(b.lastCheck).Seconds()
@@ -103,11 +110,50 @@ func (rl *rateLimiter) allow(key string) bool {
 	}
 	b.lastCheck = now
 
-	if b.tokens < 1.0 {
-		return false
+	allowed := b.tokens >= 1.0
+	if allowed {
+		b.tokens--
 	}
-	b.tokens--
-	return true
+	s.buckets[key] = b
+	return allowed
+}
+
+// shrinkLocked makes room in a full shard. Buckets that have refilled to
+// burst carry no state (a new bucket starts full), so they go first. If the
+// shard is still mostly full, the flood is of keys still being limited;
+// dropping arbitrary entries down to half keeps memory bounded, at the cost
+// of resetting some of those keys. Halving amortizes the sweep over many
+// inserts.
+func (rl *rateLimiter) shrinkLocked(s *rateLimiterShard, now time.Time) {
+	for k, v := range s.buckets {
+		if v.tokens+now.Sub(v.lastCheck).Seconds()*rl.rate >= rl.burst {
+			delete(s.buckets, k)
+		}
+	}
+	if len(s.buckets) < rateLimiterShardMaxBuckets*3/4 {
+		return
+	}
+	for k := range s.buckets {
+		if len(s.buckets) <= rateLimiterShardMaxBuckets/2 {
+			return
+		}
+		delete(s.buckets, k)
+	}
+}
+
+// size reports the number of buckets across all shards.
+func (rl *rateLimiter) size() int {
+	if rl == nil {
+		return 0
+	}
+	total := 0
+	for i := range rl.shards {
+		s := &rl.shards[i]
+		s.mu.Lock()
+		total += len(s.buckets)
+		s.mu.Unlock()
+	}
+	return total
 }
 
 // refund returns a reserved attempt without erasing failures from other requests.
@@ -120,6 +166,7 @@ func (rl *rateLimiter) refund(key string) {
 	defer s.mu.Unlock()
 	if b, ok := s.buckets[key]; ok {
 		b.tokens = min(rl.burst, b.tokens+1)
+		s.buckets[key] = b
 	}
 }
 
@@ -144,6 +191,7 @@ func (rl *rateLimiter) exhausted(key string) bool {
 		b.tokens = rl.burst
 	}
 	b.lastCheck = now
+	s.buckets[key] = b
 	return b.tokens < 1.0
 }
 

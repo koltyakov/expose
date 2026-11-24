@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/expose/internal/config"
+	"github.com/koltyakov/expose/internal/selfupdate"
 	"github.com/koltyakov/expose/internal/traffic"
 )
 
@@ -72,9 +74,14 @@ type Client struct {
 	fwdClient   *http.Client // for local upstream forwarding
 	h3TLSConfig *tls.Config  // optional HTTP/3 TLS override for internal use/tests
 	autoUpdate  bool         // when true, periodically self-update and restart
-	resumeID    string       // last tunnel ID, reused on reconnect attempts
-	hooks       LifecycleHooks
-	trafficSink TrafficRecorder
+	// skipStartupUpdateCheck defers the first auto-update check to the
+	// interval, for a process that an update has just started.
+	skipStartupUpdateCheck bool
+	// checkAndApply overrides selfupdate.CheckAndApply in tests.
+	checkAndApply func(context.Context, string) (*selfupdate.Result, error)
+	resumeID      string // last tunnel ID, reused on reconnect attempts
+	hooks         LifecycleHooks
+	trafficSink   TrafficRecorder
 }
 
 // SetDisplay configures the interactive terminal display.
@@ -100,6 +107,13 @@ func (c *Client) SetVersion(v string) {
 // method returns [ErrAutoUpdated].
 func (c *Client) SetAutoUpdate(enabled bool) {
 	c.autoUpdate = enabled
+}
+
+// SetSkipStartupUpdateCheck makes the auto-update loop wait one interval
+// before its first check. Use it when an update has just restarted the
+// process, so the new binary does not query the release API again at once.
+func (c *Client) SetSkipStartupUpdateCheck(skip bool) {
+	c.skipStartupUpdateCheck = skip
 }
 
 // SetLifecycleHooks configures optional callbacks for tunnel lifecycle events.

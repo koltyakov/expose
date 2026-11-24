@@ -85,9 +85,12 @@ func (rt *clientSessionRuntime) closeWSConns() {
 	streams := rt.wsConns
 	rt.wsConns = make(map[string]*localWebSocket)
 	rt.wsMu.Unlock()
-	for _, stream := range streams {
+	for id, stream := range streams {
 		stream.stop()
 		_ = stream.conn.Close()
+		// deleteWSConn no longer finds these streams, so the dashboard's
+		// open-socket count must be released here.
+		rt.client.trackWSClose(id)
 	}
 }
 

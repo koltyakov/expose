@@ -1667,13 +1667,14 @@ func TestForwardAndSendCancelsLocalRequest(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	var replies atomic.Int32
 	go func() {
 		defer close(done)
 		c.forwardAndSend(ctx, base, &tunnelproto.HTTPRequest{
 			ID:     "req_cancel",
 			Method: http.MethodGet,
 			Path:   "/slow",
-		}, nil, func(tunnelproto.Message) error { return nil }, nil)
+		}, nil, func(tunnelproto.Message) error { replies.Add(1); return nil }, nil)
 	}()
 
 	select {
@@ -1694,6 +1695,11 @@ func TestForwardAndSendCancelsLocalRequest(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("forwardAndSend did not return after cancellation")
+	}
+	// Nobody waits for a cancelled request; answering it as a 502 only
+	// spends a tunnel write and logs a false upstream failure.
+	if n := replies.Load(); n != 0 {
+		t.Fatalf("cancelled request answered with %d messages", n)
 	}
 }
 
@@ -1759,5 +1765,25 @@ func TestRequestQueueContextAppliesMessageTimeout(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected request context to time out")
+	}
+}
+
+func TestForwardKeepsEscapedPathAndQuery(t *testing.T) {
+	t.Parallel()
+	got := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Host + " " + r.RequestURI
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL + "/prefix/")
+	c := New(config.ClientConfig{}, nil)
+	defer c.fwdClient.CloseIdleConnections()
+	c.forwardAndSend(t.Context(), base, &tunnelproto.HTTPRequest{
+		ID: "escaped", Method: http.MethodGet, Path: "/a/b c/d/e", RawPath: "/a%2Fb%20c/d/e", Query: "x=1&y=%2F",
+		Headers: map[string][]string{"Host": {"public.example.com"}},
+	}, nil, func(tunnelproto.Message) error { return nil }, nil)
+	if want := "public.example.com /prefix/a%2Fb%20c/d/e?x=1&y=%2F"; <-got != want {
+		t.Fatalf("upstream saw a different request line, want %q", want)
 	}
 }

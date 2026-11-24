@@ -24,6 +24,12 @@ type pubWatchTiming struct {
 	Poll, Debounce, Stats, Retry, Verify time.Duration
 	// StatsIdle caps the backoff for unchanged stats; Stats resumes on change.
 	StatsIdle time.Duration
+	// PollIdle caps the polling interval while notifications are unavailable
+	// and nothing changes; Poll resumes on any change.
+	PollIdle time.Duration
+	// NotifyRetry is the first delay before re-creating file notifications
+	// after they failed; it doubles up to a minute while they keep failing.
+	NotifyRetry time.Duration
 }
 
 func (t pubWatchTiming) defaults() pubWatchTiming {
@@ -45,8 +51,19 @@ func (t pubWatchTiming) defaults() pubWatchTiming {
 	if t.Verify <= 0 {
 		t.Verify = 5 * time.Minute
 	}
+	if t.PollIdle < t.Poll {
+		t.PollIdle = max(t.Poll, 2*time.Second)
+	}
+	if t.NotifyRetry <= 0 {
+		t.NotifyRetry = 2 * time.Second
+	}
 	return t
 }
+
+const pubWatchNotifyRetryMax = time.Minute
+
+// newPubWatchNotifierFunc is replaced in tests to observe re-creation.
+var newPubWatchNotifierFunc = newPubWatchNotifier
 
 type pubWatchStatus struct {
 	Folder, State, StatsError string
@@ -251,19 +268,41 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 	}
 	poll := time.NewTicker(timing.Poll)
 	defer poll.Stop()
-	notifier := newPubWatchNotifier(ctx, opts)
 	var changes <-chan fsnotify.Event
 	var notifyErrors <-chan error
-	if notifier != nil {
-		changes, notifyErrors = notifier.Events, notifier.Errors
+	// Without notifications the loop polls. It re-creates the notifier after
+	// a clean snapshot, backing off while that keeps failing, and stretches
+	// the polling interval toward PollIdle while nothing changes.
+	var notifier *pubWatchNotifier
+	var notifyBackoff time.Duration
+	var notifyRetryAt, notifyStartedAt time.Time
+	idlePoll := timing.Poll
+	scheduleNotifyRetry := func(now time.Time) {
+		notifyBackoff = min(max(2*notifyBackoff, timing.NotifyRetry), pubWatchNotifyRetryMax)
+		notifyRetryAt = now.Add(notifyBackoff)
+	}
+	startNotifications := func(now time.Time) {
+		if notifier = newPubWatchNotifierFunc(ctx, opts); notifier != nil {
+			changes, notifyErrors = notifier.Events, notifier.Errors
+			notifyStartedAt = now
+			idlePoll = timing.Poll
+			return
+		}
+		scheduleNotifyRetry(now)
 	}
 	stopNotifications := func() {
 		if changes != nil {
 			changes, notifyErrors = nil, nil
 			_ = notifier.Close()
 			poll.Reset(timing.Poll) // polling is now the only change detector
+			now := time.Now()
+			if now.Sub(notifyStartedAt) > pubWatchNotifyRetryMax {
+				notifyBackoff = 0 // it worked for a while: retry promptly
+			}
+			scheduleNotifyRetry(now)
 		}
 	}
+	startNotifications(time.Now())
 	defer stopNotifications()
 	scanPending := true // include changes between the initial upload and watch setup
 	var nextScan time.Time
@@ -358,6 +397,9 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			if opts.Staged != nil && uploadBusy {
 				continue
 			}
+			if changes == nil && !now.Before(notifyRetryAt) {
+				startNotifications(now)
+			}
 			filterPubWatchSnapshot(snapshot, published)
 			if scanError != "" {
 				scanError = ""
@@ -371,6 +413,7 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 			if !samePubSnapshot(snapshot, observed) {
 				observed, changedAt = snapshot, time.Now()
 				nextRetry, retryDelay = time.Time{}, timing.Retry
+				idlePoll = timing.Poll
 			}
 			dirty := !samePubSnapshot(snapshot, baseline)
 			// A periodic content comparison catches
@@ -387,6 +430,10 @@ func watchPublishedSite(parent context.Context, client *http.Client, opts pubUpl
 				if err := redraw(); err != nil {
 					return err
 				}
+			} else if changes == nil && !scanPending && !uploadBusy {
+				// Polling only and nothing pending: slow down until a change.
+				poll.Reset(idlePoll)
+				idlePoll = min(idlePoll*3/2, timing.PollIdle)
 			}
 		case event := <-events:
 			if ctx.Err() != nil {

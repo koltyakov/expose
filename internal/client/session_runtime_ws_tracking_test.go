@@ -54,3 +54,22 @@ func TestClientTrackWSOpenAndCloseDisplay(t *testing.T) {
 		t.Fatalf("expected websocket placeholder after close, got: %s", out)
 	}
 }
+
+func TestCloseWSConnsReleasesDashboardCount(t *testing.T) {
+	d, _ := newTestDisplay(false)
+	d.ShowBanner("dev")
+	c := &Client{display: d}
+	conn, _, closeLocal := dialTestWebSocketPair(t)
+	defer closeLocal()
+	open := &tunnelproto.WSOpen{ID: "ws_1", Path: "/ws"}
+	c.trackWSOpen(open.ID, open)
+	rt := &clientSessionRuntime{client: c, wsConns: map[string]*localWebSocket{
+		open.ID: {conn: conn, writes: make(chan localWSWrite, 1), done: make(chan struct{})},
+	}}
+	rt.closeWSConns()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.wsConns) != 0 {
+		t.Fatalf("session close left %d websockets counted as open", len(d.wsConns))
+	}
+}

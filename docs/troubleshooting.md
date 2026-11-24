@@ -106,6 +106,7 @@ Add `--insecure` when testing against local self-signed TLS, such as `127.0.0.1.
 
 - **Network instability**: Client auto-reconnects with backoff - occasional reconnects are normal.
 - **Server ping timeout**: If the client's keepalive pings don't reach the server within 3 minutes, the session is expired. Check for network middleboxes dropping idle connections.
+- **Client silence timeout**: If nothing at all arrives from the server for three ping intervals (90 seconds by default), the client treats the tunnel as dead and reconnects, instead of waiting for TCP to give up on a path that dropped without closing.
 - **Server restart**: Clients reconnect automatically after a server restart.
 
 ## ACME rate limits

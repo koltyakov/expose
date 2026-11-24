@@ -62,6 +62,19 @@ func joinForwardTarget(base *url.URL, path, rawPath, rawQuery string) url.URL {
 	return target
 }
 
+// newForwardRequest builds the upstream request from an already-built URL.
+// Formatting target and having http.NewRequest parse it back cost a string
+// build and a full URL parse on every forwarded request.
+func newForwardRequest(ctx context.Context, method string, target url.URL, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "/", body)
+	if err != nil {
+		return nil, err
+	}
+	req.URL = &target
+	req.Host = target.Host
+	return req, nil
+}
+
 func escapePathPreservingSlashes(path string) string {
 	if path == "" {
 		return ""
@@ -84,7 +97,7 @@ func (c *Client) forwardLocal(ctx context.Context, base *url.URL, req *tunnelpro
 	if err != nil {
 		return &tunnelproto.HTTPResponse{ID: req.ID, Status: http.StatusBadGateway}
 	}
-	localReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), newTrafficCountingReader(bytes.NewReader(body), func(n int) {
+	localReq, err := newForwardRequest(ctx, req.Method, target, newTrafficCountingReader(bytes.NewReader(body), func(n int) {
 		c.recordTraffic(traffic.DirectionInbound, int64(n))
 	}))
 	if err != nil {
@@ -243,7 +256,7 @@ func (c *Client) forwardAndSend(
 		defer func() { _ = pipeReader.Close() }()
 	}
 
-	localReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), body)
+	localReq, err := newForwardRequest(ctx, req.Method, target, body)
 	if err != nil {
 		_ = writeMsg(tunnelproto.Message{
 			Kind:     tunnelproto.KindResponse,
@@ -268,16 +281,26 @@ func (c *Client) forwardAndSend(
 	resp, err := c.fwdClient.Do(localReq)
 	activity.finishHeaders()
 	if err != nil {
+		status, message := http.StatusBadGateway, "local upstream unavailable"
+		switch {
+		case activity.timedOut():
+			status, message = http.StatusGatewayTimeout, "local upstream timed out"
+		case ctx.Err() != nil:
+			// The public request was cancelled (visitor gone or session
+			// closing). Nobody reads a reply; record it as client-closed.
+			c.logForwardResult(req, statusClientClosedRequest, started)
+			return
+		}
 		_ = writeMsg(tunnelproto.Message{
 			Kind: tunnelproto.KindResponse,
 			Response: &tunnelproto.HTTPResponse{
 				ID:      req.ID,
-				Status:  http.StatusBadGateway,
+				Status:  status,
 				Headers: map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
-				Body:    []byte("local upstream unavailable"),
+				Body:    []byte(message),
 			},
 		})
-		c.logForwardResult(req, http.StatusBadGateway, started)
+		c.logForwardResult(req, status, started)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -591,6 +614,10 @@ func (r *trafficCountingReader) Read(p []byte) (int, error) {
 }
 
 // logForwardResult logs the forwarded request result via display or logger.
+// statusClientClosedRequest is the de facto status (nginx's 499) logged for a
+// request the visitor abandoned before the upstream answered.
+const statusClientClosedRequest = 499
+
 func (c *Client) logForwardResult(req *tunnelproto.HTTPRequest, status int, started time.Time) {
 	if c.display == nil && !c.requestLogEnabled() {
 		return // skip sanitizing and formatting a record nobody keeps

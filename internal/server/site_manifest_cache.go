@@ -59,6 +59,39 @@ func (c *siteManifestCache) delete(id string) {
 	delete(c.entries, id)
 }
 
+// primeSiteManifest caches a manifest verified during upload.
+func (s *Server) primeSiteManifest(id string, files []domain.PublishedFile) {
+	if len(files) == 0 {
+		return
+	}
+	data, err := json.Marshal(files)
+	if err != nil {
+		return
+	}
+	s.siteManifests.put(id, append(data, '\n'))
+}
+
+// cachedManifest returns the cached manifest for id without loading it.
+func (s *Server) cachedManifest(id string) []domain.PublishedFile {
+	data, ok := s.siteManifests.get(id)
+	if !ok {
+		return nil
+	}
+	var files []domain.PublishedFile
+	if json.Unmarshal(data, &files) != nil {
+		return nil
+	}
+	return files
+}
+
+// precompressSite writes gzip variants into an unpublished directory. They
+// are optional: a failure is logged and the site is served uncompressed.
+func (s *Server) precompressSite(dir, baseDir string, maxBytes int64) {
+	if err := publish.Precompress(dir, baseDir, maxBytes); err != nil && s.log != nil {
+		s.log.Warn("precompress published site", "err", err)
+	}
+}
+
 // The caller holds sitesMu until this returns, keeping the directory alive.
 func (s *Server) publishedManifest(site domain.PublishedSite) ([]byte, error) {
 	id := site.StorageID()

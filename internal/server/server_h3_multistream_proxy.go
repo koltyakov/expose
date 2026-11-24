@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -104,8 +105,11 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 
 	if resp.Streamed {
 		flushResponse(w)
-		if !writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2()) {
+		ok, reusable := writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2())
+		if !reusable {
 			requeue = false
+		}
+		if !ok {
 			if r.Context().Err() == nil {
 				// The status and partial body already went out. Match the WS
 				// path: do not finish an unknown-length body as a clean EOF.
@@ -275,19 +279,25 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 }
 
 func readH3StreamMessage(stream *http3.Stream, timeout time.Duration, useV2 bool) (tunnelproto.Message, error) {
-	var msg tunnelproto.Message
 	if stream == nil {
-		return msg, io.EOF
+		return tunnelproto.Message{}, io.EOF
 	}
+	return readH3StreamMessageFrom(stream, stream, timeout, useV2)
+}
+
+// readH3StreamMessageFrom decodes one frame from src, which reads from
+// stream (possibly through a buffer); the deadline applies to stream.
+func readH3StreamMessageFrom(stream readDeadliner, src io.Reader, timeout time.Duration, useV2 bool) (tunnelproto.Message, error) {
+	var msg tunnelproto.Message
 	if timeout > 0 {
 		_ = stream.SetReadDeadline(time.Now().Add(timeout))
 		defer func() { _ = stream.SetReadDeadline(time.Time{}) }()
 	}
 	var err error
 	if useV2 {
-		err = tunnelproto.ReadStreamMessageV2(stream, minWSReadLimit*2, &msg)
+		err = tunnelproto.ReadStreamMessageV2(src, minWSReadLimit*2, &msg)
 	} else {
-		err = tunnelproto.ReadStreamMessage(stream, minWSReadLimit*2, &msg)
+		err = tunnelproto.ReadStreamMessage(src, minWSReadLimit*2, &msg)
 	}
 	if err != nil {
 		return tunnelproto.Message{}, err
@@ -345,18 +355,25 @@ func (s *Server) sendRequestBodyToH3Stream(
 	})
 }
 
+// writeH3StreamedResponseBody copies body frames from a worker stream to
+// the public response. Like the WS path, it flushes when no further frame
+// bytes are waiting (or every maxUnflushedStreamBytes), so chunks that arrive
+// together leave in one flush. reusable reports whether the worker stream
+// ended exactly at the end frame and may serve another request.
 func writeH3StreamedResponseBody(
 	w http.ResponseWriter,
 	r *http.Request,
-	stream *http3.Stream,
+	stream h3FrameReader,
 	chunkTimeout time.Duration,
 	useV2 bool,
-) bool {
+) (ok, reusable bool) {
 	flusher, canFlush := w.(http.Flusher)
+	src := bufio.NewReaderSize(stream, h3ResponseReadBuffer)
+	unflushed := 0
 	for {
-		msg, err := readH3StreamMessage(stream, chunkTimeout, useV2)
+		msg, err := readH3StreamMessageFrom(stream, src, chunkTimeout, useV2)
 		if err != nil {
-			return false
+			return false, false
 		}
 		switch msg.Kind {
 		case tunnelproto.KindRespBody:
@@ -365,27 +382,48 @@ func writeH3StreamedResponseBody(
 			}
 			b, err := msg.BodyChunk.Payload()
 			if err == nil && len(b) > 0 {
-				_, wErr := w.Write(b)
+				n, wErr := w.Write(b)
 				tunnelproto.ReleaseBodyChunk(b)
 				if wErr != nil {
-					return false
+					return false, false
 				}
-				if canFlush {
+				unflushed += n
+				if canFlush && (unflushed >= maxUnflushedStreamBytes || src.Buffered() == 0) {
 					flusher.Flush()
+					unflushed = 0
 				}
 			} else {
 				tunnelproto.ReleaseBodyChunk(b)
 			}
 		case tunnelproto.KindRespBodyEnd:
-			if msg.BodyChunk != nil && msg.BodyChunk.Error != "" {
-				return false
+			if canFlush && unflushed > 0 {
+				flusher.Flush()
 			}
-			return true
+			if msg.BodyChunk != nil && msg.BodyChunk.Error != "" {
+				return false, false
+			}
+			// Bytes read past the end frame belong to nobody; such a stream
+			// must not be reused.
+			return true, src.Buffered() == 0
 		}
 		select {
 		case <-r.Context().Done():
-			return false
+			return false, false
 		default:
 		}
 	}
 }
+
+type readDeadliner interface {
+	SetReadDeadline(time.Time) error
+}
+
+// h3FrameReader is the part of a worker stream the response copy uses.
+type h3FrameReader interface {
+	io.Reader
+	readDeadliner
+}
+
+// h3ResponseReadBuffer sizes the read-ahead that shows whether further body
+// frames are already waiting on a worker stream.
+const h3ResponseReadBuffer = 32 << 10

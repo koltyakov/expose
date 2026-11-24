@@ -120,18 +120,28 @@ func BenchmarkSessionWSPendingSendBuffered(b *testing.B) {
 }
 
 func BenchmarkQueueDomainTouchDeduplicate(b *testing.B) {
-	srv := &Server{
-		domainTouches: make(chan string, 1),
-		domainTouched: make(map[string]struct{}),
-	}
+	srv := &Server{domainTouches: make(chan string, 1)}
 
 	b.ReportAllocs()
 	for b.Loop() {
 		srv.queueDomainTouch("d-bench")
 		srv.queueDomainTouch("d-bench")
 		domainID := <-srv.domainTouches
-		srv.completeDomainTouch(domainID)
+		srv.releaseDomainTouch(domainID)
 	}
+}
+
+// BenchmarkQueueDomainTouchThrottled is the steady state: every proxied
+// request to an active domain finds a recent reservation.
+func BenchmarkQueueDomainTouchThrottled(b *testing.B) {
+	srv := &Server{domainTouches: make(chan string, 1)}
+	srv.queueDomainTouch("d-bench")
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			srv.queueDomainTouch("d-bench")
+		}
+	})
 }
 
 func BenchmarkPublicHTTPRoundTripSingleTunnel(b *testing.B) {

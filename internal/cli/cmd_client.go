@@ -364,13 +364,13 @@ func runConfiguredClient(ctx context.Context, cfg config.ClientConfig) int {
 		return 2
 	}
 
-	// Auto-update on start when EXPOSE_AUTOUPDATE=true.
+	// Auto-update when EXPOSE_AUTOUPDATE=true. The client checks in the
+	// background while it connects; an applied update ends Run with
+	// client.ErrAutoUpdated.
 	if autoUpdateActive(logger) {
-		if autoUpdateOnStart(ctx, Version, logger) {
-			displayCleanup()
-			return restartProcess(logger)
-		}
+		selfupdate.SweepStaleUpdates() // work left by an interrupted update; quick
 		c.SetAutoUpdate(true)
+		c.SetSkipStartupUpdateCheck(autoUpdateStartedByUpdate())
 	}
 
 	runCtx, cancelRun := context.WithCancel(ctx)

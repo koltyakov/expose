@@ -22,15 +22,22 @@ func (c *Client) upstreamIdleTimeout(req *tunnelproto.HTTPRequest) time.Duration
 // requestActivity bounds an upstream header wait while allowing an active
 // upload to outlive that timeout. A timer callback rechecks the deadline under
 // the lock so a concurrent touch cannot be canceled by an expired callback.
+//
+// Body reads use the same lazy deadline as touch: beginRead moves the
+// deadline and arms the timer only when it is not already running, and
+// endRead just marks the request idle, so a busy stream does not stop and
+// reset a runtime timer on every read.
 type requestActivity struct {
 	mu       sync.Mutex
 	timer    *time.Timer
+	armed    bool // timer is scheduled; its callback rechecks the deadline
 	deadline time.Time
 	timeout  time.Duration
 	cancel   context.CancelFunc
 	stopped  bool
 	active   bool
 	headers  bool
+	expired  bool // the timeout cancelled the request
 }
 
 func newRequestActivity(timeout time.Duration, cancel context.CancelFunc) *requestActivity {
@@ -39,6 +46,7 @@ func newRequestActivity(timeout time.Duration, cancel context.CancelFunc) *reque
 		a.mu.Lock()
 		a.deadline = time.Now().Add(timeout)
 		a.active = true
+		a.armed = true
 		a.timer = time.AfterFunc(timeout, a.expire)
 		a.mu.Unlock()
 	}
@@ -58,15 +66,25 @@ func (a *requestActivity) touch() {
 func (a *requestActivity) expire() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.armed = false
 	if a.stopped || !a.active {
-		return
+		return // idle between reads; the next beginRead re-arms
 	}
 	if remaining := time.Until(a.deadline); remaining > 0 {
+		a.armed = true
 		a.timer.Reset(remaining)
 		return
 	}
 	a.stopped = true
+	a.expired = true
 	a.cancel()
+}
+
+// timedOut reports whether the inactivity timeout cancelled the request.
+func (a *requestActivity) timedOut() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.expired
 }
 
 func (a *requestActivity) finishHeaders() {
@@ -82,20 +100,23 @@ func (a *requestActivity) beginRead() {
 	if a.timer != nil && !a.stopped {
 		a.active = true
 		a.deadline = time.Now().Add(a.timeout)
-		a.timer.Reset(a.timeout)
+		if !a.armed {
+			a.armed = true
+			a.timer.Reset(a.timeout)
+		}
 	}
 }
 
 func (a *requestActivity) endRead() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pauseLocked()
+	a.active = false // the timer keeps running and finds the request idle
 }
 
 func (a *requestActivity) pauseLocked() {
 	a.active = false
-	if a.timer != nil {
-		a.timer.Stop()
+	if a.timer != nil && a.timer.Stop() {
+		a.armed = false
 	}
 }
 

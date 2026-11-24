@@ -143,10 +143,13 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, withSiteURL(r, site))
 		}
 	case http.MethodDelete:
-		if err := s.deleteSite(r.Context(), st, site); err != nil {
+		tomb, err := s.deleteSite(r.Context(), st, site)
+		if err != nil {
 			s.siteError(w, err)
 			return
 		}
+		release()
+		s.removeSiteTombstones(tomb)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -258,7 +261,7 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 	if incremental {
 		manifest, err = publish.ExtractDeltaWithLimit(r.Body, dir, maxBytes)
 	} else {
-		err = publish.ExtractWithLimit(r.Body, dir, maxBytes)
+		manifest, err = publish.ExtractWithManifest(r.Body, dir, maxBytes)
 	}
 	if err != nil {
 		var timeout net.Error
@@ -318,21 +321,30 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		}
 		baseDir := ""
 		var unpin func()
+		var baseManifest []domain.PublishedFile
 		if base != nil {
 			baseDir = filepath.Join(s.publishDir(), base.StorageID())
 			unpin = s.pinSiteDir(baseDir)
+			baseManifest = s.cachedManifest(base.StorageID())
 		}
 		prepUnlock()
 		err := func() error {
 			if unpin != nil {
 				defer unpin()
 			}
-			return publish.CompleteDelta(baseDir, dir, manifest, maxBytes)
+			if err := publish.CompleteDeltaWithBase(baseDir, dir, manifest, maxBytes, baseManifest); err != nil {
+				return err
+			}
+			// Unchanged files reuse the pinned base's gzip variants.
+			s.precompressSite(dir, baseDir, maxBytes)
+			return nil
 		}()
 		if err != nil {
 			http.Error(w, "invalid incremental site: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+	} else {
+		s.precompressSite(dir, "", maxBytes)
 	}
 	s.sitesMu.Lock()
 	release := sync.OnceFunc(s.sitesMu.Unlock)
@@ -375,6 +387,9 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 	}
 	s.siteHosts.Store(site.Hostname, site)
 	s.siteLookups.invalidate(site.Hostname)
+	// The manifest was verified while extracting (and completing the delta),
+	// so the next watch-mode save need not hash the published files again.
+	s.primeSiteManifest(site.StorageID(), manifest)
 	if !site.WS {
 		s.closeSitePresence(site.ID)
 	}
@@ -573,24 +588,51 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 	return true
 }
 
-func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.PublishedSite) error {
+// siteTombstonePrefix names publication directories that were unpublished
+// and await removal. Renaming is one metadata operation; removing up to
+// maxSiteFiles files is not, so it runs after sitesMu is released.
+const siteTombstonePrefix = ".trash-"
+
+// deleteSite unpublishes site. The caller holds sitesMu and must pass the
+// returned tombstone, if any, to removeSiteTombstones after unlocking.
+func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.PublishedSite) (string, error) {
 	dir := filepath.Join(s.publishDir(), site.StorageID())
 	s.siteRoots.Close(dir)
 	s.siteManifests.delete(site.StorageID())
+	tomb := ""
 	if s.siteDirPins[dir] == nil {
-		if err := os.RemoveAll(dir); err != nil {
-			return err
+		tomb = filepath.Join(s.publishDir(), siteTombstonePrefix+site.StorageID()+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+		if err := os.Rename(dir, tomb); errors.Is(err, os.ErrNotExist) {
+			tomb = ""
+		} else if err != nil {
+			return "", err
 		}
 	}
 	if err := st.DeletePublishedSite(ctx, site.APIKeyID, site.ID); err != nil {
-		return err
+		if tomb != "" {
+			// Still published: put the files back.
+			if restoreErr := os.Rename(tomb, dir); restoreErr != nil && s.log != nil {
+				s.log.Error("restore site files after failed delete", "site", site.ID, "err", restoreErr)
+			}
+		}
+		return "", err
 	}
 	s.deferPinnedRemoval(dir)
 	s.siteHosts.Delete(site.Hostname)
 	s.siteLookups.invalidate(site.Hostname)
 	s.closeSitePresence(site.ID)
 	s.siteStats.Delete(site.ID)
-	return nil
+	return tomb, nil
+}
+
+// removeSiteTombstones deletes unpublished site directories. Call it without
+// sitesMu held.
+func (s *Server) removeSiteTombstones(tombs ...string) {
+	for _, tomb := range tombs {
+		if tomb != "" {
+			s.removeRetiredSiteDir(tomb)
+		}
+	}
 }
 
 func (s *Server) cleanupPublishedSites(ctx context.Context) error {
@@ -598,6 +640,8 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
+	var tombs []string
+	defer func() { s.removeSiteTombstones(tombs...) }() // runs after the unlock below
 	s.sitesMu.Lock()
 	defer s.sitesMu.Unlock()
 	sites, err := st.ListPublishedSites(ctx, "")
@@ -612,9 +656,11 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 			s.statsForSite(site.ID)
 			continue
 		}
-		if err := s.deleteSite(ctx, st, site); err != nil {
+		tomb, err := s.deleteSite(ctx, st, site)
+		if err != nil {
 			s.log.Error("delete expired site", "site", site.ID, "err", err)
 		}
+		tombs = append(tombs, tomb)
 	}
 	// Recover archives abandoned by a process crash. Recent staging directories
 	// may belong to uploads still in progress, so leave those alone.
@@ -626,6 +672,11 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 		return err
 	}
 	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), siteTombstonePrefix) {
+			// Left by a process that stopped before removing it.
+			tombs = append(tombs, filepath.Join(s.publishDir(), entry.Name()))
+			continue
+		}
 		if known[entry.Name()] || (!strings.HasPrefix(entry.Name(), "site_") && !strings.HasPrefix(entry.Name(), ".upload-")) {
 			continue
 		}
@@ -641,9 +692,11 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 			continue
 		}
 		s.siteRoots.Close(dir)
-		if err := os.RemoveAll(dir); err != nil {
+		tomb := filepath.Join(s.publishDir(), siteTombstonePrefix+entry.Name())
+		if err := os.Rename(dir, tomb); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		tombs = append(tombs, tomb)
 	}
 	return nil
 }

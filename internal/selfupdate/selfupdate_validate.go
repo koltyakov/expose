@@ -1,7 +1,6 @@
 package selfupdate
 
 import (
-	"bytes"
 	"debug/buildinfo"
 	"fmt"
 	"runtime"
@@ -9,11 +8,15 @@ import (
 
 // Check the executable without running uninstalled code or starting a helper.
 // The release checksum authenticates these build settings along with the bytes.
-func validateBinary(binary []byte) error {
-	info, err := buildinfo.Read(bytes.NewReader(binary))
+func validateBinaryFile(path string) error {
+	info, err := buildinfo.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read Go executable: %w", err)
 	}
+	return validateBuildInfo(info)
+}
+
+func validateBuildInfo(info *buildinfo.BuildInfo) error {
 	settings := make(map[string]string, len(info.Settings))
 	for _, setting := range info.Settings {
 		settings[setting.Key] = setting.Value

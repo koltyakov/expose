@@ -107,6 +107,10 @@ type rule struct {
 	// invariant "pattern matches => some trigger present" directly against
 	// the compiled patterns.
 	triggers []string
+	// prefixTriggers are triggers that only need to appear at the start of
+	// the input, for an alternative anchored with ^ whose literal also occurs
+	// unanchored far more often (a leading '.' versus every file extension).
+	prefixTriggers []string
 	// triggerGroups is an optional stronger ASCII prefilter. At least one
 	// group must have all of its lowercase ASCII substrings present, in any
 	// order. This keeps standalone quotes in malformed JSON from forcing a
@@ -128,8 +132,9 @@ type rule struct {
 	shortTriggerIndex *[128][]string
 	// literalsFolded and triggersFolded mirror the above pre-lowercased, so
 	// matching never allocates. Derived by defaultRules; never set by hand.
-	literalsFolded []string
-	triggersFolded []string
+	literalsFolded       []string
+	triggersFolded       []string
+	prefixTriggersFolded []string
 }
 
 // matches reports whether the rule matches in.
@@ -150,7 +155,7 @@ func (r *rule) matches(in scanInput) bool {
 			if !containsIndexedTrigger(in.folded, r.shortTriggerIndex) {
 				return false
 			}
-		} else if !containsAnyFolded(in.folded, r.triggersFolded) {
+		} else if !containsAnyFolded(in.folded, r.triggersFolded) && !hasAnyPrefix(in.folded, r.prefixTriggersFolded) {
 			return false
 		}
 	}
@@ -171,6 +176,15 @@ func containsIndexedTrigger(folded string, index *[128][]string) bool {
 			if strings.HasPrefix(folded[i:], trigger) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func hasAnyPrefix(folded string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(folded, prefix) {
+			return true
 		}
 	}
 	return false
@@ -197,6 +211,7 @@ func defaultRules() []rule {
 		rl := &rules[i]
 		rl.literalsFolded = foldAll(rl.literals)
 		rl.triggersFolded = foldAll(rl.triggers)
+		rl.prefixTriggersFolded = foldAll(rl.prefixTriggers)
 		if rl.name == "sql-injection" {
 			index := new([128][]string)
 			for _, trigger := range rl.triggersFolded {
@@ -240,13 +255,20 @@ func builtinRules() []rule {
 			// keyword/comment adjacency; quoted hex; function calls; file I/O.
 			// Bare ';' and 'into' also appear in ordinary browser UAs/cookies.
 			triggers: []string{"union", "drop", "delete", "insert", "update", "alter", "'", "\"", "/*", "benchmark", "sleep", "waitfor", "load_file", "outfile", "dumpfile"},
-			// Quoted tautologies require OR/AND, quoted comments require ';',
-			// and hex literals require x'. All other branches have a required
-			// keyword/comment trigger independent of their quotes.
+			// Each group lists every literal one regex branch requires, so
+			// prose with a lone keyword ("update", "delete", "union") or an
+			// apostrophe never reaches the regex: UNION needs SELECT, stacked
+			// statements need ';', tautologies need OR/AND and '=', quoted
+			// comments need ';' and '--', calls need '('. TestRuleTrigger-
+			// GroupsCoverEveryAlternative proves the groups cover the regex.
 			triggerGroups: [][]string{
-				{"union"}, {"drop"}, {"delete"}, {"insert"}, {"update"}, {"alter"}, {"/*"},
-				{"benchmark"}, {"sleep"}, {"waitfor"}, {"load_file"}, {"outfile"}, {"dumpfile"},
-				{"'", "or"}, {"'", "and"}, {"'", ";"}, {"x'"}, {"\"", "or"}, {"\"", "and"},
+				{"union", "select"},
+				{";", "drop"}, {";", "delete"}, {";", "insert"}, {";", "update"}, {";", "alter"},
+				{"/*", "*/"},
+				{"benchmark", "("}, {"sleep", "("}, {"waitfor", "("},
+				{"load_file", "("}, {"outfile", "("}, {"dumpfile", "("},
+				{"'", "or", "="}, {"'", "and", "="}, {"'", ";", "--"}, {"x'"},
+				{"\"", "or", "="}, {"\"", "and", "="},
 			},
 			targets: targetPath | targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
@@ -384,9 +406,13 @@ func builtinRules() []rule {
 			pattern:  regexp.MustCompile(`[\r\n]`),
 		},
 		{
-			name:     "sensitive-file-probe",
-			triggers: []string{".", "/wp-admin", "/wp-login", "/phpmy", "/cgi-bin/", "/etc/passwd", "/etc/shadow", "/proc/self/environ", "/proc/1/environ", "/wp-content/uploads/", "/autodiscover/"},
-			targets:  targetPath,
+			name: "sensitive-file-probe",
+			// "/." rather than "." keeps every asset path (app.js, logo.png)
+			// away from the regex; a hidden name at the very start of the
+			// input has no '/' and is caught by the "." prefix trigger.
+			prefixTriggers: []string{"."},
+			triggers:       []string{"/.", "/wp-admin", "/wp-login", "/phpmy", "/cgi-bin/", "/etc/passwd", "/etc/shadow", "/proc/self/environ", "/proc/1/environ", "/wp-content/uploads/", "/autodiscover/"},
+			targets:        targetPath,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					// Hidden files/directories anywhere in the path. /.well-known
@@ -409,7 +435,13 @@ func builtinRules() []rule {
 		{
 			name:     "protocol-attack",
 			triggers: []string{"<?", "<%", "data"},
-			targets:  targetQuery | targetHeaders | targetBody,
+			// A lone "data" is everywhere in prose and JSON keys; the data URI
+			// branch also needs a script-capable media type.
+			triggerGroups: [][]string{
+				{"<?"}, {"<%", "%>"},
+				{"data", ":", "text/html"}, {"data", ":", "image/svg"}, {"data", ":", "application/xhtml"},
+			},
+			targets: targetQuery | targetHeaders | targetBody,
 			pattern: regexp.MustCompile(
 				`(?i)(?:` +
 					`<\?(?:php|=)` +

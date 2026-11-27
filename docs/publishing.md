@@ -229,7 +229,7 @@ The CLI spools the compressed archive to a temporary file, then streams it over 
 
 Site metadata lives in SQLite. Files default to `<database-path>.sites`, for example `./expose.db.sites`. Set `EXPOSE_PUBLISH_DIR` or `expose server --publish-dir /srv/expose/sites` to choose another directory. Keep both the database and site directory on persistent storage and back them up together.
 
-The server removes abandoned upload directories and orphaned site directories older than 24 hours during cleanup.
+Deleting a site removes its SQLite record before retiring its files. During cleanup, the server restores a revision moved aside by an interrupted deletion on an older release if SQLite still lists that revision and the live directory is missing. Cleanup removes abandoned upload directories and orphaned site directories older than 24 hours.
 
 ## HTTP API
 

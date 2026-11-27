@@ -12,7 +12,6 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunnelproto"
-	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
 func (s *Server) resolvePublicRoute(ctx context.Context, host string) (liveRouteSnapshot, error) {
@@ -238,29 +237,42 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 		pending.discardBody()
 	}()
 
-	if _, err := s.sendRequestBody(sess, reqID, r, requestHeaders); err != nil {
+	streamed, err := s.sendRequestHead(reqID, r, requestHeaders, sess.writeJSON)
+	if err != nil {
 		s.abortPendingRequest(sess, reqID)
-		if isBodyTooLargeError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else if errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
-			s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionBackpressure)
-		} else {
-			http.Error(w, "tunnel write failed", http.StatusBadGateway)
-		}
+		s.writeUploadFailure(w, r, err)
 		return
 	}
 
-	waitCtx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
-	defer cancel()
+	// A streamed body uploads in the background, so a response the origin
+	// sends before reading all of it reaches the visitor at once.
+	var upload *requestUpload
+	if streamed {
+		upload = s.startRequestUpload(w, r, reqID, sess.writeJSON, func(payload []byte) error {
+			return sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
+		}, nil, func(err error) {
+			if err != nil && !errors.Is(err, errUploadStopped) {
+				// The origin cannot get the rest of the body. Cancel the
+				// request, which also ends a response already in progress.
+				s.abortPendingRequest(sess, reqID)
+			}
+		})
+		// Runs before the pending cleanup above: the upload is joined
+		// before the handler returns.
+		defer upload.finish(false)
+	}
 
-	resp, ok := pending.waitHeader(waitCtx)
+	resp, ok, timedOut := s.waitPendingHeader(r.Context(), pending, upload)
 	if !ok || resp == nil {
-		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-			s.abortPendingRequest(sess, reqID)
+		s.abortPendingRequest(sess, reqID)
+		if err := upload.failure(); err != nil {
+			s.writeUploadFailure(w, r, err)
+			return
+		}
+		if timedOut {
 			http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
 			return
 		}
-		s.abortPendingRequest(sess, reqID)
 		if r.Context().Err() == nil {
 			http.Error(w, "tunnel closed", http.StatusBadGateway)
 		}
@@ -288,6 +300,7 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 			w.Header().Add(k, v)
 		}
 	}
+	setInlineContentLength(w, r, resp, upload)
 	w.WriteHeader(normalizeUpstreamStatus(resp.Status))
 	if resp.Streamed {
 		// Send headers now: a stream such as server-sent events may not
@@ -308,7 +321,51 @@ func (s *Server) proxyPublicHTTP(w http.ResponseWriter, r *http.Request, route d
 			_, _ = w.Write(b)
 		}
 	}
+	finishUploadAfterResponse(w, r, normalizeUpstreamStatus(resp.Status), upload)
 	s.queueDomainTouch(route.Domain.ID)
+}
+
+// finishUploadAfterResponse stops an upload still running after the final
+// response, flushing first so the visitor is not kept waiting by the drain.
+func finishUploadAfterResponse(w http.ResponseWriter, r *http.Request, status int, upload *requestUpload) {
+	if upload == nil {
+		return
+	}
+	select {
+	case <-upload.doneCh():
+		return
+	default:
+	}
+	flushResponse(w)
+	upload.finish(drainUploadOnFinish(w, r, status))
+}
+
+// waitPendingHeader waits for the response header. While a streamed upload
+// runs, the wait is bounded only by the visitor; RequestTimeout starts when
+// the upload ends, as it did when uploads completed before the wait.
+func (s *Server) waitPendingHeader(ctx context.Context, pending *pendingRequest, upload *requestUpload) (resp *tunnelproto.HTTPResponse, ok, timedOut bool) {
+	if upload != nil {
+		select {
+		case resp := <-pending.headerCh:
+			return resp, resp != nil, false
+		case <-pending.doneCh:
+			resp, ok := pending.waitHeader(ctx)
+			return resp, ok, false
+		case <-ctx.Done():
+			return nil, false, false
+		case <-upload.doneCh():
+			if upload.failure() != nil {
+				return nil, false, false
+			}
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+	defer cancel()
+	resp, ok = pending.waitHeader(waitCtx)
+	if !ok && errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+		timedOut = true
+	}
+	return resp, ok, timedOut
 }
 
 func normalizeUpstreamStatus(status int) int {

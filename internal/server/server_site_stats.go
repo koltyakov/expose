@@ -21,7 +21,7 @@ import (
 
 const siteRecentRequests = 20
 const siteLatencySamples = 1024
-const siteVisitorLimit = 10000
+const siteVisitorLimit = domain.PublishedSiteVisitorLimit
 
 type siteVisitorStore interface {
 	ListPublishedSiteVisitors(context.Context, string) ([][32]byte, error)
@@ -56,7 +56,8 @@ type siteStats struct {
 	loadVisitors    func() ([][32]byte, error)
 	persistVisitor  func([32]byte) bool
 	// Missing entries are queued, durable, or need no persistence. Present
-	// entries could not be queued and are retried on the next visit.
+	// entries could not be queued, or their batch failed to commit, and are
+	// queued again on the next visit. Keys are a subset of visitors.
 	visitorWrites  map[visitorKey]bool
 	requests       []domain.PublishedSiteRequest
 	latencies      [siteLatencySamples]float64
@@ -124,16 +125,42 @@ func (stats *siteStats) finishVisitorLoadLocked(stored [][32]byte, err error, no
 		stats.visitorsRetryAt = now.Add(stats.visitorsBackoff)
 		return
 	}
+	// Stored identities take priority over provisional ones: visitors first
+	// seen since startup, not yet known to be durable. Members keep their
+	// last-seen time. When both do not fit, provisional visitors and their
+	// pending writes are dropped; the store would refuse them at the cap.
+	stored = stored[:min(len(stored), siteVisitorLimit)]
+	missing := 0
+	for _, fingerprint := range stored {
+		if _, exists := stats.visitors[visitorKeyOf(fingerprint)]; !exists {
+			missing++
+		}
+	}
+	if over := len(stats.visitors) + missing - siteVisitorLimit; over > 0 {
+		durable := make(map[visitorKey]struct{}, len(stored))
+		for _, fingerprint := range stored {
+			durable[visitorKeyOf(fingerprint)] = struct{}{}
+		}
+		// len(stored) <= siteVisitorLimit, so there are at least over
+		// provisional visitors.
+		for key := range stats.visitors {
+			if over == 0 {
+				break
+			}
+			if _, member := durable[key]; !member {
+				delete(stats.visitors, key)
+				delete(stats.visitorWrites, key)
+				over--
+			}
+		}
+		stats.visitorsCapped = true
+	}
 	for _, fingerprint := range stored {
 		key := visitorKeyOf(fingerprint)
-		if _, exists := stats.visitors[key]; exists {
-			continue
+		delete(stats.visitorWrites, key) // already durable
+		if _, exists := stats.visitors[key]; !exists {
+			stats.visitors[key] = 0
 		}
-		if len(stats.visitors) >= siteVisitorLimit {
-			stats.visitorsCapped = true
-			break
-		}
-		stats.visitors[key] = 0
 	}
 	stats.visitorsLoaded = true
 	stats.visitorsCapped = stats.visitorsCapped || len(stats.visitors) >= siteVisitorLimit
@@ -280,9 +307,37 @@ func (s *Server) writeSiteVisitors(ctx context.Context, batch []sqlite.SiteVisit
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), siteVisitorTimeout)
 	defer cancel()
-	if err := st.RecordPublishedSiteVisitors(writeCtx, batch); err != nil && s.log != nil {
-		s.log.Error("record published site visitors", "visitors", len(batch), "err", err)
+	if err := st.RecordPublishedSiteVisitors(writeCtx, batch); err != nil {
+		if s.log != nil {
+			s.log.Error("record published site visitors; retrying on next visit", "visitors", len(batch), "err", err)
+		}
+		s.retrySiteVisitorsOnNextVisit(batch)
 	}
+}
+
+// retrySiteVisitorsOnNextVisit marks the visitors of a batch that failed to
+// commit as pending, so each is queued again on its next request or presence
+// heartbeat. It never creates stats: a site deleted since its visitors were
+// queued has none, and its visitors are dropped rather than resurrected.
+func (s *Server) retrySiteVisitorsOnNextVisit(batch []sqlite.SiteVisitor) {
+	for _, v := range batch {
+		if value, ok := s.siteStats.Load(v.SiteID); ok {
+			value.(*siteStats).markVisitorWritePending(v.Fingerprint)
+		}
+	}
+}
+
+func (stats *siteStats) markVisitorWritePending(fingerprint [32]byte) {
+	key := visitorKeyOf(fingerprint)
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	if _, tracked := stats.visitors[key]; !tracked || stats.persistVisitor == nil {
+		return
+	}
+	if stats.visitorWrites == nil {
+		stats.visitorWrites = make(map[visitorKey]bool)
+	}
+	stats.visitorWrites[key] = true
 }
 
 func boundedStatsText(value string, max int) string {
@@ -323,18 +378,25 @@ func (stats *siteStats) snapshot(now time.Time) domain.PublishedSiteStats {
 	return result
 }
 
-func (s *Server) writeSiteStats(w http.ResponseWriter, r *http.Request, site domain.PublishedSite) {
+// writeSiteStats is called with sitesMu held for a published site; release
+// drops it. The tracker is resolved and the revision pinned under the lock,
+// so the cold file walk and stored-visitor load run unlocked against one
+// immutable revision, and a concurrent deletion cannot resurrect its stats.
+func (s *Server) writeSiteStats(w http.ResponseWriter, r *http.Request, site domain.PublishedSite, release func()) {
 	now := time.Now().UTC()
 	if site.ExpiresAt != nil && !now.Before(*site.ExpiresAt) {
 		http.NotFound(w, r)
 		return
 	}
-	count, size, err := s.publishedFileTotals(site)
+	tracker := s.statsForSite(site.ID)
+	unpin := s.pinSiteDir(filepath.Join(s.publishDir(), site.StorageID()))
+	release()
+	count, size, err := s.pinnedFileTotals(tracker, site)
+	unpin()
 	if err != nil {
 		s.siteError(w, err)
 		return
 	}
-	tracker := s.statsForSite(site.ID)
 	tracker.loadStoredVisitors()
 	stats := tracker.snapshot(time.Now().UTC())
 	stats.FileCount, stats.FileBytes = count, size
@@ -344,25 +406,43 @@ func (s *Server) writeSiteStats(w http.ResponseWriter, r *http.Request, site dom
 	writeJSON(w, http.StatusOK, stats)
 }
 
-// The caller holds sitesMu. Immutable storage IDs let stats polls reuse file
-// totals until the next full or incremental publication, including after restart.
-func (s *Server) publishedFileTotals(site domain.PublishedSite) (int, int64, error) {
-	tracker := s.statsForSite(site.ID)
+// siteFileTotals walks a revision; tests replace it to hold the walk open.
+var siteFileTotals = publish.FileTotals
+
+// pinnedFileTotals returns the totals of site's revision, which the caller
+// has pinned. Immutable storage IDs let stats polls reuse them until the next
+// full or incremental publication; after a restart they come from a cached
+// manifest when there is one, otherwise from one directory walk.
+func (s *Server) pinnedFileTotals(tracker *siteStats, site domain.PublishedSite) (int, int64, error) {
+	id := site.StorageID()
 	tracker.mu.Lock()
-	if tracker.filesStorageID == site.StorageID() {
+	if tracker.filesStorageID == id {
 		count, size := tracker.fileCount, tracker.fileBytes
 		tracker.mu.Unlock()
 		return count, size, nil
 	}
 	tracker.mu.Unlock()
-	count, size, err := publish.FileTotals(filepath.Join(s.publishDir(), site.StorageID()))
-	if err != nil {
-		return 0, 0, err
+	count, size, ok := s.siteManifests.fileTotals(id)
+	if !ok {
+		var err error
+		count, size, err = siteFileTotals(filepath.Join(s.publishDir(), id))
+		if err != nil {
+			return 0, 0, err
+		}
 	}
-	tracker.mu.Lock()
-	tracker.filesStorageID, tracker.fileCount, tracker.fileBytes = site.StorageID(), count, size
-	tracker.mu.Unlock()
+	// A revision replaced during the walk keeps the totals primed for its
+	// successor.
+	s.unlessSiteDirRetired(filepath.Join(s.publishDir(), id), func() {
+		tracker.primeFileTotals(id, count, size)
+	})
 	return count, size, nil
+}
+
+// primeFileTotals records the file totals of the revision id.
+func (stats *siteStats) primeFileTotals(id string, count int, size int64) {
+	stats.mu.Lock()
+	stats.filesStorageID, stats.fileCount, stats.fileBytes = id, count, size
+	stats.mu.Unlock()
 }
 
 // WAF callbacks happen before the public handler. Use the live site index so

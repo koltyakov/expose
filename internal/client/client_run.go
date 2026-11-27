@@ -142,10 +142,25 @@ func (c *Client) Run(ctx context.Context) error {
 			lastServerVersion = reg.ServerVersion
 		}
 
-		rt, err := newSessionRuntime(c, ctx, localBase, reg)
+		// The ready deadline bounds connecting, any connect-token refresh, and
+		// session initialization. The session itself runs on ctx, so one that
+		// became ready in time outlives the deadline.
+		connectCtx, cancelConnect := ctx, context.CancelFunc(func() {})
+		if !readyDeadline.IsZero() {
+			connectCtx, cancelConnect = context.WithDeadline(ctx, readyDeadline)
+		}
+		rt, err := newSessionRuntimeWithin(c, ctx, connectCtx, localBase, reg)
+		connectTimedOut := errors.Is(connectCtx.Err(), context.DeadlineExceeded)
+		cancelConnect()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			if isNonRetriableSessionError(err) {
 				return err
+			}
+			if connectTimedOut {
+				return fmt.Errorf("tunnel not ready within %s: %w", c.cfg.ReadyTimeout, err)
 			}
 			delay, beforeDeadline := readyWait(retry.nextDelay(time.Now()))
 			if !beforeDeadline {

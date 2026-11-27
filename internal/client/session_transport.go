@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -31,6 +32,23 @@ type sessionTransportConn struct {
 	h3Transport    *http3.Transport
 	h3WorkerURL    string
 	h3SessionToken string
+}
+
+// closeSessionTransportConn releases a connected transport that no runtime
+// took ownership of.
+func closeSessionTransportConn(conn sessionTransportConn) {
+	if conn.transport != nil {
+		_ = conn.transport.Close()
+	}
+	if conn.writer != nil {
+		conn.writer.Close()
+	}
+	if conn.h3Transport != nil {
+		_ = conn.h3Transport.Close()
+	}
+	if conn.h3Conn != nil {
+		_ = conn.h3Conn.CloseWithError(0, "")
+	}
 }
 
 type nonRetriableSessionError struct {
@@ -62,6 +80,9 @@ const (
 	tunnelCapabilityH3Multistream   = "h3_multistream"
 )
 
+// connectSessionTransport bounds every connect step by ctx, including the
+// connect-token refresh before an HTTP/3 compat fallback. A returned
+// connection is not bound to ctx.
 func (c *Client) connectSessionTransport(ctx context.Context, reg domain.RegisterResponse) (sessionTransportConn, error) {
 	switch c.cfg.Transport {
 	case "ws":
@@ -125,8 +146,36 @@ func (c *Client) connectWebSocketTransport(ctx context.Context, reg domain.Regis
 		WriteBufferSize:  tunnelWSWriteBufferSize,
 		WriteBufferPool:  wsWriteBufferPool,
 	}
+	// The dialer applies ctx's deadline to the handshake but not its
+	// cancellation, so a cancelled connect would otherwise wait for a stalled
+	// upgrade response until HandshakeTimeout. Close the raw connection if ctx
+	// ends before the handshake completes. The watch is on ctx, not the
+	// dialer's handshake context, which the dialer cancels on return. Without
+	// a proxy the dialer calls NetDialContext once, on this goroutine.
+	stopWatch := func() bool { return true }
+	var watchDone chan struct{}
+	dialer.NetDialContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		nc, err := (&net.Dialer{}).DialContext(dialCtx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		watchDone = make(chan struct{})
+		stopWatch = context.AfterFunc(ctx, func() {
+			defer close(watchDone)
+			_ = nc.Close()
+		})
+		return nc, nil
+	}
 	dialURL, token := splitConnectToken(reg.WSURL, reg)
 	conn, _, err := dialer.DialContext(ctx, dialURL, connectAuthHeader(token))
+	if !stopWatch() {
+		// ctx ended during the handshake and closed its connection.
+		<-watchDone
+		if conn != nil {
+			_ = conn.Close()
+		}
+		err = ctx.Err()
+	}
 	if err != nil {
 		return sessionTransportConn{}, fmt.Errorf("ws connect: %w", err)
 	}
@@ -178,14 +227,7 @@ func (c *Client) connectHTTP3Transport(ctx context.Context, reg domain.RegisterR
 		return sessionTransportConn{}, fmt.Errorf("http3 connect rejected: %s", rejected)
 	}
 
-	closeFn := func() error {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
-		err := stream.Close()
-		_ = h3Transport.Close()
-		_ = quicConn.CloseWithError(0, "")
-		return err
-	}
+	closeFn := abortH3ControlStream(stream, h3Transport, quicConn)
 
 	return sessionTransportConn{
 		transport:    tunneltransport.NewStreamTransport("quic", stream, closeFn),
@@ -252,14 +294,7 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domai
 		return sessionTransportConn{}, errors.New("server did not return h3 session token")
 	}
 
-	closeFn := func() error {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
-		err := stream.Close()
-		_ = h3Transport.Close()
-		_ = quicConn.CloseWithError(0, "")
-		return err
-	}
+	closeFn := abortH3ControlStream(stream, h3Transport, quicConn)
 
 	transport := tunneltransport.NewStreamTransport("quic", stream, closeFn)
 	var writer *tunneltransport.WritePump
@@ -283,6 +318,27 @@ func (c *Client) connectHTTP3MultiStreamTransport(ctx context.Context, reg domai
 	}, nil
 }
 
+// abortH3ControlStream returns the close function for an established control
+// stream. The transport, its WritePump and readiness aborts may all call it,
+// possibly while the pump is inside Write. It therefore resets both stream
+// directions instead of calling Close: Close sends a graceful FIN and reads
+// write state that a concurrent Write mutates. The first call does the work;
+// later calls wait for it and return its result.
+func abortH3ControlStream(stream *http3.RequestStream, h3Transport *http3.Transport, quicConn *quic.Conn) func() error {
+	var (
+		once sync.Once
+		err  error
+	)
+	return func() error {
+		once.Do(func() {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			err = errors.Join(h3Transport.Close(), quicConn.CloseWithError(0, ""))
+		})
+		return err
+	}
+}
+
 // h3ControlHandshakeTimeout bounds sending the control request and reading
 // its response, as the worker streams do.
 var h3ControlHandshakeTimeout = h3WorkerConnectTimeout
@@ -292,8 +348,16 @@ var h3ControlHandshakeTimeout = h3WorkerConnectTimeout
 // answers, and cancelling ctx closes the connection so the caller returns at
 // once. A non-2xx response is drained, closed, and reported as rejected.
 func h3ControlHandshake(ctx context.Context, quicConn *quic.Conn, stream *http3.RequestStream, req *http.Request) (*http.Response, string, error) {
-	stop := context.AfterFunc(ctx, func() { _ = quicConn.CloseWithError(0, "connect cancelled") })
-	defer stop()
+	aborted := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(aborted)
+		_ = quicConn.CloseWithError(0, "connect cancelled")
+	})
+	defer func() {
+		if !stop() {
+			<-aborted
+		}
+	}()
 	fail := func(err error) (*http.Response, string, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, "", ctxErr

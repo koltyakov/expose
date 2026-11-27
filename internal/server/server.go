@@ -111,7 +111,7 @@ type Server struct {
 	domainTouched        sync.Map // domain ID -> *atomic.Int64, unix nanos last queued
 	routeLifecycleMu     sync.Mutex
 	sitesMu              sync.RWMutex
-	siteDirPins          map[string]*siteDirPin // guarded by sitesMu
+	siteDirPins          siteDirPinSet // created under sitesMu; see site_dir_pin.go
 	siteUploads          siteUploadLimiter
 	siteRoots            *publish.RootCache // closed under sitesMu before deleting a publication
 	siteHosts            sync.Map

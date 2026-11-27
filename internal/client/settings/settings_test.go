@@ -7,12 +7,60 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
-func TestPathUsesHomeDirectory(t *testing.T) {
+// errorPrivilegeNotHeld is Windows ERROR_PRIVILEGE_NOT_HELD, returned by
+// CreateSymbolicLink without SeCreateSymbolicLinkPrivilege or Developer Mode.
+const errorPrivilegeNotHeld = syscall.Errno(1314)
+
+// isolateHome points the OS home directory at a fresh temp dir and returns it.
+// os.UserHomeDir reads USERPROFILE on Windows and HOME elsewhere, so both are
+// set; the check fails fast instead of touching a real user profile.
+func isolateHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got, err := os.UserHomeDir(); err != nil || got != home {
+		t.Fatalf("home isolation failed: UserHomeDir() = %q, %v; want %q", got, err, home)
+	}
+	return home
+}
+
+// assertOwnerOnlyPerms checks POSIX 0600 mode bits. Windows reports only the
+// read-only attribute through Mode().Perm(), so there is nothing to check.
+func assertOwnerOnlyPerms(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", path, err)
+	}
+	if perms := info.Mode().Perm(); perms != 0o600 {
+		t.Fatalf("%s perms = %o, want 600", path, perms)
+	}
+}
+
+// symlinkOrSkip skips only when Windows denies symlink creation for lack of
+// privilege; any other failure is a real test failure.
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	err := os.Symlink(target, link)
+	if err == nil {
+		return
+	}
+	if runtime.GOOS == "windows" && errors.Is(err, errorPrivilegeNotHeld) {
+		t.Skipf("symlink creation requires SeCreateSymbolicLinkPrivilege or Developer Mode: %v", err)
+	}
+	t.Fatalf("Symlink() error = %v", err)
+}
+
+func TestPathUsesHomeDirectory(t *testing.T) {
+	home := isolateHome(t)
 
 	got := Path()
 	want := filepath.Join(home, ".expose", "settings.json")
@@ -22,8 +70,7 @@ func TestPathUsesHomeDirectory(t *testing.T) {
 }
 
 func TestSaveAndLoadRoundTrip(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 
 	input := Credentials{
 		ServerURL: " https://example.com ",
@@ -33,13 +80,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	info, err := os.Stat(Path())
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", Path(), err)
-	}
-	if perms := info.Mode().Perm(); perms != 0o600 {
-		t.Fatalf("settings file perms = %o, want 600", perms)
-	}
+	assertOwnerOnlyPerms(t, Path())
 
 	got, err := Load()
 	if err != nil {
@@ -55,8 +96,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 }
 
 func TestLoadMissingFileReturnsError(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 
 	_, err := Load()
 	if err == nil {
@@ -68,8 +108,7 @@ func TestLoadMissingFileReturnsError(t *testing.T) {
 }
 
 func TestLoadRejectsMissingCredentials(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -91,8 +130,7 @@ func TestLoadRejectsMissingCredentials(t *testing.T) {
 }
 
 func TestSaveRejectsEmptyCredentials(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 
 	err := Save(Credentials{ServerURL: " ", APIKey: " "})
 	if err == nil {
@@ -101,8 +139,7 @@ func TestSaveRejectsEmptyCredentials(t *testing.T) {
 }
 
 func TestSaveReplacesPermissiveFileWithSecurePermissions(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -110,24 +147,23 @@ func TestSaveReplacesPermissiveFileWithSecurePermissions(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	if err := Save(Credentials{ServerURL: "https://example.com", APIKey: "secret"}); err != nil {
+	want := Credentials{ServerURL: "https://example.com", APIKey: "secret"}
+	if err := Save(want); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat() error = %v", err)
+	// The existing file must be replaced on every OS, including via
+	// MoveFileEx on Windows.
+	if got, err := Load(); err != nil || got != want {
+		t.Fatalf("Load() after replace = %#v, %v; want %#v", got, err, want)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("settings file perms = %o, want 600", got)
-	}
+	assertOwnerOnlyPerms(t, path)
 }
 
 func TestLoadCheckedWarnsOnBroadPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits do not apply on windows")
 	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 
 	if err := Save(Credentials{ServerURL: "https://example.com", APIKey: "secret"}); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -163,8 +199,7 @@ func TestLoadCheckedWarnsOnBroadPermissions(t *testing.T) {
 }
 
 func TestSaveReplacesSymlinkWithoutFollowingIt(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -173,9 +208,7 @@ func TestSaveReplacesSymlinkWithoutFollowingIt(t *testing.T) {
 	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	if err := os.Symlink(target, path); err != nil {
-		t.Fatalf("Symlink() error = %v", err)
-	}
+	symlinkOrSkip(t, target, path)
 	if err := Save(Credentials{ServerURL: "https://example.com", APIKey: "secret"}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}

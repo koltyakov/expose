@@ -88,7 +88,9 @@ When output is not a terminal, or with `--json`, the client prints log records i
 expose http 3000 --json --log-requests=false --ready-timeout=30s
 ```
 
-The first record is `tunnel ready` with `public_url`; later records report reconnects, warnings and errors. With `--json`, a fatal error is a final `client stopped` record with `err`, followed by a nonzero exit; `--ready-timeout` bounds the wait for the first `tunnel ready` when the server is unreachable. Prompts only run when stdin is a terminal, so a closed or `/dev/null` stdin fails fast with an explanation instead of waiting. `EXPOSE_LOG_FORMAT=json` and `EXPOSE_LOG_REQUESTS=false` do the same for `static` and `up`. Use `expose list --json` to look up tunnels from another process.
+The `tunnel ready` record includes `public_url`. `--ready-timeout` gives registration, transport handshakes, and retries a single deadline to reach that first ready state. It does not limit the lifetime of an established tunnel or its later reconnects. A fatal error produces a final `client stopped` JSON record with `err` and a nonzero exit.
+
+Prompts only run when stdin is a terminal, so a closed or `/dev/null` stdin fails fast with an explanation instead of waiting. `EXPOSE_LOG_FORMAT=json` and `EXPOSE_LOG_REQUESTS=false` enable quiet JSON output for `static` and `up`. Use `expose list --json` to look up tunnels from another process.
 
 ## Command-Specific Flags
 

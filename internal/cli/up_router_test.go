@@ -168,8 +168,9 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	if got.host != "demo.example.test" {
 		t.Fatalf("unexpected upstream host %q", got.host)
 	}
-	if got.xff == "" {
-		t.Fatal("expected X-Forwarded-For header")
+	// Direct loopback access without edge headers falls back to the caller.
+	if got.xff != "127.0.0.1" {
+		t.Fatalf("unexpected fallback X-Forwarded-For %q", got.xff)
 	}
 	if got.xfHost != "demo.example.test" {
 		t.Fatalf("unexpected X-Forwarded-Host %q", got.xfHost)
@@ -182,6 +183,83 @@ func TestStartUpLocalRouterRewritesProxyRequests(t *testing.T) {
 	}
 	if got.mount != "/api" {
 		t.Fatalf("unexpected mount prefix header %q", got.mount)
+	}
+}
+
+// The expose client forwards edge-resolved headers to the up router exactly as
+// it would to a plain `expose http` upstream. The router must pass them on
+// unchanged instead of appending its loopback caller or downgrading the scheme.
+func TestStartUpLocalRouterPreservesEdgeForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	forwarded := []string{"X-Forwarded-For", "X-Real-Ip", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port"}
+	reqs := make(chan http.Header, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := http.Header{"Host": {r.Host}}
+		for _, name := range forwarded {
+			if values := r.Header.Values(name); len(values) > 0 {
+				got[name] = values
+			}
+		}
+		reqs <- got
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	upstreamAddr, ok := upstream.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected upstream addr type %T", upstream.Listener.Addr())
+	}
+
+	router, port, err := startUpLocalRouter(t.Context(), []upLocalRoute{
+		{Name: "web", PathPrefix: "/", LocalPort: upstreamAddr.Port},
+		{Name: "api", PathPrefix: "/api", StripPrefix: true, LocalPort: upstreamAddr.Port},
+	}, nil)
+	if err != nil {
+		t.Fatalf("start router: %v", err)
+	}
+	defer func() {
+		_ = router.server.Close()
+	}()
+
+	// Values the server sets via injectForwardedFor/injectForwardedProxyHeaders
+	// for a public https request on a non-default port.
+	edge := map[string]string{
+		"X-Forwarded-For":   "203.0.113.7",
+		"X-Real-Ip":         "203.0.113.7",
+		"X-Forwarded-Host":  "demo.example.test:10443",
+		"X-Forwarded-Proto": "https",
+		"X-Forwarded-Port":  "10443",
+	}
+
+	for _, path := range []string{"/", "/api/users"} {
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s", port, path), nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Host = "demo.example.test:10443"
+		for name, value := range edge {
+			req.Header.Set(name, value)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("GET %s: unexpected status code %d", path, resp.StatusCode)
+		}
+
+		got := <-reqs
+		if host := got.Get("Host"); host != "demo.example.test:10443" {
+			t.Fatalf("GET %s: unexpected upstream host %q", path, host)
+		}
+		for name, want := range edge {
+			if values := got.Values(name); len(values) != 1 || values[0] != want {
+				t.Fatalf("GET %s: expected %s %q, got %q", path, name, want, values)
+			}
+		}
 	}
 }
 

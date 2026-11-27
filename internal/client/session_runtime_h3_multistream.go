@@ -26,19 +26,64 @@ const (
 	h3WorkerConnectTimeout   = 15 * time.Second
 	h3WorkerOpenCountFloor   = 4
 	h3WorkerOpenCountCeiling = 64
+	// h3RequestBodyDrainTimeout bounds how long a worker whose response is
+	// complete keeps reading request body frames the server already sent.
+	h3RequestBodyDrainTimeout = 5 * time.Second
 )
 
 var errH3RequestBodyStillActive = errors.New("http3 request body still active after forwarding completed")
 
 func newSessionRuntime(c *Client, parentCtx context.Context, localBase *url.URL, reg domain.RegisterResponse) (sessionRuntime, error) {
-	conn, err := c.connectSessionTransport(parentCtx, reg)
+	return newSessionRuntimeWithin(c, parentCtx, parentCtx, localBase, reg)
+}
+
+// newSessionRuntimeWithin connects and initializes a session. readyCtx bounds
+// only the work before the session is ready: the transport connect, any
+// connect-token refresh for a fallback transport, and the initial ping. The
+// established session lives on sessionCtx, so readyCtx may end afterwards
+// without affecting it. A session that completes after readyCtx ended is
+// closed and reported as readyCtx's error.
+func newSessionRuntimeWithin(c *Client, sessionCtx, readyCtx context.Context, localBase *url.URL, reg domain.RegisterResponse) (sessionRuntime, error) {
+	conn, err := c.connectSessionTransport(readyCtx, reg)
 	if err != nil {
 		return nil, err
 	}
+	var rt sessionRuntime
 	if isH3MultiStreamProtocol(conn.protocol) {
-		return newClientH3MultiStreamRuntime(c, parentCtx, localBase, conn)
+		h3rt, h3Err := newClientH3MultiStreamRuntimeWithin(c, sessionCtx, readyCtx, localBase, conn)
+		if h3Err != nil {
+			return nil, h3Err
+		}
+		rt = h3rt
+	} else {
+		wsrt, wsErr := newClientSessionRuntime(c, sessionCtx, readyCtx, localBase, conn)
+		if wsErr != nil {
+			return nil, wsErr
+		}
+		rt = wsrt
 	}
-	return newClientSessionRuntimeFromConn(c, parentCtx, localBase, conn)
+	if err := readyCtx.Err(); err != nil {
+		rt.close()
+		return nil, err
+	}
+	return rt, nil
+}
+
+// sendBeforeReady runs send, aborting it through abort once readyCtx ends.
+// abort must make send return, typically by closing the transport. An abort
+// that started is waited for before returning.
+func sendBeforeReady(readyCtx context.Context, abort func(), send func() error) error {
+	aborted := make(chan struct{})
+	stop := context.AfterFunc(readyCtx, func() {
+		defer close(aborted)
+		abort()
+	})
+	err := send()
+	if !stop() {
+		<-aborted
+		return readyCtx.Err()
+	}
+	return err
 }
 
 func isH3MultiStreamProtocol(protocol string) bool {
@@ -77,16 +122,21 @@ type clientH3MultiStreamRuntime struct {
 	useStreamV2 bool
 }
 
-func newClientH3MultiStreamRuntime(
+// newClientH3MultiStreamRuntimeWithin bounds the initial ping by readyCtx and
+// runs the session on parentCtx.
+func newClientH3MultiStreamRuntimeWithin(
 	c *Client,
 	parentCtx context.Context,
+	readyCtx context.Context,
 	localBase *url.URL,
 	conn sessionTransportConn,
 ) (*clientH3MultiStreamRuntime, error) {
 	if conn.transport == nil || conn.writer == nil || conn.h3ClientConn == nil {
+		closeSessionTransportConn(conn)
 		return nil, errors.New("invalid http3 transport state")
 	}
 	if strings.TrimSpace(conn.h3WorkerURL) == "" || strings.TrimSpace(conn.h3SessionToken) == "" {
+		closeSessionTransportConn(conn)
 		return nil, errors.New("missing http3 worker metadata")
 	}
 
@@ -114,7 +164,7 @@ func newClientH3MultiStreamRuntime(
 		_ = rt.transport.Close()
 	}()
 
-	if err := rt.sendInitialPing(); err != nil {
+	if err := sendBeforeReady(readyCtx, func() { _ = rt.transport.Close() }, rt.sendInitialPing); err != nil {
 		rt.close()
 		return nil, err
 	}
@@ -432,13 +482,17 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 
 	var bodyCh <-chan []byte
 	var bodyDone chan struct{}
+	var bodyClean bool
 	if reqCopy.Streamed {
 		ch := make(chan []byte, streamingReqBodyBufSize)
 		bodyCh = ch
 		bodyDone = make(chan struct{})
-		go pumpStreamedRequestBodyMessages(reqCtx, reqCopy.ID, cancel, func() (tunnelproto.Message, error) {
-			return readH3RequestStreamMessage(stream, rt.useStreamV2)
-		}, ch, bodyDone)
+		go func() {
+			defer close(bodyDone)
+			bodyClean = pumpStreamedRequestBodyMessages(reqCtx, reqCopy.ID, cancel, func() (tunnelproto.Message, error) {
+				return readH3RequestStreamMessage(stream, rt.useStreamV2)
+			}, ch, nil)
+		}()
 	}
 
 	rt.client.forwardAndSend(reqCtx, rt.localBase, &reqCopy, bodyCh, func(msg tunnelproto.Message) error {
@@ -446,20 +500,39 @@ func (rt *clientH3MultiStreamRuntime) handleWorkerHTTPRequest(stream *http3.Requ
 	}, func(id string, payload []byte) error {
 		return writeH3RequestStreamBinary(stream, tunnelproto.BinaryFrameRespBody, id, 0, payload, rt.useStreamV2)
 	})
-	if err := reqCtx.Err(); err != nil {
-		return err
+	forwardErr := reqCtx.Err()
+	if bodyDone == nil {
+		return forwardErr
 	}
-	if bodyDone != nil {
-		cancel()
-		select {
-		case <-bodyDone:
-		default:
-			return errH3RequestBodyStillActive
-		}
+	// The origin may answer before reading the whole body. Stop delivering
+	// it, but keep reading to the server's end marker: a server that sent the
+	// whole body reuses this worker, so its frames must not be left unread. A
+	// server that stopped mid-upload resets the stream, which ends the read.
+	// The pump is always joined, so nothing reads the stream after return.
+	cancel()
+	drain := timerpool.Acquire(h3RequestBodyDrainTimeout)
+	select {
+	case <-bodyDone:
+		timerpool.Release(drain)
+	case <-drain.C:
+		timerpool.Release(drain)
+		stream.CancelRead(0) // safe alongside Read; ends the pump's read
+		<-bodyDone
+		return errH3RequestBodyStillActive
+	}
+	if forwardErr != nil {
+		return forwardErr
+	}
+	if !bodyClean {
+		return errH3RequestBodyStillActive
 	}
 	return nil
 }
 
+// pumpStreamedRequestBodyMessages delivers request body frames to out until
+// the request's end marker. Once ctx ends it stops delivering but keeps
+// reading and discarding, so the stream stays aligned on frame boundaries.
+// clean reports that the body ended with a successful end marker.
 func pumpStreamedRequestBodyMessages(
 	ctx context.Context,
 	reqID string,
@@ -467,30 +540,34 @@ func pumpStreamedRequestBodyMessages(
 	readNext func() (tunnelproto.Message, error),
 	out chan<- []byte,
 	done chan<- struct{},
-) {
+) (clean bool) {
 	defer close(out)
 	if done != nil {
 		defer close(done)
 	}
+	delivering := true
 	for {
 		msg, err := readNext()
 		if err != nil {
 			if ctx.Err() == nil && cancel != nil {
 				cancel()
 			}
-			return
+			return false
 		}
 		if msg.Kind == tunnelproto.KindReqBodyEnd && msg.BodyChunk != nil && msg.BodyChunk.ID == reqID {
-			if msg.BodyChunk.Error != "" && cancel != nil {
-				cancel()
+			if msg.BodyChunk.Error != "" {
+				if cancel != nil {
+					cancel()
+				}
+				return false
 			}
-			return
+			return true
 		}
 		if msg.Kind == tunnelproto.KindReqCancel && msg.ReqCancel != nil && msg.ReqCancel.ID == reqID {
 			if cancel != nil {
 				cancel()
 			}
-			return
+			return false
 		}
 		if msg.Kind != tunnelproto.KindReqBody || msg.BodyChunk == nil || msg.BodyChunk.ID != reqID {
 			continue
@@ -500,11 +577,15 @@ func pumpStreamedRequestBodyMessages(
 			tunnelproto.ReleaseBodyChunk(msg.BodyChunk.Data)
 			continue
 		}
+		if !delivering {
+			tunnelproto.ReleaseBodyChunk(payload)
+			continue
+		}
 		select {
 		case out <- payload:
 		case <-ctx.Done():
 			tunnelproto.ReleaseBodyChunk(payload)
-			return
+			delivering = false
 		}
 	}
 }

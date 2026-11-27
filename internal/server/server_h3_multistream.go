@@ -133,13 +133,25 @@ func (p *h3StreamPool) close() {
 	})
 }
 
+// closeH3Stream resets both directions and releases the stream. Close shares
+// unsynchronized frame state with Write: call it only once no goroutine can
+// still write the stream. cancelH3StreamIO is the concurrency-safe part.
 func closeH3Stream(stream *http3.Stream) {
+	if stream == nil {
+		return
+	}
+	cancelH3StreamIO(stream)
+	_ = stream.Close()
+}
+
+// cancelH3StreamIO resets both directions, unblocking any Read or Write in
+// progress. Unlike Close it is safe to call concurrently with them.
+func cancelH3StreamIO(stream *http3.Stream) {
 	if stream == nil {
 		return
 	}
 	stream.CancelRead(0)
 	stream.CancelWrite(0)
-	_ = stream.Close()
 }
 
 func newH3SessionToken() (string, error) {

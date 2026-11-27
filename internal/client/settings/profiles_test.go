@@ -10,8 +10,7 @@ import (
 )
 
 func TestProfilesPreserveLegacyDefault(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
+	isolateHome(t)
 	if err := os.MkdirAll(filepath.Dir(Path()), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +77,7 @@ func TestProfileNames(t *testing.T) {
 }
 
 func TestProfileMissingDoesNotFallBack(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
+	isolateHome(t)
 	if err := Save(Credentials{ServerURL: "https://default.example.com", APIKey: "default-key"}); err != nil {
 		t.Fatal(err)
 	}
@@ -89,10 +87,7 @@ func TestProfileMissingDoesNotFallBack(t *testing.T) {
 }
 
 func TestProfilePermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX permissions do not apply on Windows")
-	}
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	creds := Credentials{ServerURL: "https://work.example.com", APIKey: "key"}
 	if err := SaveProfile("work", creds); err != nil {
 		t.Fatal(err)
@@ -101,20 +96,22 @@ func TestProfilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("profile permissions: %v, %v", info, err)
+	assertOwnerOnlyPerms(t, path)
+	// Broad mode bits and the warning they trigger exist only on POSIX.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, warning, err := LoadProfileChecked("work"); err != nil || warning == "" {
+			t.Fatalf("permission warning: %q, error %v", warning, err)
+		}
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
+	updated := Credentials{ServerURL: "https://work2.example.com", APIKey: "key2"}
+	if err := SaveProfile("work", updated); err != nil {
 		t.Fatal(err)
 	}
-	if _, warning, err := LoadProfileChecked("work"); err != nil || warning == "" {
-		t.Fatalf("permission warning: %q, error %v", warning, err)
+	if got, warning, err := LoadProfileChecked("work"); err != nil || warning != "" || got != updated {
+		t.Fatalf("secure replacement: %#v, warning %q, error %v", got, warning, err)
 	}
-	if err := SaveProfile("work", creds); err != nil {
-		t.Fatal(err)
-	}
-	if _, warning, err := LoadProfileChecked("work"); err != nil || warning != "" {
-		t.Fatalf("secure replacement: %q, error %v", warning, err)
-	}
+	assertOwnerOnlyPerms(t, path)
 }

@@ -59,7 +59,15 @@ func startUpLocalRouter(ctx context.Context, routes []upLocalRoute, log *slog.Lo
 			Rewrite: func(preq *httputil.ProxyRequest) {
 				preq.SetURL(target)
 				preq.Out.Host = preq.In.Host
+				// SetXForwarded supplies defaults for direct loopback calls.
+				// Restore the values resolved by the public server when this
+				// request came through the tunnel.
 				preq.SetXForwarded()
+				for _, name := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+					if value := preq.In.Header.Get(name); value != "" {
+						preq.Out.Header.Set(name, value)
+					}
+				}
 				preq.Out.Header.Set(upRoutePublicPathHeader, preq.In.URL.Path)
 				if routeCopy.StripPrefix && routeCopy.PathPrefix != "" && routeCopy.PathPrefix != "/" {
 					preq.Out.Header.Set(upRouteMountPrefixHeader, routeCopy.PathPrefix)

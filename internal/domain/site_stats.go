@@ -2,6 +2,10 @@ package domain
 
 import "time"
 
+// PublishedSiteVisitorLimit caps the distinct visitor identities tracked for
+// one published site, both in server memory and in durable storage.
+const PublishedSiteVisitorLimit = 10000
+
 // PublishedSiteStats is an owner-only snapshot of hosting statistics.
 type PublishedSiteStats struct {
 	Site           PublishedSite          `json:"site"`

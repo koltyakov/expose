@@ -76,6 +76,8 @@ sequenceDiagram
 
 Public HTTP request and response bodies have no tunnel-wide total-size cap. Known-small requests up to 256 KiB are sent inline. Known-large requests and requests without a known `Content-Length` send their tunnel headers before reading the body, then forward each bounded read immediately. This happens after bounded WAF inspection, when enabled. WebSocket and HTTP/3 share the upload framing implementation.
 
+For streamed requests, the app can respond before the upload finishes. An app that rejects a large upload with HTTP `413` can return that status while the caller is still sending. When rolling out this change on QUIC tunnels, update clients first: older clients can reset the worker and lose the app's response, producing `502`. Older servers wait for the upload to finish before forwarding the response.
+
 A response body is sent inline with its headers only when it completes within 25 ms of the headers and fits in 256 KiB. Otherwise the client forwards the headers and streams the body as it arrives. The server flushes streamed response headers immediately. Active uploads, downloads, and server-sent events can outlive the request timeout. Queue waits, response-header waits, stalled upstream reads, and public writes still have deadlines. Public response write deadlines apply to each write or flush, not the entire connection lifetime.
 
 Multiplexed streamed HTTP response-body queues also have retained-buffer budgets, defaulting to 16 MiB per tunnel and 128 MiB across the server. Accounting uses buffer capacity, not just payload length. A full queue or exhausted budget cancels only that request without blocking the shared reader. These limits do not cover inline responses, all process memory, WebSocket message queues, or QUIC's internal buffers. Dedicated HTTP/3 worker streams instead use transport flow control without these application response queues. Upstream applications remain responsible for their own upload limits. Registration and server-hosted publication uploads retain their separate size limits.
@@ -116,6 +118,8 @@ The server injects standard reverse-proxy headers before forwarding requests thr
 | `Host`              | Rewritten to the public request host                          |
 
 Pre-existing `Host`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Port`, and `X-Forwarded-For` values are replaced. This prevents direct callers from spoofing proxy-derived identity headers.
+
+Apps behind an `expose up` route receive the same public client address and scheme as apps behind `expose http`. The local router preserves these headers when it forwards the request to the selected port.
 
 ## Security
 

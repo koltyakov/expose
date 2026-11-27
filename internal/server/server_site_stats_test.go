@@ -451,3 +451,317 @@ func TestSiteVisitorsLoadLazilyWithBackoff(t *testing.T) {
 		t.Fatalf("backoff too short: %s", until)
 	}
 }
+
+// pendingVisitorWrites reads under the lock: a background visitor load may
+// be merging into the same stats.
+func pendingVisitorWrites(stats *siteStats) int {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	return len(stats.visitorWrites)
+}
+
+func TestColdVisitorMergePrefersStoredIdentities(t *testing.T) {
+	fp := func(prefix byte, i int) [32]byte {
+		var f [32]byte
+		f[0], f[1], f[2] = prefix, byte(i>>8), byte(i)
+		return f
+	}
+	stored := make([][32]byte, 0, siteVisitorLimit-2)
+	for i := range siteVisitorLimit - 2 {
+		stored = append(stored, fp(1, i))
+	}
+	stats := &siteStats{visitors: make(map[visitorKey]int64), visitorWrites: make(map[visitorKey]bool)}
+	// A member seen since startup, still pending, plus five provisional
+	// visitors, three of them pending.
+	stats.visitors[visitorKeyOf(stored[7])] = 42
+	stats.visitorWrites[visitorKeyOf(stored[7])] = true
+	for i := range 5 {
+		key := visitorKeyOf(fp(2, i))
+		stats.visitors[key] = int64(100 + i)
+		if i < 3 {
+			stats.visitorWrites[key] = true
+		}
+	}
+	stats.finishVisitorLoadLocked(stored, nil, time.Now())
+	if len(stats.visitors) != siteVisitorLimit || !stats.visitorsCapped {
+		t.Fatalf("visitors=%d capped=%v", len(stats.visitors), stats.visitorsCapped)
+	}
+	for _, f := range stored {
+		if _, ok := stats.visitors[visitorKeyOf(f)]; !ok {
+			t.Fatal("stored identity not tracked after merge")
+		}
+	}
+	if seen := stats.visitors[visitorKeyOf(stored[7])]; seen != 42 {
+		t.Fatalf("member last-seen = %d, want 42", seen)
+	}
+	kept := 0
+	for i := range 5 {
+		if _, ok := stats.visitors[visitorKeyOf(fp(2, i))]; ok {
+			kept++
+		}
+	}
+	for key := range stats.visitorWrites {
+		if _, ok := stats.visitors[key]; !ok {
+			t.Fatal("pending write kept for a dropped visitor")
+		}
+	}
+	if _, ok := stats.visitorWrites[visitorKeyOf(stored[7])]; kept != 2 || ok {
+		t.Fatalf("kept %d provisional visitors (want 2), member still pending=%v", kept, ok)
+	}
+	// With room for everyone, nothing is dropped.
+	roomy := &siteStats{visitors: map[visitorKey]int64{visitorKeyOf(fp(2, 0)): 1}}
+	roomy.finishVisitorLoadLocked(stored[:10], nil, time.Now())
+	if len(roomy.visitors) != 11 || roomy.visitorsCapped {
+		t.Fatalf("roomy merge: visitors=%d capped=%v", len(roomy.visitors), roomy.visitorsCapped)
+	}
+}
+
+func waitVisitorsLoaded(t *testing.T, stats *siteStats) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stats.mu.Lock()
+		loaded := stats.visitorsLoaded
+		stats.mu.Unlock()
+		if loaded {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("visitors never loaded")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestSiteVisitorsRestartAtCap(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "visitors.db")
+	st, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	owner, err := st.CreateAPIKey(ctx, "owner", auth.HashAPIKey("owner", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := domain.PublishedSite{ID: "site_cap", APIKeyID: owner.ID, Hostname: "cap.example.com", CreatedAt: time.Now().UTC()}
+	if err := st.CreatePublishedSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	ip := func(i int) string { return fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255) }
+	batch := make([]sqlite.SiteVisitor, 0, siteVisitorLimit)
+	for i := range siteVisitorLimit {
+		batch = append(batch, sqlite.SiteVisitor{SiteID: site.ID, Fingerprint: sha256.Sum256([]byte(ip(i) + "\x00agent"))})
+	}
+	if err := st.RecordPublishedSiteVisitors(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+
+	// After a restart, new visitors arrive before the lazy load finishes and
+	// are admitted provisionally; storage refuses them past the cap, and the
+	// full durable set replaces them once loaded.
+	srv := &Server{store: st, siteVisitors: make(chan sqlite.SiteVisitor, 64)}
+	stats := srv.statsForSite(site.ID)
+	release := make(chan struct{})
+	load := stats.loadVisitors
+	stats.loadVisitors = func() ([][32]byte, error) {
+		<-release
+		return load()
+	}
+	now := time.Now().UTC()
+	stats.record(domain.PublishedSiteRequest{Time: now}, ip(0), "agent") // returning
+	for i := range 5 {
+		stats.record(domain.PublishedSiteRequest{Time: now}, fmt.Sprintf("192.0.2.%d", i), "agent")
+	}
+	// The last provisional visitor stays pending: its write meets a full queue.
+	srv.flushSiteVisitors(ctx)
+	for len(srv.siteVisitors) < cap(srv.siteVisitors) {
+		srv.siteVisitors <- sqlite.SiteVisitor{SiteID: "other"}
+	}
+	stats.record(domain.PublishedSiteRequest{Time: now}, "192.0.2.99", "agent")
+	if got := pendingVisitorWrites(stats); got != 1 {
+		t.Fatalf("pending writes before load = %d, want 1", got)
+	}
+	for len(srv.siteVisitors) > 0 {
+		<-srv.siteVisitors
+	}
+	close(release)
+	waitVisitorsLoaded(t, stats)
+	if got := stats.snapshot(now); got.Visitors != siteVisitorLimit || !got.VisitorsCapped || got.ActiveVisitors != 1 {
+		t.Fatalf("lazy fill at cap: visitors=%d capped=%v active=%d, want only the returning visitor active", got.Visitors, got.VisitorsCapped, got.ActiveVisitors)
+	}
+	stats.mu.Lock()
+	for i := range siteVisitorLimit {
+		if _, ok := stats.visitors[visitorKeyOf(batch[i].Fingerprint)]; !ok {
+			stats.mu.Unlock()
+			t.Fatalf("stored visitor %d evicted by provisional visitors", i)
+		}
+	}
+	returningSeen := stats.visitors[visitorKeyOf(batch[0].Fingerprint)]
+	pending := len(stats.visitorWrites)
+	stats.mu.Unlock()
+	if returningSeen != now.UnixNano() || pending != 0 {
+		t.Fatalf("member last-seen=%d (want %d), pending=%d", returningSeen, now.UnixNano(), pending)
+	}
+	stats.record(domain.PublishedSiteRequest{Time: now}, "198.51.100.1", "agent")
+	if got := stats.snapshot(now); got.Visitors != siteVisitorLimit || len(srv.siteVisitors) != 0 || pendingVisitorWrites(stats) != 0 {
+		t.Fatalf("over-cap visitor tracked: visitors=%d queued=%d pending=%d", got.Visitors, len(srv.siteVisitors), pendingVisitorWrites(stats))
+	}
+	stored, err := st.ListPublishedSiteVisitors(ctx, site.ID)
+	if err != nil || len(stored) != siteVisitorLimit {
+		t.Fatalf("durable visitors = %d, want cap: %v", len(stored), err)
+	}
+
+	// Another restart reads exactly the cap and reports it.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = sqlite.Open(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	srv = &Server{store: st, siteVisitors: make(chan sqlite.SiteVisitor, 64)}
+	stats = srv.statsForSite(site.ID)
+	stats.loadStoredVisitors()
+	if got := stats.snapshot(time.Now()); got.Visitors != siteVisitorLimit || !got.VisitorsCapped || got.ActiveVisitors != 0 {
+		t.Fatalf("restart at cap: visitors=%d capped=%v active=%d", got.Visitors, got.VisitorsCapped, got.ActiveVisitors)
+	}
+	stats.record(domain.PublishedSiteRequest{Time: time.Now()}, ip(siteVisitorLimit-1), "agent")
+	if got := stats.snapshot(time.Now()); got.Visitors != siteVisitorLimit || got.ActiveVisitors != 1 || len(srv.siteVisitors) != 0 {
+		t.Fatalf("returning visitor at cap: visitors=%d active=%d queued=%d", got.Visitors, got.ActiveVisitors, len(srv.siteVisitors))
+	}
+}
+
+// flakyVisitorStore fails RecordPublishedSiteVisitors while fail is set, or
+// on every other call when alternate is set.
+type flakyVisitorStore struct {
+	serverStore
+	mu        sync.Mutex
+	fail      bool
+	alternate bool
+	calls     int
+	failures  int
+	stored    map[sqlite.SiteVisitor]bool
+}
+
+func (*flakyVisitorStore) ListPublishedSiteVisitors(context.Context, string) ([][32]byte, error) {
+	return nil, nil
+}
+
+func (s *flakyVisitorStore) RecordPublishedSiteVisitors(_ context.Context, batch []sqlite.SiteVisitor) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.fail || (s.alternate && s.calls%2 == 1) {
+		s.failures++
+		return errors.New("database is locked")
+	}
+	if s.stored == nil {
+		s.stored = make(map[sqlite.SiteVisitor]bool)
+	}
+	for _, v := range batch {
+		s.stored[v] = true
+	}
+	return nil
+}
+
+func (s *flakyVisitorStore) set(fail, alternate bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fail, s.alternate = fail, alternate
+}
+
+func (s *flakyVisitorStore) storedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.stored)
+}
+
+func TestFailedVisitorBatchRetriedOnNextVisit(t *testing.T) {
+	st := &flakyVisitorStore{fail: true}
+	srv := &Server{store: st, siteVisitors: make(chan sqlite.SiteVisitor, 1)}
+	stats := srv.statsForSite("site")
+	visit := func(stats *siteStats, ip string) {
+		stats.record(domain.PublishedSiteRequest{Time: time.Now()}, ip, "agent")
+	}
+	visit(stats, "192.0.2.1")
+	srv.flushSiteVisitors(t.Context()) // commit fails
+	if pendingVisitorWrites(stats) != 1 {
+		t.Fatalf("failed batch not kept for retry: pending=%d", pendingVisitorWrites(stats))
+	}
+	// The retry meets queue pressure: it stays pending until there is room.
+	srv.siteVisitors <- sqlite.SiteVisitor{SiteID: "other"}
+	visit(stats, "192.0.2.1")
+	if pendingVisitorWrites(stats) != 1 || srv.siteVisitorDrops.Load() != 1 {
+		t.Fatalf("full queue lost the retry: pending=%d drops=%d", pendingVisitorWrites(stats), srv.siteVisitorDrops.Load())
+	}
+	<-srv.siteVisitors
+	st.set(false, false)
+	visit(stats, "192.0.2.1")
+	srv.flushSiteVisitors(t.Context())
+	if pendingVisitorWrites(stats) != 0 || st.storedCount() != 1 {
+		t.Fatalf("retry not stored: pending=%d stored=%d", pendingVisitorWrites(stats), st.storedCount())
+	}
+	visit(stats, "192.0.2.1")
+	if len(srv.siteVisitors) != 0 || stats.snapshot(time.Now()).Visitors != 1 {
+		t.Fatal("durable visitor queued again or counted twice")
+	}
+
+	// A failure for a site deleted meanwhile must not recreate its stats.
+	gone := srv.statsForSite("site_gone")
+	visit(gone, "192.0.2.2")
+	srv.siteStats.Delete("site_gone")
+	st.set(true, false)
+	srv.flushSiteVisitors(t.Context())
+	if _, ok := srv.siteStats.Load("site_gone"); ok {
+		t.Fatal("failed write resurrected deleted site stats")
+	}
+}
+
+func TestFailedVisitorBatchesRetriedConcurrently(t *testing.T) {
+	st := &flakyVisitorStore{alternate: true}
+	srv := &Server{store: st, siteVisitors: make(chan sqlite.SiteVisitor, 16)}
+	stats := srv.statsForSite("site")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go srv.runSiteVisitorWriter(ctx, done)
+	const visitors = 200
+	var wg sync.WaitGroup
+	for worker := range 8 {
+		wg.Go(func() {
+			for round := range 5 {
+				for i := range visitors {
+					if (i+worker+round)%3 == 0 {
+						stats.record(domain.PublishedSiteRequest{Time: time.Now()}, fmt.Sprintf("ip-%d", i), "agent")
+					}
+				}
+			}
+		})
+	}
+	wg.Wait()
+	// Graceful shutdown flushes the queue (some of it failing) and exits.
+	cancel()
+	<-done
+	if len(srv.siteVisitors) != 0 {
+		t.Fatalf("shutdown left %d visitors queued", len(srv.siteVisitors))
+	}
+	if st.failures == 0 {
+		t.Fatal("no batch failed; the test exercised no retries")
+	}
+	// Once the store recovers, every visitor still pending is written on
+	// its next visit; durable ones are not queued again.
+	st.set(false, false)
+	for i := range visitors {
+		stats.record(domain.PublishedSiteRequest{Time: time.Now()}, fmt.Sprintf("ip-%d", i), "agent")
+		srv.flushSiteVisitors(context.Background())
+	}
+	if got := st.storedCount(); got != visitors {
+		t.Fatalf("stored %d of %d visitors after retries", got, visitors)
+	}
+	stats.mu.Lock()
+	pending := len(stats.visitorWrites)
+	stats.mu.Unlock()
+	if pending != 0 || stats.snapshot(time.Now()).Visitors != visitors {
+		t.Fatalf("pending=%d visitors=%d", pending, stats.snapshot(time.Now()).Visitors)
+	}
+}

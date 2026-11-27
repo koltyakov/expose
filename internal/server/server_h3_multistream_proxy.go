@@ -15,7 +15,6 @@ import (
 	"github.com/koltyakov/expose/internal/domain"
 	"github.com/koltyakov/expose/internal/netutil"
 	"github.com/koltyakov/expose/internal/tunnelproto"
-	"github.com/koltyakov/expose/internal/tunneltransport"
 )
 
 func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
@@ -32,18 +31,22 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 	requeue := true
+	var upload *requestUpload
 	// Reset only this worker when the public caller leaves. Besides unblocking
 	// local stream I/O, STOP_SENDING cancels the client's upstream request.
+	// Only cancel here: Close shares unsynchronized frame state with Write, so
+	// it runs below once no goroutine can still write the stream.
 	cancelDone := make(chan struct{})
 	stopCancel := context.AfterFunc(r.Context(), func() {
-		closeH3Stream(stream)
+		cancelH3StreamIO(stream)
 		close(cancelDone)
 	})
 	defer func() {
 		if !stopCancel() {
 			<-cancelDone // Do not return a worker while its reset is in flight.
 		}
-		if requeue && r.Context().Err() == nil {
+		upload.finish(false)
+		if requeue && upload.completed() && r.Context().Err() == nil {
 			if !sess.addH3Worker(stream) {
 				closeH3Stream(stream)
 			}
@@ -58,21 +61,51 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 	injectForwardedProxyHeaders(requestHeaders, r)
 	injectForwardedFor(requestHeaders, s.clientIP(r))
 
-	if _, err := s.sendRequestBodyToH3Stream(stream, reqID, r, requestHeaders, sess.usesH3StreamV2()); err != nil {
+	useV2 := sess.usesH3StreamV2()
+	writeMsg := func(msg tunnelproto.Message) error { return writeH3StreamJSON(stream, msg, useV2) }
+	streamed, err := s.sendRequestHead(reqID, r, requestHeaders, writeMsg)
+	if err != nil {
 		requeue = false
-		if isBodyTooLargeError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else if errors.Is(err, tunneltransport.ErrWritePumpBackpressure) {
-			s.writePublicRejection(w, r, http.StatusServiceUnavailable, "tunnel overloaded", rejectionBackpressure)
-		} else {
-			http.Error(w, "tunnel write failed", http.StatusBadGateway)
-		}
+		s.writeUploadFailure(w, r, err)
 		return
 	}
 
-	msg, err := readH3StreamMessage(stream, s.cfg.RequestTimeout, sess.usesH3StreamV2())
-	if err != nil || msg.Kind != tunnelproto.KindResponse || msg.Response == nil {
+	headerWait := &h3HeaderWait{stream: stream, timeout: s.cfg.RequestTimeout, armed: !streamed}
+	if streamed {
+		// Upload in the background, so a response sent before the origin
+		// reads the whole body reaches the visitor at once. The response
+		// header timeout starts when the upload ends.
+		upload = s.startRequestUpload(w, r, reqID, writeMsg, func(payload []byte) error {
+			return writeH3StreamReqBody(stream, reqID, payload, useV2)
+		}, func() {
+			// Abandon a blocked write. The worker is not reused after an
+			// interrupted upload.
+			stream.CancelWrite(0)
+		}, func(err error) {
+			switch {
+			case err == nil:
+				headerWait.arm()
+			case errors.Is(err, errUploadStopped):
+			case isUploadTunnelError(err):
+				// A partly written frame cannot be continued. The peer may
+				// still have answered, as an older client does when the
+				// origin responds early and it resets the worker.
+				stream.CancelWrite(0)
+				headerWait.arm()
+			default:
+				// The visitor's body failed: abandon the request.
+				cancelH3StreamIO(stream)
+			}
+		})
+	}
+
+	msg, err := headerWait.read(useV2)
+	if err != nil || msg.Kind != tunnelproto.KindResponse || msg.Response == nil || msg.Response.ID != reqID {
 		requeue = false
+		if uploadErr := upload.failure(); uploadErr != nil {
+			s.writeUploadFailure(w, r, uploadErr)
+			return
+		}
 		http.Error(w, "tunnel closed", http.StatusBadGateway)
 		return
 	}
@@ -101,11 +134,12 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 			w.Header().Add(k, v)
 		}
 	}
+	setInlineContentLength(w, r, resp, upload)
 	w.WriteHeader(normalizeUpstreamStatus(resp.Status))
 
 	if resp.Streamed {
 		flushResponse(w)
-		ok, reusable := writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, sess.usesH3StreamV2())
+		ok, reusable := writeH3StreamedResponseBody(w, r, stream, s.cfg.RequestTimeout, useV2)
 		if !reusable {
 			requeue = false
 		}
@@ -123,7 +157,46 @@ func (s *Server) proxyPublicHTTPH3MultiStream(w http.ResponseWriter, r *http.Req
 			_, _ = w.Write(b)
 		}
 	}
+	finishUploadAfterResponse(w, r, normalizeUpstreamStatus(resp.Status), upload)
 	s.queueDomainTouch(route.Domain.ID)
+}
+
+// h3HeaderWait reads the response header from a worker stream. While the
+// request body still uploads the read has no deadline; arm starts the
+// RequestTimeout once the upload ends. The upload goroutine may call arm while
+// the handler reads, so both sides use mu to keep a deadline from outliving
+// the read.
+type h3HeaderWait struct {
+	stream  *http3.Stream
+	timeout time.Duration
+
+	mu      sync.Mutex
+	armed   bool
+	reading bool
+}
+
+func (h *h3HeaderWait) arm() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.armed = true
+	if h.reading && h.timeout > 0 {
+		_ = h.stream.SetReadDeadline(time.Now().Add(h.timeout))
+	}
+}
+
+func (h *h3HeaderWait) read(useV2 bool) (tunnelproto.Message, error) {
+	h.mu.Lock()
+	h.reading = true
+	if h.armed && h.timeout > 0 {
+		_ = h.stream.SetReadDeadline(time.Now().Add(h.timeout))
+	}
+	h.mu.Unlock()
+	msg, err := readH3StreamMessageFrom(h.stream, h.stream, 0, useV2)
+	h.mu.Lock()
+	h.reading = false
+	_ = h.stream.SetReadDeadline(time.Time{})
+	h.mu.Unlock()
+	return msg, err
 }
 
 func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *http.Request, route domain.TunnelRoute, sess *session) {
@@ -143,7 +216,17 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 		http.Error(w, "tunnel unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer closeH3Stream(stream)
+	// The relay goroutines below are joined before this runs: Close must not
+	// race a Write. A clean close keeps the final close notice instead of
+	// resetting it away.
+	resetWrite := true
+	defer func() {
+		stream.CancelRead(0)
+		if resetWrite {
+			stream.CancelWrite(0)
+		}
+		_ = stream.Close()
+	}()
 
 	headers := tunnelproto.ShallowCloneHeaders(r.Header)
 	netutil.RemoveHopByHopHeadersPreserveUpgrade(headers)
@@ -191,10 +274,12 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	}
 	publicConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		_ = writeH3StreamJSON(stream, tunnelproto.Message{
+		if writeH3StreamJSON(stream, tunnelproto.Message{
 			Kind:    tunnelproto.KindWSClose,
 			WSClose: &tunnelproto.WSClose{ID: streamID, Code: websocket.CloseGoingAway, Text: "public upgrade failed"},
-		}, sess.usesH3StreamV2())
+		}, sess.usesH3StreamV2()) == nil {
+			resetWrite = false
+		}
 		return
 	}
 	publicConn.SetReadLimit(webSocketReadLimitFor(s.cfg))
@@ -274,8 +359,21 @@ func (s *Server) handlePublicWebSocketH3MultiStream(w http.ResponseWriter, r *ht
 	select {
 	case <-r.Context().Done():
 	case <-readDone:
+		// The visitor side ended and its close notice was written; no
+		// goroutine writes the stream any more.
+		resetWrite = false
 	case <-writeDone:
 	}
+	// Stop both relays and wait for them before the deferred Close.
+	// CancelWrite and CancelRead are safe alongside Read and Write, and
+	// closing the public connection ends its blocked read or write.
+	if resetWrite {
+		stream.CancelWrite(0)
+	}
+	stream.CancelRead(0)
+	_ = publicConn.Close()
+	<-readDone
+	<-writeDone
 }
 
 func readH3StreamMessage(stream *http3.Stream, timeout time.Duration, useV2 bool) (tunnelproto.Message, error) {
@@ -339,20 +437,6 @@ func writeH3StreamReqBody(stream *http3.Stream, reqID string, payload []byte, us
 		return tunnelproto.WriteStreamBinaryFrameV2(stream, tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
 	}
 	return tunnelproto.WriteStreamBinaryFrame(stream, tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
-}
-
-func (s *Server) sendRequestBodyToH3Stream(
-	stream *http3.Stream,
-	reqID string,
-	r *http.Request,
-	headers map[string][]string,
-	useV2 bool,
-) (bool, error) {
-	return s.sendRequestBodyWith(reqID, r, headers, func(msg tunnelproto.Message) error {
-		return writeH3StreamJSON(stream, msg, useV2)
-	}, func(payload []byte) error {
-		return writeH3StreamReqBody(stream, reqID, payload, useV2)
-	})
 }
 
 // writeH3StreamedResponseBody copies body frames from a worker stream to

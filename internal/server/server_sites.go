@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,7 +112,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	w = &publicationResponseWriter{ResponseWriter: w, release: release}
 	if filesRequest {
-		s.writeSiteFiles(w, r, st, key)
+		s.writeSiteFiles(w, r, st, key, release)
 		return
 	}
 	if r.Method == http.MethodGet && id == "" {
@@ -138,7 +140,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if statsRequest {
-			s.writeSiteStats(w, r, site)
+			s.writeSiteStats(w, r, site, release)
 		} else {
 			writeJSON(w, http.StatusOK, withSiteURL(r, site))
 		}
@@ -311,8 +313,10 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		return previous, true
 	}
 	if incremental {
-		s.sitesMu.Lock()
-		prepUnlock := sync.OnceFunc(s.sitesMu.Unlock)
+		// Pinning needs only the shared lock: replacement and deletion take
+		// it exclusively before retiring the base revision.
+		s.sitesMu.RLock()
+		prepUnlock := sync.OnceFunc(s.sitesMu.RUnlock)
 		defer prepUnlock()
 		base, ok := lookup(&publicationResponseWriter{ResponseWriter: w, release: prepUnlock})
 		if !ok {
@@ -385,26 +389,33 @@ func (s *Server) uploadSite(w http.ResponseWriter, r *http.Request, st siteStore
 		s.siteError(w, err)
 		return
 	}
+	status := http.StatusCreated
+	retiredDir := ""
+	if previous != nil {
+		status = http.StatusOK
+		// Retire before priming: a stats or files read still pinned to the
+		// previous revision then cannot overwrite the new revision's totals.
+		if !s.retireSiteRevision(previous.StorageID()) {
+			retiredDir = filepath.Join(s.publishDir(), previous.StorageID())
+		}
+	}
 	s.siteHosts.Store(site.Hostname, site)
 	s.siteLookups.invalidate(site.Hostname)
 	// The manifest was verified while extracting (and completing the delta),
-	// so the next watch-mode save need not hash the published files again.
-	s.primeSiteManifest(site.StorageID(), manifest)
+	// so the next watch-mode save need not hash the published files again,
+	// and stats polls need not walk them.
+	count, size, primed := s.primeSiteManifest(site.StorageID(), manifest)
 	if !site.WS {
 		s.closeSitePresence(site.ID)
 	}
-	s.statsForSite(site.ID)
-	status := http.StatusCreated
-	if previous != nil {
-		status = http.StatusOK
-		previousDir := filepath.Join(s.publishDir(), previous.StorageID())
-		s.siteManifests.delete(previous.StorageID())
-		s.siteRoots.Close(previousDir)
-		if !s.deferPinnedRemoval(previousDir) {
-			// This revision has been unpublished; no new reader can acquire it.
-			release()
-			s.removeRetiredSiteDir(previousDir)
-		}
+	tracker := s.statsForSite(site.ID)
+	if primed {
+		tracker.primeFileTotals(site.StorageID(), count, size)
+	}
+	if retiredDir != "" {
+		// This revision has been unpublished; no new reader can acquire it.
+		release()
+		s.removeRetiredSiteDir(retiredDir)
 	}
 	writeJSON(w, status, withSiteURL(r, site))
 }
@@ -456,8 +467,11 @@ func publishedSiteRevision(site *domain.PublishedSite) string {
 	return strconv.Quote(site.StorageID())
 }
 
-// The caller holds sitesMu so the manifest and revision describe one snapshot.
-func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, st siteStore, key string) {
+// writeSiteFiles is called with sitesMu held; release drops it. The ETag
+// names the revision resolved under the lock, and that revision stays pinned
+// while a cold manifest is hashed unlocked, so both describe one snapshot even
+// if the publication is replaced or deleted meanwhile.
+func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, st siteStore, key string, release func()) {
 	sourceID, err := siteSourceID(r.URL.Query().Get("source_id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -487,7 +501,13 @@ func (s *Server) writeSiteFiles(w http.ResponseWriter, r *http.Request, st siteS
 	}
 	data := []byte("[]\n")
 	if site != nil {
-		data, err = s.publishedManifest(*site)
+		var cached bool
+		if data, cached = s.siteManifests.get(site.StorageID()); !cached {
+			unpin := s.pinSiteDir(filepath.Join(s.publishDir(), site.StorageID()))
+			release()
+			data, err = s.publishedManifest(*site)
+			unpin()
+		}
 		if err != nil {
 			s.siteError(w, err)
 			return
@@ -590,38 +610,58 @@ func (s *Server) servePublishedSite(w http.ResponseWriter, r *http.Request, host
 
 // siteTombstonePrefix names publication directories that were unpublished
 // and await removal. Renaming is one metadata operation; removing up to
-// maxSiteFiles files is not, so it runs after sitesMu is released.
+// maxSiteFiles files is not, so it runs after sitesMu is released. Tombstones
+// are named .trash-STORAGEID-SUFFIX, outside the site_ and .upload- names that
+// cleanup otherwise ages before removal.
 const siteTombstonePrefix = ".trash-"
 
-// deleteSite unpublishes site. The caller holds sitesMu and must pass the
-// returned tombstone, if any, to removeSiteTombstones after unlocking.
-func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.PublishedSite) (string, error) {
-	dir := filepath.Join(s.publishDir(), site.StorageID())
+// retireSiteRevision drops the cached state of a revision the database no
+// longer references. The caller holds sitesMu exclusively. Pinned readers are
+// marked before caches are dropped, so a manifest or file totals they are
+// still computing is not cached again (see unlessSiteDirRetired). It reports
+// whether the last of those readers will remove the directory.
+func (s *Server) retireSiteRevision(storageID string) bool {
+	dir := filepath.Join(s.publishDir(), storageID)
 	s.siteRoots.Close(dir)
-	s.siteManifests.delete(site.StorageID())
-	tomb := ""
-	if s.siteDirPins[dir] == nil {
-		tomb = filepath.Join(s.publishDir(), siteTombstonePrefix+site.StorageID()+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
-		if err := os.Rename(dir, tomb); errors.Is(err, os.ErrNotExist) {
-			tomb = ""
-		} else if err != nil {
-			return "", err
-		}
-	}
+	pinned := s.deferPinnedRemoval(dir)
+	s.siteManifests.delete(storageID)
+	return pinned
+}
+
+// deleteSite unpublishes site. The caller holds sitesMu exclusively and must
+// pass the returned directory, if any, to removeSiteTombstones after
+// unlocking.
+//
+// The database deletion commits before any file moves. A failure or crash
+// before the commit leaves the publication intact; one after it leaves only
+// files nothing references, which cleanup removes. Retiring files first
+// would lose live content whenever the commit did not happen.
+func (s *Server) deleteSite(ctx context.Context, st siteStore, site domain.PublishedSite) (string, error) {
 	if err := st.DeletePublishedSite(ctx, site.APIKeyID, site.ID); err != nil {
-		if tomb != "" {
-			// Still published: put the files back.
-			if restoreErr := os.Rename(tomb, dir); restoreErr != nil && s.log != nil {
-				s.log.Error("restore site files after failed delete", "site", site.ID, "err", restoreErr)
-			}
-		}
+		// Nothing is retired. Drop the cached lookup in case the outcome is
+		// ambiguous, so requests consult the database again.
+		s.siteLookups.invalidate(site.Hostname)
 		return "", err
 	}
-	s.deferPinnedRemoval(dir)
 	s.siteHosts.Delete(site.Hostname)
 	s.siteLookups.invalidate(site.Hostname)
 	s.closeSitePresence(site.ID)
 	s.siteStats.Delete(site.ID)
+	if s.retireSiteRevision(site.StorageID()) {
+		return "", nil // the last pinned reader removes it
+	}
+	dir := filepath.Join(s.publishDir(), site.StorageID())
+	tomb := filepath.Join(s.publishDir(), siteTombstonePrefix+site.StorageID()+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := os.Rename(dir, tomb); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		// Unpublished all the same, and no new reader can reach it; remove
+		// it in place.
+		if s.log != nil {
+			s.log.Warn("retire deleted site files", "site", site.ID, "err", err)
+		}
+		return dir, nil
+	}
 	return tomb, nil
 }
 
@@ -633,6 +673,88 @@ func (s *Server) removeSiteTombstones(tombs ...string) {
 			s.removeRetiredSiteDir(tomb)
 		}
 	}
+}
+
+// tombstoneRevision returns the known storage ID a tombstone name was made
+// from, .trash-ID-SUFFIX by deleteSite or .trash-ID for an aged orphan, and
+// the deletion time encoded in SUFFIX, if any.
+func tombstoneRevision(name string, known map[string]bool) (string, int64, bool) {
+	rest, ok := strings.CutPrefix(name, siteTombstonePrefix)
+	if !ok {
+		return "", 0, false
+	}
+	if known[rest] {
+		return rest, 0, true
+	}
+	i := strings.LastIndexByte(rest, '-')
+	if i <= 0 || !known[rest[:i]] {
+		return "", 0, false
+	}
+	at, _ := strconv.ParseInt(rest[i+1:], 36, 64)
+	return rest[:i], at, true
+}
+
+// recoverSiteTombstones restores the files of published revisions that an
+// earlier release retired before its deletion committed: it renamed the
+// directory to a tombstone first, so a failed commit or a crash before it
+// left the site published with its content awaiting removal. It returns the
+// tombstones cleanup must keep because they may still hold live content.
+// The caller holds sitesMu exclusively.
+func (s *Server) recoverSiteTombstones(known map[string]bool, entries []os.DirEntry) map[string]bool {
+	candidates := make(map[string][]string)
+	for _, entry := range entries {
+		// Only a real directory can hold a revision. A file or symlink with a
+		// tombstone name is never promoted; cleanup reaps it like any other.
+		if !entry.IsDir() {
+			continue
+		}
+		if id, _, ok := tombstoneRevision(entry.Name(), known); ok {
+			candidates[id] = append(candidates[id], entry.Name())
+		}
+	}
+	keep := make(map[string]bool)
+	for id, names := range candidates {
+		dir := filepath.Join(s.publishDir(), id)
+		info, err := os.Lstat(dir)
+		if err == nil && info.IsDir() {
+			continue // the revision is in place; these are stale copies
+		}
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			// Something other than the revision occupies its path, or the
+			// path cannot be inspected. Keep the copies for the operator.
+			for _, name := range names {
+				keep[name] = true
+			}
+			if s.log != nil {
+				if err == nil {
+					err = fmt.Errorf("not a directory: %s", info.Mode().Type())
+				}
+				s.log.Error("inspect published site files", "dir", dir, "err", err)
+			}
+			continue
+		}
+		// Prefer the most recent attempt; revisions are immutable, so any
+		// copy holds the same files.
+		slices.SortFunc(names, func(a, b string) int {
+			_, atA, _ := tombstoneRevision(a, known)
+			_, atB, _ := tombstoneRevision(b, known)
+			return cmp.Compare(atB, atA)
+		})
+		if err := os.Rename(filepath.Join(s.publishDir(), names[0]), dir); err != nil {
+			for _, name := range names {
+				keep[name] = true
+			}
+			if s.log != nil {
+				s.log.Error("recover published site files", "dir", dir, "err", err)
+			}
+			continue
+		}
+		keep[names[0]] = true // no longer present; nothing to remove
+		if s.log != nil {
+			s.log.Warn("recovered published site files from an interrupted deletion", "dir", dir)
+		}
+	}
+	return keep
 }
 
 func (s *Server) cleanupPublishedSites(ctx context.Context) error {
@@ -651,6 +773,15 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 	known := make(map[string]bool, len(sites))
 	for _, site := range sites {
 		known[site.StorageID()] = true
+	}
+	entries, err := os.ReadDir(s.publishDir())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// Before reaping anything, put back live content an earlier release
+	// moved aside ahead of a deletion that never committed.
+	keep := s.recoverSiteTombstones(known, entries)
+	for _, site := range sites {
 		if site.ExpiresAt == nil || time.Now().Before(*site.ExpiresAt) {
 			s.siteHosts.Store(site.Hostname, site)
 			s.statsForSite(site.ID)
@@ -664,23 +795,21 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 	}
 	// Recover archives abandoned by a process crash. Recent staging directories
 	// may belong to uploads still in progress, so leave those alone.
-	entries, err := os.ReadDir(s.publishDir())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), siteTombstonePrefix) {
 			// Left by a process that stopped before removing it.
-			tombs = append(tombs, filepath.Join(s.publishDir(), entry.Name()))
+			if !keep[entry.Name()] {
+				tombs = append(tombs, filepath.Join(s.publishDir(), entry.Name()))
+			}
 			continue
 		}
 		if known[entry.Name()] || (!strings.HasPrefix(entry.Name(), "site_") && !strings.HasPrefix(entry.Name(), ".upload-")) {
 			continue
 		}
 		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -688,7 +817,7 @@ func (s *Server) cleanupPublishedSites(ctx context.Context) error {
 			continue
 		}
 		dir := filepath.Join(s.publishDir(), entry.Name())
-		if s.siteDirPins[dir] != nil {
+		if s.siteDirPinned(dir) {
 			continue
 		}
 		s.siteRoots.Close(dir)

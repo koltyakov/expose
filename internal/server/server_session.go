@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -199,15 +200,7 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 			conn = qc
 		}
 	}
-	closeFn := func() error {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
-		err := stream.Close()
-		if conn != nil {
-			_ = conn.CloseWithError(0, "")
-		}
-		return err
-	}
+	closeFn := abortH3ControlStream(stream, conn)
 	transport := tunneltransport.NewStreamTransport("quic", stream, closeFn)
 	var writer *tunneltransport.WritePump
 	if opts.h3StreamV2 {
@@ -220,6 +213,29 @@ func (s *Server) handleConnectH3(w http.ResponseWriter, r *http.Request) {
 		opts.transportName = "quic"
 	}
 	s.activateSession(tunnelID, nil, transport, writer, opts)
+}
+
+// abortH3ControlStream returns the close function for a taken-over control
+// stream. The transport, its WritePump and session teardown may all call it,
+// possibly while the pump is inside Write. It therefore resets both stream
+// directions instead of calling Close: Close sends a graceful FIN and reads
+// write state that a concurrent Write mutates. The first call does the work;
+// later calls wait for it and return its result. conn may be nil.
+func abortH3ControlStream(stream *http3.Stream, conn *quic.Conn) func() error {
+	var (
+		once sync.Once
+		err  error
+	)
+	return func() error {
+		once.Do(func() {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			if conn != nil {
+				err = conn.CloseWithError(0, "")
+			}
+		})
+		return err
+	}
 }
 
 func prepareH3SessionOptions(mode string) (sessionActivateOptions, error) {

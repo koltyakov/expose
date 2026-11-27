@@ -118,6 +118,12 @@ type clientSessionRuntime struct {
 }
 
 func newClientSessionRuntimeFromConn(c *Client, parentCtx context.Context, localBase *url.URL, conn sessionTransportConn) (*clientSessionRuntime, error) {
+	return newClientSessionRuntime(c, parentCtx, parentCtx, localBase, conn)
+}
+
+// newClientSessionRuntime bounds the initial ping by readyCtx and runs the
+// session on parentCtx.
+func newClientSessionRuntime(c *Client, parentCtx, readyCtx context.Context, localBase *url.URL, conn sessionTransportConn) (*clientSessionRuntime, error) {
 	sessionCtx, cancel := context.WithCancel(parentCtx)
 	rt := &clientSessionRuntime{
 		client:           c,
@@ -143,7 +149,7 @@ func newClientSessionRuntimeFromConn(c *Client, parentCtx context.Context, local
 		_ = rt.transport.Close()
 	}()
 
-	if err := rt.sendInitialPing(); err != nil {
+	if err := sendBeforeReady(readyCtx, func() { _ = rt.transport.Close() }, rt.sendInitialPing); err != nil {
 		rt.close()
 		return nil, err
 	}

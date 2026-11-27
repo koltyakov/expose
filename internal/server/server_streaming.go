@@ -63,16 +63,11 @@ func getPooledBuf(pool *sync.Pool, size int) (*[]byte, []byte) {
 	return ref, buf
 }
 
-func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, headers map[string][]string) (bool, error) {
-	return s.sendRequestBodyWith(reqID, r, headers, sess.writeJSON, func(payload []byte) error {
-		return sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
-	})
-}
-
-// sendRequestBodyWith shares upload framing across transports. Only known-small
-// bodies are buffered. Other bodies send their envelope before the first read.
-// Writers must finish consuming borrowed buffers before returning.
-func (s *Server) sendRequestBodyWith(reqID string, r *http.Request, headers map[string][]string, writeMsg func(tunnelproto.Message) error, writeChunk func([]byte) error) (bool, error) {
+// sendRequestHead writes the request envelope. Known-small bodies travel
+// inline and are fully consumed. streamed reports that the envelope announced
+// a streamed body: the caller then owns sending it with streamRequestBody,
+// which closes r.Body. The body is also closed when sending the envelope fails.
+func (s *Server) sendRequestHead(reqID string, r *http.Request, headers map[string][]string, writeMsg func(tunnelproto.Message) error) (streamed bool, err error) {
 	requestTimeoutMs := s.requestTimeoutMillis()
 	if !hasRequestBody(r) {
 		return false, writeMsg(tunnelproto.Message{
@@ -88,9 +83,8 @@ func (s *Server) sendRequestBodyWith(reqID string, r *http.Request, headers map[
 			},
 		})
 	}
-	defer func() { _ = r.Body.Close() }()
-
 	if r.ContentLength > 0 && r.ContentLength <= streamingThreshold {
+		defer func() { _ = r.Body.Close() }()
 		pool, size := &requestSmallChunkPool, smallBodyBufferSize
 		if r.ContentLength > int64(size) {
 			pool, size = &requestFirstChunkPool, streamingThreshold+1
@@ -128,36 +122,58 @@ func (s *Server) sendRequestBodyWith(reqID string, r *http.Request, headers map[
 			TimeoutMs: requestTimeoutMs,
 		},
 	}); err != nil {
+		_ = r.Body.Close()
 		return true, err
 	}
+	return true, nil
+}
 
+// streamRequestBody copies r.Body after a streamed envelope and ends it with
+// KindReqBodyEnd. Tunnel write failures are wrapped in uploadTunnelError.
+// Once stopped reports true, read bytes are discarded and the copy ends with
+// errUploadStopped. An HTTP/1 body is then closed, which lets net/http drain
+// a bounded remainder so the visitor's connection can be reused. A
+// multiplexed body is left for the server to reset after the handler: closing
+// an HTTP/3 body early sends STOP_SENDING ahead of the response's end.
+func streamRequestBody(reqID string, r *http.Request, writeMsg func(tunnelproto.Message) error, writeChunk func([]byte) error, stopped func() bool) (err error) {
+	defer func() {
+		if !errors.Is(err, errUploadStopped) || r.ProtoMajor == 1 {
+			_ = r.Body.Close()
+		}
+	}()
 	chunkBufRef, chunkBuf := getPooledBuf(&requestStreamChunkPool, streamingChunkSize)
 	defer requestStreamChunkPool.Put(chunkBufRef)
 	var sent int64
 	for {
-		cn, err := r.Body.Read(chunkBuf)
+		cn, readErr := r.Body.Read(chunkBuf)
+		if stopped() {
+			return errUploadStopped
+		}
 		if cn > 0 {
 			sent += int64(cn)
 			if wErr := writeChunk(chunkBuf[:cn]); wErr != nil {
-				return true, wErr
+				return &uploadTunnelError{err: wErr}
 			}
 		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
 				if r.ContentLength > 0 && sent != r.ContentLength {
-					return true, io.ErrUnexpectedEOF
+					return io.ErrUnexpectedEOF
 				}
 				break
 			}
-			return true, err
+			return readErr
 		}
 	}
 
 	// Signal end of request body.
-	return true, writeMsg(tunnelproto.Message{
+	if err := writeMsg(tunnelproto.Message{
 		Kind:      tunnelproto.KindReqBodyEnd,
 		BodyChunk: &tunnelproto.BodyChunk{ID: reqID},
-	})
+	}); err != nil {
+		return &uploadTunnelError{err: err}
+	}
+	return nil
 }
 
 func (s *Server) requestTimeoutMillis() int {

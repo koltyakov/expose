@@ -12,6 +12,21 @@ import (
 	"github.com/koltyakov/expose/internal/tunnelproto"
 )
 
+// Drive both halves synchronously when testing the order of upload frames.
+func (s *Server) sendRequestBodyWith(reqID string, r *http.Request, headers map[string][]string, writeMsg func(tunnelproto.Message) error, writeChunk func([]byte) error) (bool, error) {
+	streamed, err := s.sendRequestHead(reqID, r, headers, writeMsg)
+	if err != nil || !streamed {
+		return streamed, err
+	}
+	return true, streamRequestBody(reqID, r, writeMsg, writeChunk, func() bool { return false })
+}
+
+func (s *Server) sendRequestBody(sess *session, reqID string, r *http.Request, headers map[string][]string) (bool, error) {
+	return s.sendRequestBodyWith(reqID, r, headers, sess.writeJSON, func(payload []byte) error {
+		return sess.writeBinaryFrame(tunnelproto.BinaryFrameReqBody, reqID, 0, payload)
+	})
+}
+
 type gatedUploadBody struct {
 	headerSent *bool
 	chunkSent  *bool

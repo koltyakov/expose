@@ -53,20 +53,20 @@ func TestPublishedManifestCachesImmutableRevision(t *testing.T) {
 func TestSiteManifestCacheBoundsAndEviction(t *testing.T) {
 	var cache siteManifestCache
 	for i := range siteManifestCacheEntries + 1 {
-		cache.put(fmt.Sprint(i), []byte("[]\n"))
+		cache.put(fmt.Sprint(i), siteManifestEntry{data: []byte("[]\n")})
 	}
 	if len(cache.entries) != siteManifestCacheEntries {
 		t.Fatal("entry bound exceeded")
 	}
-	cache.put("large", make([]byte, siteManifestCacheBytes))
+	cache.put("large", siteManifestEntry{data: make([]byte, siteManifestCacheBytes)})
 	if len(cache.entries) != 1 || cache.bytes != siteManifestCacheBytes {
 		t.Fatal("byte bound not enforced")
 	}
-	cache.put("oversized", make([]byte, siteManifestCacheBytes+1))
+	cache.put("oversized", siteManifestEntry{data: make([]byte, siteManifestCacheBytes+1)})
 	if _, ok := cache.get("oversized"); ok {
 		t.Fatal("oversized manifest retained")
 	}
-	cache.put("spare-capacity", make([]byte, 1, siteManifestCacheBytes+1))
+	cache.put("spare-capacity", siteManifestEntry{data: make([]byte, 1, siteManifestCacheBytes+1)})
 	if _, ok := cache.get("spare-capacity"); ok {
 		t.Fatal("cache ignored retained spare capacity")
 	}

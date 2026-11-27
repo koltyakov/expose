@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,68 @@ func TestResumeRestartRejectsInvalidHandoff(t *testing.T) {
 		if _, err := ResumeRestart(args); err == nil {
 			t.Fatalf("accepted invalid handoff %v", args)
 		}
+	}
+}
+
+// A handle on the staged binary that does not share delete access makes the
+// staged -> exe rename fail with a sharing violation after exe has already
+// moved to previous.exe. installBinary must move the original back.
+func TestInstallBinaryRestoresOriginalWhenInstallRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "expose.exe")
+	if err := os.WriteFile(exe, []byte("original"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	update, err := os.MkdirTemp(dir, updateDirPrefix+"*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(update, "expose.exe")
+	if err = os.WriteFile(staged, []byte("replacement"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	stagedName, err := windows.UTF16PtrFromString(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold, err := windows.CreateFile(stagedName, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = windows.CloseHandle(hold) }()
+
+	previousExecutable.Lock()
+	before := previousExecutable.path
+	previousExecutable.Unlock()
+
+	if err = installBinary(staged, exe); err == nil {
+		t.Fatal("expected install rename to fail while staged binary is held without delete sharing")
+	}
+	// Permission copy opens the staged file for WRITE_DAC only, which share
+	// modes do not restrict; the failure must come from the second rename.
+	if msg := err.Error(); !strings.HasPrefix(msg, "install executable:") || strings.Contains(msg, "restore failed") {
+		t.Fatalf("expected a restored install-rename failure, got %v", err)
+	}
+	got, readErr := os.ReadFile(exe)
+	if readErr != nil {
+		t.Fatalf("original executable was not restored (install error: %v): %v", err, readErr)
+	}
+	if string(got) != "original" {
+		t.Fatalf("restored executable has unexpected contents %q", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(update, "previous.exe")); !os.IsNotExist(statErr) {
+		t.Fatalf("previous.exe should not remain after restore: %v", statErr)
+	}
+	if _, statErr := os.Stat(staged); statErr != nil {
+		t.Fatalf("staged binary should be left in the update directory: %v", statErr)
+	}
+	previousExecutable.Lock()
+	recorded := previousExecutable.path
+	previousExecutable.Unlock()
+	if recorded != before {
+		t.Fatalf("failed install changed previous executable from %q to %q", before, recorded)
 	}
 }
 
